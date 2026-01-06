@@ -14,18 +14,15 @@ jobs:
       - name: Deploy DAGs
         run: |
           echo "🚀 Deploying DAGs to NFS..."
-          # Xóa sạch thư mục DAGs cũ trên NFS để đồng bộ hóa
-          rm -rf /mnt/nfs_share/airflow/dags
-          # Tạo lại và copy mới
-          mkdir -p /mnt/nfs_share/airflow/dags
-          cp -r dags/* /mnt/nfs_share/airflow/dags/
+          # Sync dags, delete file thừa, nhưng GIỮ LẠI __pycache__
+          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' dags/ /mnt/nfs_share/airflow/dags/
           echo "✅ DAGs deployed successfully!"
 
-      - name: Deploy Scripts
+      - name: Deploy App
         run: |
-          echo "🚀 Deploying App Scripts..."
-          # Xóa sạch thư mục Scripts cũ
+          echo "🚀 Deploying App..."
+          # Deploy App: Xóa sạch cũ, ghi mới hoàn toàn
           rm -rf /mnt/nfs_share/app
           mkdir -p /mnt/nfs_share/app
-          cp -r scripts/* /mnt/nfs_share/app/
-          echo "✅ Scripts deployed successfully!"
+          cp -r app/* /mnt/nfs_share/app/
+          echo "✅ App deployed successfully!"
