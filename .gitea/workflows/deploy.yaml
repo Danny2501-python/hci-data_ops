@@ -21,8 +21,5 @@ jobs:
       - name: Deploy App
         run: |
           echo "🚀 Deploying App..."
-          # Deploy App: Xóa sạch cũ, ghi mới hoàn toàn
-          rm -rf /mnt/nfs_share/app
-          mkdir -p /mnt/nfs_share/app
-          cp -r app/* /mnt/nfs_share/app/
+          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' app/ /mnt/nfs_share/app/
           echo "✅ App deployed successfully!"
