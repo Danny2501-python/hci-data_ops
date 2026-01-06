@@ -14,8 +14,9 @@ jobs:
       - name: Deploy DAGs
         run: |
           echo "🚀 Deploying DAGs to NFS..."
-          # Copy all .py files from dags/ folder to NFS
-          # Lưu ý: Runner đã mount /mnt/nfs_share
+          # Xóa sạch thư mục DAGs cũ trên NFS để đồng bộ hóa
+          rm -rf /mnt/nfs_share/airflow/dags
+          # Tạo lại và copy mới
           mkdir -p /mnt/nfs_share/airflow/dags
           cp -r dags/* /mnt/nfs_share/airflow/dags/
           echo "✅ DAGs deployed successfully!"
@@ -23,6 +24,8 @@ jobs:
       - name: Deploy Scripts
         run: |
           echo "🚀 Deploying App Scripts..."
+          # Xóa sạch thư mục Scripts cũ
+          rm -rf /mnt/nfs_share/app
           mkdir -p /mnt/nfs_share/app
           cp -r scripts/* /mnt/nfs_share/app/
           echo "✅ Scripts deployed successfully!"
