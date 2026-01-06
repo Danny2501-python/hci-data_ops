@@ -1,0 +1,25 @@
+name: Deploy DAGs to NFS
+on: [push]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+
+      - name: Deploy DAGs
+        run: |
+          echo "🚀 Deploying DAGs to NFS..."
+          # Copy all .py files from dags/ folder to NFS
+          # Lưu ý: Runner đã mount /mnt/nfs_share
+          mkdir -p /mnt/nfs_share/airflow/dags
+          cp -r dags/* /mnt/nfs_share/airflow/dags/
+          echo "✅ DAGs deployed successfully!"
+
+      - name: Deploy Scripts
+        run: |
+          echo "🚀 Deploying App Scripts..."
+          mkdir -p /mnt/nfs_share/app
+          cp -r scripts/* /mnt/nfs_share/app/
+          echo "✅ Scripts deployed successfully!"
