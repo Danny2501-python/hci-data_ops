@@ -324,11 +324,25 @@ class ERPDirectIngestion:
             # Try to load existing table
             try:
                 table = self.catalog.load_table(TABLE_NAME)
-                logger.info(f"Table {TABLE_NAME} exists, appending data")
+                
+                # Check if table has partitions (old version)
+                if not table.spec().is_unpartitioned():
+                    logger.warning(f"⚠️ Table {TABLE_NAME} has partitions (old schema)")
+                    logger.warning(f"PyIceberg cannot write to partitioned tables")
+                    logger.warning(f"Dropping table and recreating as unpartitioned...")
+                    self.catalog.drop_table(TABLE_NAME)
+                    table = None  # Force recreate below
+                else:
+                    logger.info(f"Table {TABLE_NAME} exists (unpartitioned), ready to write")
             except Exception as e:
                 # Table doesn't exist, create it
                 logger.warning(f"Table {TABLE_NAME} not found, creating new table")
-                logger.info(f"Error was: {str(e)}")
+                table = None
+            
+            
+            # Create table if needed
+            if table is None:
+                logger.info(f"Creating new unpartitioned table: {TABLE_NAME}")
                 
                 from pyiceberg.schema import Schema
                 from pyiceberg.types import (
@@ -391,7 +405,34 @@ class ERPDirectIngestion:
             # Convert Pandas DataFrame to PyArrow table
             import pyarrow as pa
             arrow_table = pa.Table.from_pandas(df)
-            logger.debug(f"Converted DataFrame to PyArrow table: {arrow_table.schema}")
+            logger.debug(f"Original PyArrow schema: {arrow_table.schema}")
+            
+            # Convert schema to match Iceberg table schema
+            # Iceberg uses int32 for integers, timestamp[us] for timestamps
+            target_schema = pa.schema([
+                ('pk_id', pa.int64()),  # Keep as int64 (LongType in Iceberg)
+                ('id', pa.int32()),  # Convert to int32
+                ('name', pa.string()),
+                ('create_uid', pa.int32()),  # Convert double to int32
+                ('create_date', pa.timestamp('us')),  # Convert ns to us
+                ('write_uid', pa.int32()),  # Convert double to int32
+                ('write_date', pa.timestamp('us')),  # Convert ns to us
+                ('type_log', pa.string()),
+                ('model_id', pa.int32()),  # Convert double to int32
+                ('id_record', pa.int32()),  # Convert int64 to int32
+                ('input', pa.string()),
+                ('response', pa.string()),
+                ('status_code', pa.int32()),  # Convert int64 to int32
+                ('url', pa.string()),
+                ('header', pa.string()),
+                ('brand_etl', pa.int32()),  # Convert int64 to int32
+                ('snapshot_date', pa.date32()),
+                ('ingestion_timestamp', pa.timestamp('us'))
+            ])
+            
+            # Cast to target schema
+            arrow_table = arrow_table.cast(target_schema)
+            logger.debug(f"Converted to Iceberg-compatible schema: {arrow_table.schema}")
             
             # Table is now unpartitioned, so we can use append()
             # For full load, we should clear the table first
