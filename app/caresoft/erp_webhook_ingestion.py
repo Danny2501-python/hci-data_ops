@@ -402,6 +402,16 @@ class ERPDirectIngestion:
             record_count = len(df)
             logger.info(f"Writing {record_count} records to Bronze layer")
             
+            # Reorder columns to match Iceberg table schema (pk_id must be first)
+            column_order = [
+                'pk_id', 'id', 'name', 'create_uid', 'create_date', 
+                'write_uid', 'write_date', 'type_log', 'model_id', 'id_record',
+                'input', 'response', 'status_code', 'url', 'header', 
+                'brand_etl', 'snapshot_date', 'ingestion_timestamp'
+            ]
+            df = df[column_order]
+            logger.debug(f"Reordered DataFrame columns: {df.columns.tolist()}")
+            
             # Convert Pandas DataFrame to PyArrow table
             import pyarrow as pa
             arrow_table = pa.Table.from_pandas(df)
@@ -410,22 +420,22 @@ class ERPDirectIngestion:
             # Convert schema to match Iceberg table schema
             # Iceberg uses int32 for integers, timestamp[us] for timestamps
             target_schema = pa.schema([
-                ('pk_id', pa.int64()),  # Keep as int64 (LongType in Iceberg)
-                ('id', pa.int32()),  # Convert to int32
+                ('pk_id', pa.int64()),
+                ('id', pa.int32()),
                 ('name', pa.string()),
-                ('create_uid', pa.int32()),  # Convert double to int32
-                ('create_date', pa.timestamp('us')),  # Convert ns to us
-                ('write_uid', pa.int32()),  # Convert double to int32
-                ('write_date', pa.timestamp('us')),  # Convert ns to us
+                ('create_uid', pa.int32()),
+                ('create_date', pa.timestamp('us')),
+                ('write_uid', pa.int32()),
+                ('write_date', pa.timestamp('us')),
                 ('type_log', pa.string()),
-                ('model_id', pa.int32()),  # Convert double to int32
-                ('id_record', pa.int32()),  # Convert int64 to int32
+                ('model_id', pa.int32()),
+                ('id_record', pa.int32()),
                 ('input', pa.string()),
                 ('response', pa.string()),
-                ('status_code', pa.int32()),  # Convert int64 to int32
+                ('status_code', pa.int32()),
                 ('url', pa.string()),
                 ('header', pa.string()),
-                ('brand_etl', pa.int32()),  # Convert int64 to int32
+                ('brand_etl', pa.int32()),
                 ('snapshot_date', pa.date32()),
                 ('ingestion_timestamp', pa.timestamp('us'))
             ])
