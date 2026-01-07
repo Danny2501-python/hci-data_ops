@@ -33,10 +33,11 @@ ERP_CONFIGS = {
         'uri': os.getenv('ERP_KN_URI'),
         'brand_etl': 1  # KN brand ID
     },
-    'pr': {
-        'uri': os.getenv('ERP_PR_URI'),
-        'brand_etl': 3  # PR brand ID
-    },
+    # TEMPORARILY DISABLED: Network connectivity issue from Kubernetes to 10.10.10.237
+    # 'pr': {
+    #     'uri': os.getenv('ERP_PR_URI'),
+    #     'brand_etl': 3  # PR brand ID
+    # },
     'hh': {
         'uri': os.getenv('ERP_HH_URI'),
         'brand_etl': 4  # HH brand ID
@@ -359,29 +360,30 @@ class ERPDirectIngestion:
                     NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
                 )
                 
-                # Define partitioning (snapshot_date, brand_etl)
-                partition_spec = PartitionSpec(
-                    PartitionField(
-                        source_id=17,  # snapshot_date
-                        field_id=1000,
-                        transform=IdentityTransform(),
-                        name="snapshot_date"
-                    ),
-                    PartitionField(
-                        source_id=16,  # brand_etl
-                        field_id=1001,
-                        transform=IdentityTransform(),
-                        name="brand_etl"
-                    )
-                )
+                # NOTE: PyIceberg doesn't support append/overwrite to partitioned tables
+                # Partitioning is commented out until we migrate to Spark for writes
+                # partition_spec = PartitionSpec(
+                #     PartitionField(
+                #         source_id=17,  # snapshot_date
+                #         field_id=1000,
+                #         transform=IdentityTransform(),
+                #         name="snapshot_date"
+                #     ),
+                #     PartitionField(
+                #         source_id=16,  # brand_etl
+                #         field_id=1001,
+                #         transform=IdentityTransform(),
+                #         name="brand_etl"
+                #     )
+                # )
                 
-                # Create table
+                # Create table WITHOUT partitioning
                 table = self.catalog.create_table(
                     identifier=TABLE_NAME,
                     schema=schema,
-                    partition_spec=partition_spec,
+                    # partition_spec=partition_spec,  # Commented out
                 )
-                logger.info(f"✅ Created new table: {TABLE_NAME}")
+                logger.info(f"✅ Created new table: {TABLE_NAME} (unpartitioned)")
             
             record_count = len(df)
             logger.info(f"Writing {record_count} records to Bronze layer")
@@ -391,19 +393,14 @@ class ERPDirectIngestion:
             arrow_table = pa.Table.from_pandas(df)
             logger.debug(f"Converted DataFrame to PyArrow table: {arrow_table.schema}")
             
-            # PyIceberg's append() doesn't support partitioned tables
-            # Use overwrite() with partition filtering for incremental mode
-            # For full load, we overwrite the entire table
-            if self.incremental:
-                # Incremental: overwrite only the current snapshot_date partition
-                from datetime import datetime
-                snapshot_date_str = self.snapshot_date.strftime('%Y-%m-%d')
-                logger.info(f"Incremental mode: overwriting partition snapshot_date={snapshot_date_str}")
-                table.overwrite(arrow_table, overwrite_filter=f"snapshot_date = '{snapshot_date_str}'")
-            else:
-                # Full load: overwrite entire table
-                logger.info("Full load mode: overwriting entire table")
+            # Table is now unpartitioned, so we can use append()
+            # For full load, we should clear the table first
+            if not self.incremental:
+                logger.info("Full load mode: using overwrite() to replace all data")
                 table.overwrite(arrow_table)
+            else:
+                logger.info("Incremental mode: using append()")
+                table.append(arrow_table)
             
             logger.info(f"✅ Successfully wrote {record_count} records to Bronze layer")
             
