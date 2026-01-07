@@ -95,8 +95,16 @@ class ERPDirectIngestion:
             return None
         
         try:
-            # Create engine directly from URI
-            engine = create_engine(config['uri'])
+            # Get URI and fix for SQLAlchemy 2.x compatibility
+            uri = config['uri']
+            
+            # SQLAlchemy 2.x requires 'postgresql://' instead of 'postgres://'
+            if uri and uri.startswith('postgres://'):
+                uri = uri.replace('postgres://', 'postgresql://', 1)
+                logger.debug(f"Fixed URI for SQLAlchemy 2.x: postgres:// → postgresql://")
+            
+            # Create engine from URI
+            engine = create_engine(uri)
             logger.info(f"Created connection to ERP {erp_name.upper()}")
             return engine
             
