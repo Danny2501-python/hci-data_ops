@@ -386,8 +386,13 @@ class ERPDirectIngestion:
             record_count = len(df)
             logger.info(f"Writing {record_count} records to Bronze layer")
             
-            # Append data to Iceberg table
-            table.append(df)
+            # Convert Pandas DataFrame to PyArrow table
+            import pyarrow as pa
+            arrow_table = pa.Table.from_pandas(df)
+            logger.debug(f"Converted DataFrame to PyArrow table: {arrow_table.schema}")
+            
+            # Append PyArrow table to Iceberg
+            table.append(arrow_table)
             
             logger.info(f"✅ Successfully wrote {record_count} records to Bronze layer")
             
