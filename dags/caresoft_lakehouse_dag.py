@@ -95,10 +95,10 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
 }
 
-# Common resource requirements
+# Common# Resource requirements for pods
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '1Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
+    requests={'cpu': '500m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '8Gi'}
 )
 
 
@@ -134,6 +134,12 @@ for erp_name, conn_id in erp_connections_config.items():
         
         # Get complete connection URI (postgresql://user:password@host:port/database)
         uri = conn.get_uri()
+        
+        # Clean URI: Remove __extra__ parameter that causes psycopg2 errors
+        if '?__extra__=' in uri:
+            uri = uri.split('?__extra__=')[0]
+            logger.info(f"Cleaned __extra__ parameter from {erp_name} URI")
+        
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = uri
         
         logger.info(f"✅ Loaded connection URI for ERP {erp_name}")
