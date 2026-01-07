@@ -391,8 +391,19 @@ class ERPDirectIngestion:
             arrow_table = pa.Table.from_pandas(df)
             logger.debug(f"Converted DataFrame to PyArrow table: {arrow_table.schema}")
             
-            # Append PyArrow table to Iceberg
-            table.append(arrow_table)
+            # PyIceberg's append() doesn't support partitioned tables
+            # Use overwrite() with partition filtering for incremental mode
+            # For full load, we overwrite the entire table
+            if self.incremental:
+                # Incremental: overwrite only the current snapshot_date partition
+                from datetime import datetime
+                snapshot_date_str = self.snapshot_date.strftime('%Y-%m-%d')
+                logger.info(f"Incremental mode: overwriting partition snapshot_date={snapshot_date_str}")
+                table.overwrite(arrow_table, overwrite_filter=f"snapshot_date = '{snapshot_date_str}'")
+            else:
+                # Full load: overwrite entire table
+                logger.info("Full load mode: overwriting entire table")
+                table.overwrite(arrow_table)
             
             logger.info(f"✅ Successfully wrote {record_count} records to Bronze layer")
             
