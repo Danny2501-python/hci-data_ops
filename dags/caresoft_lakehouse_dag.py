@@ -111,7 +111,6 @@ for erp_name, conn_id in erp_connections_config.items():
         # Set empty default if connection not found
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = ''
 
-
 task_erp_webhook_ingestion = KubernetesPodOperator(
     task_id='erp_direct_ingestion',
     name='caresoft-erp-direct-ingestion',
@@ -119,7 +118,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/erp_webhook_ingestion.py', '{{ ds }}'],  # Always full load (drop partition + append)
+    arguments=['/app/caresoft/erp_webhook_ingestion.py', '{{ ds }}'],
     
     # Mount NFS for scripts
     volumes=[nfs_volume],
@@ -141,3 +140,37 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     get_logs=True,
     dag=dag,
 )
+
+task_webhook_transformation_silver = KubernetesPodOperator(
+    task_id='webhook_transformation_silver',
+    name='caresoft-webhook-transformation-silver',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/webhook_transformation_silver.py', '{{ ds }}'],
+    
+    # Mount NFS for scripts
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_volume_mount],
+    
+    # Environment variables
+    env_vars={
+        **common_env_vars,
+        # Transformation configs
+        'BRONZE_TABLE': 'caresoft.wehook_api_caresoft',
+        'SILVER_TABLE_DEAL': 'caresoft.cs_deal_wehook',
+        'SILVER_TABLE_DEAL_ERROR': 'caresoft.cs_deal_wehook_error',
+    },
+    
+    # Resource limits
+    container_resources=resource_requirements,
+    
+    # Pod settings
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# Define Dependency
+task_erp_webhook_ingestion >> task_webhook_transformation_silver
