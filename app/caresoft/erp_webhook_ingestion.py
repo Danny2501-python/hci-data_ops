@@ -324,24 +324,17 @@ class ERPDirectIngestion:
             try:
                 table = self.catalog.load_table(TABLE_NAME)
                 
-                # Check if table has partitions (old version)
-                if not table.spec().is_unpartitioned():
-                    logger.warning(f"⚠️ Table {TABLE_NAME} has partitions (old schema)")
-                    logger.warning(f"PyIceberg cannot write to partitioned tables")
-                    logger.warning(f"Dropping table and recreating as unpartitioned...")
-                    self.catalog.drop_table(TABLE_NAME)
-                    table = None  # Force recreate below
-                else:
-                    logger.info(f"Table {TABLE_NAME} exists (unpartitioned), ready to write")
+                # Table exists, ready to write
+                logger.info(f"Table {TABLE_NAME} exists, ready to write")
+                logger.info(f"Partition spec: {table.spec()}")
             except Exception as e:
                 # Table doesn't exist, create it
                 logger.warning(f"Table {TABLE_NAME} not found, creating new table")
                 table = None
             
-            
             # Create table if needed
             if table is None:
-                logger.info(f"Creating new unpartitioned table: {TABLE_NAME}")
+                logger.info(f"Creating new partitioned table: {TABLE_NAME}")
                 
                 from pyiceberg.schema import Schema
                 from pyiceberg.types import (
@@ -373,30 +366,25 @@ class ERPDirectIngestion:
                     NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
                 )
                 
-                # NOTE: PyIceberg doesn't support append/overwrite to partitioned tables
-                # Partitioning is commented out until we migrate to Spark for writes
-                # partition_spec = PartitionSpec(
-                #     PartitionField(
-                #         source_id=17,  # snapshot_date
-                #         field_id=1000,
-                #         transform=IdentityTransform(),
-                #         name="snapshot_date"
-                #     ),
-                #     PartitionField(
-                #         source_id=16,  # brand_etl
-                #         field_id=1001,
-                #         transform=IdentityTransform(),
-                #         name="brand_etl"
-                #     )
-                # )
+                # Partition by snapshot_date for better query performance
+                # PyIceberg supports append/overwrite to partitioned tables
+                partition_spec = PartitionSpec(
+                    PartitionField(
+                        source_id=17,  # snapshot_date field
+                        field_id=1000,
+                        transform=IdentityTransform(),
+                        name="snapshot_date"
+                    )
+                )
                 
-                # Create table WITHOUT partitioning
+                # Create table WITH partitioning
                 table = self.catalog.create_table(
                     identifier=TABLE_NAME,
                     schema=schema,
-                    # partition_spec=partition_spec,  # Commented out
+                    partition_spec=partition_spec,
                 )
-                logger.info(f"✅ Created new table: {TABLE_NAME} (unpartitioned)")
+                logger.info(f"✅ Created new table: {TABLE_NAME} (partitioned by snapshot_date)")
+
             
             record_count = len(df)
             logger.info(f"Writing {record_count} records to Bronze layer")
@@ -416,7 +404,7 @@ class ERPDirectIngestion:
             arrow_table = pa.Table.from_pandas(df)
             logger.debug(f"Original PyArrow schema: {arrow_table.schema}")
             
-            # Convert schema to match Iceberg table schema
+            # Convert Pandas DataFrame schema to match Iceberg table schema
             # Iceberg uses int32 for integers, timestamp[us] for timestamps
             target_schema = pa.schema([
                 ('pk_id', pa.int64()),
@@ -443,8 +431,8 @@ class ERPDirectIngestion:
             arrow_table = arrow_table.cast(target_schema)
             logger.debug(f"Converted to Iceberg-compatible schema: {arrow_table.schema}")
             
-            # Table is now unpartitioned, so we can use append()
-            # For full load, we should clear the table first
+            # PyIceberg automatically routes data to correct partitions
+            # based on partition spec (snapshot_date in this case)
             if not self.incremental:
                 logger.info("Full load mode: using overwrite() to replace all data")
                 table.overwrite(arrow_table)
