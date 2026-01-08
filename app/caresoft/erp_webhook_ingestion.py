@@ -16,7 +16,7 @@ import hashlib
 # Iceberg configuration
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_BRONZE')
 CATALOG_NAME = os.getenv('CATALOG_NAME_BRONZE')
-TABLE_NAME = os.getenv('BRONZE_TABLE', 'caresoft.wehook_api_caresoft')
+TABLE_NAME = os.getenv('BRONZE_TABLE')
 
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
