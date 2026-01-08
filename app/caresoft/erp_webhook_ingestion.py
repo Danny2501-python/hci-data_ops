@@ -88,6 +88,65 @@ class ERPDirectIngestion:
         pk_id = int(hash_object.hexdigest()[:15], 16)
         return pk_id
     
+    def ensure_table_exists(self):
+        """Create table if it doesn't exist"""
+        try:
+            table = self.catalog.load_table(TABLE_NAME)
+            logger.info(f"Table {TABLE_NAME} exists")
+            return table
+        except:
+            logger.info(f"Table {TABLE_NAME} not found, creating new table")
+            
+            from pyiceberg.schema import Schema
+            from pyiceberg.types import (
+                NestedField, LongType, IntegerType, StringType,
+                TimestampType, DateType
+            )
+            from pyiceberg.partitioning import PartitionSpec, PartitionField
+            from pyiceberg.transforms import IdentityTransform
+            
+            # Define schema
+            schema = Schema(
+                NestedField(1, "pk_id", LongType(), required=False),
+                NestedField(2, "id", IntegerType(), required=False),
+                NestedField(3, "name", StringType(), required=False),
+                NestedField(4, "create_uid", IntegerType(), required=False),
+                NestedField(5, "create_date", TimestampType(), required=False),
+                NestedField(6, "write_uid", IntegerType(), required=False),
+                NestedField(7, "write_date", TimestampType(), required=False),
+                NestedField(8, "type_log", StringType(), required=False),
+                NestedField(9, "model_id", IntegerType(), required=False),
+                NestedField(10, "id_record", IntegerType(), required=False),
+                NestedField(11, "input", StringType(), required=False),
+                NestedField(12, "response", StringType(), required=False),
+                NestedField(13, "status_code", IntegerType(), required=False),
+                NestedField(14, "url", StringType(), required=False),
+                NestedField(15, "header", StringType(), required=False),
+                NestedField(16, "brand_etl", IntegerType(), required=False),
+                NestedField(17, "snapshot_date", DateType(), required=False),
+                NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
+            )
+            
+            # Partition by snapshot_date
+            partition_spec = PartitionSpec(
+                PartitionField(
+                    source_id=17,
+                    field_id=1000,
+                    transform=IdentityTransform(),
+                    name="snapshot_date"
+                )
+            )
+            
+            # Create table
+            table = self.catalog.create_table(
+                identifier=TABLE_NAME,
+                schema=schema,
+                partition_spec=partition_spec,
+            )
+            logger.info(f"✅ Created new table: {TABLE_NAME} (partitioned by snapshot_date)")
+            
+            return table
+    
     def stream_and_ingest(self, erp_name: str, engine, table) -> int:
         """
         Stream data from SQL -> PyArrow -> Iceberg (Bypassing Pandas)
