@@ -204,19 +204,10 @@ class ERPDirectIngestion:
             
             return table
     
-    def drop_partition_if_exists(self, table):
-        """Drop partition for current snapshot_date if it exists"""
-        try:
-            logger.info(f"Attempting to drop partition snapshot_date={self.snapshot_date}")
-            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
-            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date}")
-        except Exception as e:
-            logger.info(f"Partition does not exist or already empty: {e}")
-    
-    def write_to_bronze(self, df: pd.DataFrame) -> None:
+    def write_to_bronze(self, df: pd.DataFrame, table) -> None:
         """
         Write DataFrame to Bronze Iceberg table
-        Strategy: Drop partition if exists, then append new data
+        Note: Partition should already be dropped before calling this method
         """
         if df.empty:
             logger.warning("No data to write")
@@ -225,11 +216,6 @@ class ERPDirectIngestion:
         logger.info(f"Writing to Bronze table: {TABLE_NAME}")
         
         try:
-            # Ensure table exists
-            table = self.ensure_table_exists()
-            
-            # Drop partition if exists (idempotent operation)
-            self.drop_partition_if_exists(table)
             
             record_count = len(df)
             logger.info(f"Writing {record_count} records to partition snapshot_date={self.snapshot_date}")
@@ -315,6 +301,21 @@ class ERPDirectIngestion:
         stats = {}
         total_records = 0
         
+        # CRITICAL: Ensure table exists and drop partition ONCE before processing all ERPs
+        logger.info(f"\n{'='*60}")
+        logger.info("Preparing Bronze table")
+        logger.info(f"{'='*60}")
+        
+        table = self.ensure_table_exists()
+        
+        # Drop partition ONCE for all ERPs
+        try:
+            logger.info(f"Dropping partition snapshot_date={self.snapshot_date} (if exists)")
+            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
+            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date}")
+        except Exception as e:
+            logger.info(f"Partition does not exist or already empty: {e}")
+        
         # Process each ERP system SEQUENTIALLY
         for erp_name in ['sci', 'kn', 'pr', 'hh']:
             try:
@@ -340,8 +341,8 @@ class ERPDirectIngestion:
                 # Add metadata and PK
                 df_bronze = self.add_metadata_and_pk(df_erp)
                 
-                # Write to Bronze IMMEDIATELY
-                self.write_to_bronze(df_bronze)
+                # Write to Bronze IMMEDIATELY (partition already dropped)
+                self.write_to_bronze(df_bronze, table)
                 
                 record_count = len(df_bronze)
                 total_records += record_count
