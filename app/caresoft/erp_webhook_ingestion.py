@@ -41,7 +41,10 @@ class ERPDirectIngestion:
         Args:
             snapshot_date: Date for snapshot (default: today)
         """
-        self.snapshot_date = snapshot_date or date.today()
+        # HARDCODED FOR TESTING: Always use 2026-01-09
+        self.snapshot_date = date(2026, 1, 9)
+        logger.warning(f"⚠️  HARDCODED snapshot_date for testing: {self.snapshot_date}")
+        
         self.source_table = "api_log"
         
         logger.info(f"Initialized ERPDirectIngestion for snapshot_date: {self.snapshot_date}")
