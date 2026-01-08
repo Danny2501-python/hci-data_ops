@@ -88,253 +88,175 @@ class ERPDirectIngestion:
         pk_id = int(hash_object.hexdigest()[:15], 16)
         return pk_id
     
-    def read_from_erp(self, erp_name: str, engine) -> pd.DataFrame:
-        """Read ALL data from ERP api_log table (full load)"""
+    def stream_and_ingest(self, erp_name: str, engine, table) -> int:
+        """
+        Stream data from SQL -> PyArrow -> Iceberg (Bypassing Pandas)
+        Memory efficient processing for large datasets.
+        """
+        import pyarrow as pa
+        import gc
+        from sqlalchemy import text
+        
         brand_etl = ERP_CONFIGS[erp_name]['brand_etl']
+        total_ingested = 0
+        BATCH_SIZE = 25000  # Increased batch size slightly due to better memory efficiency
         
-        logger.info(f"Reading ALL records from ERP {erp_name.upper()} api_log table (brand_etl={brand_etl})")
+        logger.info(f"Starting STREAM ingestion for ERP {erp_name.upper()} (brand_etl={brand_etl})")
         
-        # Full load query - get all records
-        query = f"""
+        # 1. Define SQL Query
+        query = text(f"""
             SELECT 
                 id, name, create_uid, create_date, write_uid, write_date,
                 type_log, model_id, id_record, input, response, 
                 status_code, url, header
             FROM {self.source_table}
             ORDER BY write_date ASC
-        """
+        """)
+        
+        # 2. Define PyArrow Schema (Explicit types)
+        target_schema = pa.schema([
+            ('pk_id', pa.int64()),
+            ('id', pa.int32()),
+            ('name', pa.string()),
+            ('create_uid', pa.int32()),
+            ('create_date', pa.timestamp('us')),
+            ('write_uid', pa.int32()),
+            ('write_date', pa.timestamp('us')),
+            ('type_log', pa.string()),
+            ('model_id', pa.int32()),
+            ('id_record', pa.int32()),
+            ('input', pa.string()),
+            ('response', pa.string()),
+            ('status_code', pa.int32()),
+            ('url', pa.string()),
+            ('header', pa.string()),
+            ('brand_etl', pa.int32()),
+            ('snapshot_date', pa.date32()),
+            ('ingestion_timestamp', pa.timestamp('us'))
+        ])
         
         try:
-            df = pd.read_sql(query, engine)
-            df['brand_etl'] = brand_etl
-            
-            record_count = len(df)
-            logger.info(f"Successfully read {record_count} records from ERP {erp_name.upper()}")
-            
-            return df
-            
+            # 3. Connect and Stream
+            with engine.connect().execution_options(stream_results=True) as conn:
+                result = conn.execute(query)
+                
+                while True:
+                    # Fetch batch of raw tuples
+                    rows = result.fetchmany(BATCH_SIZE)
+                    if not rows:
+                        break
+                        
+                    batch_size = len(rows)
+                    logger.info(f"Processing batch of {batch_size} records...")
+                    
+                    # 4. Prepare Column Arrays (Data Oriented Design)
+                    # Unzip rows into columns for vectorization (faster than row processing)
+                    # rows is list of tuples: [(id, name, ...), (id, name, ...)]
+                    # zip(*rows) becomes: [(id, id...), (name, name...), ...]
+                    columns = list(zip(*rows))
+                    
+                    if not columns:
+                        continue
+
+                    # Mapping SQL columns to variables based on query order
+                    # id(0), name(1), create_uid(2), create_date(3), write_uid(4), write_date(5)...
+                    ids = columns[0]
+                    create_dates = columns[3]
+                    write_dates = columns[5]
+                    
+                    # 5. Generate PKs (Python Optimization)
+                    # Still need python loop but on simple primitives, faster than Pandas Series apply
+                    pk_ids = []
+                    for i in range(batch_size):
+                        # Safe string conversion handling None
+                        c_date = str(create_dates[i]) if create_dates[i] else ''
+                        w_date = str(write_dates[i]) if write_dates[i] else ''
+                        
+                        key_string = f"{ids[i]}_{brand_etl}_{c_date}_{w_date}"
+                        # MD5 hash
+                        hash_obj = hashlib.md5(key_string.encode())
+                        # Hex to Int (15 chars)
+                        pk_ids.append(int(hash_obj.hexdigest()[:15], 16))
+                    
+                    # 6. Build PyArrow Arrays
+                    # Constant arrays
+                    brand_etl_arr = pa.array([brand_etl] * batch_size, type=pa.int32())
+                    snapshot_date_arr = pa.array([self.snapshot_date] * batch_size, type=pa.date32())
+                    ingest_time_arr = pa.array([datetime.now()] * batch_size, type=pa.timestamp('us'))
+                    
+                    # Construct Table directly from Arrays
+                    # Be careful to match target_schema order EXACTLY
+                    batch_table = pa.Table.from_arrays([
+                        pa.array(pk_ids, type=pa.int64()),                      # pk_id
+                        pa.array(columns[0], type=pa.int32()),                  # id
+                        pa.array(columns[1], type=pa.string()),                 # name
+                        pa.array(columns[2], type=pa.int32()),                  # create_uid
+                        pa.array(columns[3], type=pa.timestamp('us')),          # create_date
+                        pa.array(columns[4], type=pa.int32()),                  # write_uid
+                        pa.array(columns[5], type=pa.timestamp('us')),          # write_date
+                        pa.array(columns[6], type=pa.string()),                 # type_log
+                        pa.array(columns[7], type=pa.int32()),                  # model_id
+                        pa.array(columns[8], type=pa.int32()),                  # id_record
+                        pa.array(columns[9], type=pa.string()),                 # input
+                        pa.array(columns[10], type=pa.string()),                # response
+                        pa.array(columns[11], type=pa.int32()),                 # status_code
+                        pa.array(columns[12], type=pa.string()),                # url
+                        pa.array(columns[13], type=pa.string()),                # header
+                        brand_etl_arr,                                          # brand_etl
+                        snapshot_date_arr,                                      # snapshot_date
+                        ingest_time_arr                                         # ingestion_timestamp
+                    ], schema=target_schema)
+                    
+                    # 7. Append to Iceberg
+                    table.append(batch_table)
+                    
+                    total_ingested += batch_size
+                    logger.info(f"✅ Appended {batch_size} records. Total: {total_ingested}")
+                    
+                    # Cleanup
+                    del rows
+                    del columns
+                    del batch_table
+                    del pk_ids
+                    gc.collect()
+
+            return total_ingested
+
         except Exception as e:
-            logger.error(f"Failed to read from ERP {erp_name.upper()}: {str(e)}")
+            logger.error(f"Stream ingestion failed for {erp_name}: {e}")
             raise
-    
-    def add_metadata_and_pk(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add PK_ID and metadata columns (optimized for memory)"""
-        if df.empty:
-            return df
-        
-        logger.info("Adding PK_ID and metadata columns")
-        
-        # Generate PK_ID in-place
-        df['pk_id'] = df.apply(self.generate_pk_id, axis=1)
-        
-        # Add metadata in-place
-        df['snapshot_date'] = self.snapshot_date
-        df['ingestion_timestamp'] = datetime.now()
-        
-        # Convert types in-place
-        df['snapshot_date'] = pd.to_datetime(df['snapshot_date']).dt.date
-        df['ingestion_timestamp'] = pd.to_datetime(df['ingestion_timestamp'])
-        
-        # Convert timestamp columns if they exist
-        if 'create_date' in df.columns:
-            df['create_date'] = pd.to_datetime(df['create_date'], errors='coerce')
-        if 'write_date' in df.columns:
-            df['write_date'] = pd.to_datetime(df['write_date'], errors='coerce')
-        
-        logger.info(f"Generated PK_IDs for {len(df)} records")
-        
-        return df
-    
-    def ensure_table_exists(self):
-        """Create table if it doesn't exist"""
-        try:
-            table = self.catalog.load_table(TABLE_NAME)
-            logger.info(f"Table {TABLE_NAME} exists")
-            return table
-        except:
-            logger.info(f"Table {TABLE_NAME} not found, creating new table")
-            
-            from pyiceberg.schema import Schema
-            from pyiceberg.types import (
-                NestedField, LongType, IntegerType, StringType,
-                TimestampType, DateType
-            )
-            from pyiceberg.partitioning import PartitionSpec, PartitionField
-            from pyiceberg.transforms import IdentityTransform
-            
-            # Define schema
-            schema = Schema(
-                NestedField(1, "pk_id", LongType(), required=False),
-                NestedField(2, "id", IntegerType(), required=False),
-                NestedField(3, "name", StringType(), required=False),
-                NestedField(4, "create_uid", IntegerType(), required=False),
-                NestedField(5, "create_date", TimestampType(), required=False),
-                NestedField(6, "write_uid", IntegerType(), required=False),
-                NestedField(7, "write_date", TimestampType(), required=False),
-                NestedField(8, "type_log", StringType(), required=False),
-                NestedField(9, "model_id", IntegerType(), required=False),
-                NestedField(10, "id_record", IntegerType(), required=False),
-                NestedField(11, "input", StringType(), required=False),
-                NestedField(12, "response", StringType(), required=False),
-                NestedField(13, "status_code", IntegerType(), required=False),
-                NestedField(14, "url", StringType(), required=False),
-                NestedField(15, "header", StringType(), required=False),
-                NestedField(16, "brand_etl", IntegerType(), required=False),
-                NestedField(17, "snapshot_date", DateType(), required=False),
-                NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
-            )
-            
-            # Partition by snapshot_date
-            partition_spec = PartitionSpec(
-                PartitionField(
-                    source_id=17,
-                    field_id=1000,
-                    transform=IdentityTransform(),
-                    name="snapshot_date"
-                )
-            )
-            
-            # Create table
-            table = self.catalog.create_table(
-                identifier=TABLE_NAME,
-                schema=schema,
-                partition_spec=partition_spec,
-            )
-            logger.info(f"✅ Created new table: {TABLE_NAME} (partitioned by snapshot_date)")
-            
-            return table
-    
-    def write_to_bronze(self, df: pd.DataFrame, table) -> None:
-        """
-        Write DataFrame to Bronze Iceberg table
-        Note: Partition should already be dropped before calling this method
-        """
-        if df.empty:
-            logger.warning("No data to write")
-            return
-        
-        logger.info(f"Writing to Bronze table: {TABLE_NAME}")
-        
-        try:
-            
-            record_count = len(df)
-            logger.info(f"Writing {record_count} records to partition snapshot_date={self.snapshot_date}")
-            
-            # Reorder columns to match schema
-            column_order = [
-                'pk_id', 'id', 'name', 'create_uid', 'create_date', 
-                'write_uid', 'write_date', 'type_log', 'model_id', 'id_record',
-                'input', 'response', 'status_code', 'url', 'header', 
-                'brand_etl', 'snapshot_date', 'ingestion_timestamp'
-            ]
-            df = df[column_order]
-            
-            # Batch writing to reduce memory footprint
-            # Reduced from 50k to 20k to prevent OOMKilled errors
-            BATCH_SIZE = 20000
-            total_batches = (record_count + BATCH_SIZE - 1) // BATCH_SIZE
-            
-            import pyarrow as pa
-            
-            # Define target schema
-            target_schema = pa.schema([
-                ('pk_id', pa.int64()),
-                ('id', pa.int32()),
-                ('name', pa.string()),
-                ('create_uid', pa.int32()),
-                ('create_date', pa.timestamp('us')),
-                ('write_uid', pa.int32()),
-                ('write_date', pa.timestamp('us')),
-                ('type_log', pa.string()),
-                ('model_id', pa.int32()),
-                ('id_record', pa.int32()),
-                ('input', pa.string()),
-                ('response', pa.string()),
-                ('status_code', pa.int32()),
-                ('url', pa.string()),
-                ('header', pa.string()),
-                ('brand_etl', pa.int32()),
-                ('snapshot_date', pa.date32()),
-                ('ingestion_timestamp', pa.timestamp('us'))
-            ])
-            
-            logger.info(f"Processing {total_batches} batches of up to {BATCH_SIZE} records each")
-            
-            import gc
-            
-            for batch_idx in range(total_batches):
-                start_idx = batch_idx * BATCH_SIZE
-                end_idx = min(start_idx + BATCH_SIZE, record_count)
-                batch_df = df.iloc[start_idx:end_idx]
-                batch_size = len(batch_df)
-                
-                logger.info(f"Batch {batch_idx + 1}/{total_batches}: Processing {batch_size} records ({start_idx} to {end_idx})")
-                
-                # Convert batch to PyArrow
-                arrow_table = pa.Table.from_pandas(batch_df)
-                arrow_table = arrow_table.cast(target_schema)
-                
-                # Append batch
-                table.append(arrow_table)
-                
-                logger.info(f"✅ Batch {batch_idx + 1}/{total_batches}: Wrote {batch_size} records")
-                
-                # CRITICAL: Free memory immediately after each batch
-                del batch_df
-                del arrow_table
-                gc.collect()
-            
-            logger.info(f"✅ Successfully wrote all {record_count} records to Bronze layer in {total_batches} batches")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to write to Bronze table: {str(e)}")
-            raise
-    
+
     def run(self) -> dict:
         """
         Execute full ERP direct ingestion pipeline for all ERPs
-        
-        Returns:
-            Dictionary with ingestion stats per ERP
         """
         logger.info("=" * 80)
-        logger.info(f"Starting ERP Direct Ingestion for {self.snapshot_date}")
+        logger.info(f"Starting ERP Direct Ingestion (Streaming Mode) for {self.snapshot_date}")
         logger.info("=" * 80)
         
         start_time = datetime.now()
         stats = {}
         total_records = 0
         
-        # CRITICAL: Ensure table exists and drop partition ONCE before processing all ERPs
-        logger.info(f"\n{'='*60}")
-        logger.info("Preparing Bronze table")
-        logger.info(f"{'='*60}")
-        
+        # Ensure table exists
         table = self.ensure_table_exists()
         
-        # Drop partition ONCE for all ERPs
+        # Drop partition ONCE
         try:
             from pyiceberg.expressions import EqualTo
             import gc
-            
-            # Delete partition directly without pre-scan (saves memory)
             logger.info(f"Deleting partition snapshot_date={self.snapshot_date}...")
             table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
             logger.success(f"✅ Deleted partition snapshot_date={self.snapshot_date}")
-            
-            # Force garbage collection
             gc.collect()
-                
         except Exception as e:
             logger.warning(f"Could not delete partition: {e}")
-            logger.warning(f"Error details: {type(e).__name__}: {str(e)}")
         
         # Process each ERP system SEQUENTIALLY
         for erp_name in ['sci', 'kn', 'pr', 'hh']:
             try:
                 logger.info(f"\n{'='*60}")
                 logger.info(f"Processing ERP: {erp_name.upper()}")
-                logger.info(f"{'='*60}")
                 
                 # Create connection
                 engine = self.create_erp_connection(erp_name)
@@ -343,43 +265,21 @@ class ERPDirectIngestion:
                     stats[erp_name] = {'status': 'skipped', 'records': 0}
                     continue
                 
-                # Read from ERP (full load)
-                df_erp = self.read_from_erp(erp_name, engine)
+                # STREAM Data -> PyArrow -> Iceberg
+                record_count = self.stream_and_ingest(erp_name, engine, table)
                 
-                if df_erp.empty:
-                    logger.info(f"No data from ERP {erp_name.upper()}")
-                    stats[erp_name] = {'status': 'success', 'records': 0}
-                    continue
-                
-                # Add metadata and PK
-                df_bronze = self.add_metadata_and_pk(df_erp)
-                
-                # Write to Bronze IMMEDIATELY (partition already dropped)
-                self.write_to_bronze(df_bronze, table)
-                
-                record_count = len(df_bronze)
                 total_records += record_count
+                stats[erp_name] = {'status': 'success', 'records': record_count}
                 
-                stats[erp_name] = {
-                    'status': 'success',
-                    'records': record_count
-                }
-                
-                logger.info(f"✅ ERP {erp_name.upper()}: {record_count} records written to Bronze")
-                
-                # Close connection and free memory AGGRESSIVELY
+                # Close connection
                 engine.dispose()
-                del df_erp
-                del df_bronze
-                
-                # Force garbage collection after each ERP
-                import gc
                 gc.collect()
                 
             except Exception as e:
                 logger.error(f"❌ Failed to process ERP {erp_name.upper()}: {str(e)}")
                 stats[erp_name] = {'status': 'failed', 'records': 0, 'error': str(e)}
         
+        # Warning if no data
         if total_records == 0:
             logger.warning("No data from any ERP system")
         
@@ -387,14 +287,7 @@ class ERPDirectIngestion:
         duration = (datetime.now() - start_time).total_seconds()
         
         logger.info("=" * 80)
-        logger.info(f"ERP Direct Ingestion completed")
-        logger.info(f"Total records ingested: {total_records}")
-        logger.info(f"Duration: {duration:.2f} seconds")
-        logger.info(f"\nStats by ERP:")
-        for erp, stat in stats.items():
-            logger.info(f"  {erp.upper()}: {stat}")
-        logger.info("=" * 80)
-        
+        logger.info(f"Ingestion completed. Total: {total_records} records. Duration: {duration:.2f}s")
         return stats
 
 
