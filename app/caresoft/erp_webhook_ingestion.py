@@ -1,7 +1,7 @@
 """
 ERP Direct Ingestion: ERP api_log → Iceberg Bronze
 Read directly from 4 ERP systems (SCI, KN, HH, PR) and ingest to Iceberg
-Connections are passed from Airflow DAG as environment variables
+Simplified version: Always full load, drop partition if exists, then append
 """
 
 import os
@@ -12,61 +12,41 @@ from pyiceberg.catalog import load_catalog
 from sqlalchemy import create_engine
 from loguru import logger
 import hashlib
-import json
 
-# Iceberg configuration - Read from common_env_vars
+# Iceberg configuration
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_BRONZE')
 CATALOG_NAME = os.getenv('CATALOG_NAME_BRONZE')
-TABLE_NAME = os.getenv('BRONZE_TABLE', 'caresoft.wehook_api_caresoft')  # Match PostgreSQL naming
+TABLE_NAME = os.getenv('BRONZE_TABLE', 'caresoft.wehook_api_caresoft')
 
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 
-# ERP connection configs (passed from Airflow as URIs)
+# ERP connection configs
 ERP_CONFIGS = {
-    'sci': {
-        'uri': os.getenv('ERP_SCI_URI'),
-        'brand_etl': 7  # SCI brand ID
-    },
-    'kn': {
-        'uri': os.getenv('ERP_KN_URI'),
-        'brand_etl': 1  # KN brand ID
-    },
-    'pr': {
-        'uri': os.getenv('ERP_PR_URI'),
-        'brand_etl': 3  # PR brand ID
-    },
-    'hh': {
-        'uri': os.getenv('ERP_HH_URI'),
-        'brand_etl': 4  # HH brand ID
-    }
+    'sci': {'uri': os.getenv('ERP_SCI_URI'), 'brand_etl': 7},
+    'kn':  {'uri': os.getenv('ERP_KN_URI'),  'brand_etl': 1},
+    'pr':  {'uri': os.getenv('ERP_PR_URI'),  'brand_etl': 3},
+    'hh':  {'uri': os.getenv('ERP_HH_URI'),  'brand_etl': 4}
 }
 
 
 class ERPDirectIngestion:
     """Ingest data directly from ERP api_log tables to Bronze Iceberg layer"""
     
-    def __init__(self, snapshot_date: date = None, incremental: bool = True):
+    def __init__(self, snapshot_date: date = None):
         """
         Initialize ERP Direct Ingestion
         
         Args:
             snapshot_date: Date for snapshot (default: today)
-            incremental: If True, only load new/updated records since last run
         """
         self.snapshot_date = snapshot_date or date.today()
-        self.incremental = incremental
         self.source_table = "api_log"
         
         logger.info(f"Initialized ERPDirectIngestion for snapshot_date: {self.snapshot_date}")
-        logger.info(f"Incremental mode: {self.incremental}")
         
         # Initialize Iceberg catalog
-        self._init_iceberg_catalog()
-    
-    def _init_iceberg_catalog(self):
-        """Initialize Iceberg catalog"""
         self.catalog = load_catalog(
             CATALOG_NAME,
             **{
@@ -79,15 +59,7 @@ class ERPDirectIngestion:
         logger.info(f"Iceberg catalog '{CATALOG_NAME}' initialized")
     
     def create_erp_connection(self, erp_name: str):
-        """
-        Create SQLAlchemy engine for ERP connection
-        
-        Args:
-            erp_name: Name of ERP system (sci, kn, pr, hh)
-        
-        Returns:
-            SQLAlchemy engine
-        """
+        """Create SQLAlchemy engine for ERP connection"""
         config = ERP_CONFIGS.get(erp_name)
         
         if not config or not config.get('uri'):
@@ -95,15 +67,12 @@ class ERPDirectIngestion:
             return None
         
         try:
-            # Get URI and fix for SQLAlchemy 2.x compatibility
             uri = config['uri']
             
             # SQLAlchemy 2.x requires 'postgresql://' instead of 'postgres://'
             if uri and uri.startswith('postgres://'):
                 uri = uri.replace('postgres://', 'postgresql://', 1)
-                logger.debug(f"Fixed URI for SQLAlchemy 2.x: postgres:// → postgresql://")
             
-            # Create engine from URI
             engine = create_engine(uri)
             logger.info(f"Created connection to ERP {erp_name.upper()}")
             return engine
@@ -113,151 +82,30 @@ class ERPDirectIngestion:
             return None
     
     def generate_pk_id(self, row):
-        """
-        Generate unique PK_ID from row data
-        Uses hash of key fields to ensure uniqueness
-        
-        Args:
-            row: DataFrame row
-        
-        Returns:
-            Integer PK_ID
-        """
-        # Combine key fields to create unique identifier
+        """Generate unique PK_ID from row data using hash"""
         key_string = f"{row['id']}_{row['brand_etl']}_{row.get('create_date', '')}_{row.get('write_date', '')}"
-        
-        # Generate hash and convert to integer
         hash_object = hashlib.md5(key_string.encode())
-        pk_id = int(hash_object.hexdigest()[:15], 16)  # Use first 15 hex chars
-        
+        pk_id = int(hash_object.hexdigest()[:15], 16)
         return pk_id
     
-    def get_last_write_date(self, brand_etl: int):
-        """
-        Get the last write_date from Bronze table for specific brand
-        Used for incremental loading
-        
-        Args:
-            brand_etl: Brand ETL ID
-        
-        Returns:
-            Last write_date or None
-        """
-        if not self.incremental:
-            return None
-        
-        try:
-            table = self.catalog.load_table(TABLE_NAME)
-            
-            # Query for max write_date for this brand
-            df = table.scan(
-                row_filter=f"brand_etl = {brand_etl}"
-            ).to_pandas()
-            
-            if df.empty:
-                logger.info(f"No previous data found for brand {brand_etl}, will do full load")
-                return None
-            
-            last_date = df['write_date'].max()
-            logger.info(f"Last write_date for brand {brand_etl}: {last_date}")
-            
-            return last_date
-            
-        except Exception as e:
-            logger.warning(f"Could not get last write_date for brand {brand_etl}: {str(e)}")
-            return None
-    
     def read_from_erp(self, erp_name: str, engine) -> pd.DataFrame:
-        """
-        Read data from ERP api_log table
-        
-        Args:
-            erp_name: Name of ERP system
-            engine: SQLAlchemy engine
-        
-        Returns:
-            DataFrame with api_log data
-        """
+        """Read ALL data from ERP api_log table (full load)"""
         brand_etl = ERP_CONFIGS[erp_name]['brand_etl']
         
-        logger.info(f"Reading from ERP {erp_name.upper()} api_log table (brand_etl={brand_etl})")
+        logger.info(f"Reading ALL records from ERP {erp_name.upper()} api_log table (brand_etl={brand_etl})")
         
-        # Build query based on incremental mode
-        if self.incremental:
-            last_date = self.get_last_write_date(brand_etl)
-            
-            if last_date:
-                # Incremental: only new/updated records
-                query = f"""
-                    SELECT 
-                        id,
-                        name,
-                        create_uid,
-                        create_date,
-                        write_uid,
-                        write_date,
-                        type_log,
-                        model_id,
-                        id_record,
-                        input,
-                        response,
-                        status_code,
-                        url,
-                        header
-                    FROM {self.source_table}
-                    WHERE write_date > '{last_date}'
-                    ORDER BY write_date ASC
-                """
-                logger.info(f"Incremental load: fetching records after {last_date}")
-            else:
-                # First run: load all
-                query = f"""
-                    SELECT 
-                        id,
-                        name,
-                        create_uid,
-                        create_date,
-                        write_uid,
-                        write_date,
-                        type_log,
-                        model_id,
-                        id_record,
-                        input,
-                        response,
-                        status_code,
-                        url,
-                        header
-                    FROM {self.source_table}
-                    ORDER BY write_date ASC
-                """
-                logger.info("First run: loading all records")
-        else:
-            # Full load: all records
-            query = f"""
-                SELECT 
-                    id,
-                    name,
-                    create_uid,
-                    create_date,
-                    write_uid,
-                    write_date,
-                    type_log,
-                    model_id,
-                    id_record,
-                    input,
-                    response,
-                    status_code,
-                    url,
-                    header
-                FROM {self.source_table}
-                ORDER BY write_date ASC
-            """
-            logger.info("Full load mode: loading all records")
+        # Full load query - get all records
+        query = f"""
+            SELECT 
+                id, name, create_uid, create_date, write_uid, write_date,
+                type_log, model_id, id_record, input, response, 
+                status_code, url, header
+            FROM {self.source_table}
+            ORDER BY write_date ASC
+        """
         
         try:
             df = pd.read_sql(query, engine)
-            
-            # Add brand_etl column
             df['brand_etl'] = brand_etl
             
             record_count = len(df)
@@ -270,21 +118,13 @@ class ERPDirectIngestion:
             raise
     
     def add_metadata_and_pk(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Add PK_ID and metadata columns
-        
-        Args:
-            df: Source DataFrame
-        
-        Returns:
-            DataFrame with PK_ID and metadata columns added
-        """
+        """Add PK_ID and metadata columns"""
         if df.empty:
             return df
         
         logger.info("Adding PK_ID and metadata columns")
         
-        # Generate PK_ID for each row
+        # Generate PK_ID
         df['pk_id'] = df.apply(self.generate_pk_id, axis=1)
         
         # Add metadata
@@ -300,96 +140,101 @@ class ERPDirectIngestion:
             df['create_date'] = pd.to_datetime(df['create_date'], errors='coerce')
         if 'write_date' in df.columns:
             df['write_date'] = pd.to_datetime(df['write_date'], errors='coerce')
-            logger.info(f"Generated PK_IDs for {len(df)} records")
+        
+        logger.info(f"Generated PK_IDs for {len(df)} records")
         
         return df
     
-    def write_to_bronze(self, df: pd.DataFrame, mode: str = 'append') -> None:
+    def ensure_table_exists(self):
+        """Create table if it doesn't exist"""
+        try:
+            table = self.catalog.load_table(TABLE_NAME)
+            logger.info(f"Table {TABLE_NAME} exists")
+            return table
+        except:
+            logger.info(f"Table {TABLE_NAME} not found, creating new table")
+            
+            from pyiceberg.schema import Schema
+            from pyiceberg.types import (
+                NestedField, LongType, IntegerType, StringType,
+                TimestampType, DateType
+            )
+            from pyiceberg.partitioning import PartitionSpec, PartitionField
+            from pyiceberg.transforms import IdentityTransform
+            
+            # Define schema
+            schema = Schema(
+                NestedField(1, "pk_id", LongType(), required=False),
+                NestedField(2, "id", IntegerType(), required=False),
+                NestedField(3, "name", StringType(), required=False),
+                NestedField(4, "create_uid", IntegerType(), required=False),
+                NestedField(5, "create_date", TimestampType(), required=False),
+                NestedField(6, "write_uid", IntegerType(), required=False),
+                NestedField(7, "write_date", TimestampType(), required=False),
+                NestedField(8, "type_log", StringType(), required=False),
+                NestedField(9, "model_id", IntegerType(), required=False),
+                NestedField(10, "id_record", IntegerType(), required=False),
+                NestedField(11, "input", StringType(), required=False),
+                NestedField(12, "response", StringType(), required=False),
+                NestedField(13, "status_code", IntegerType(), required=False),
+                NestedField(14, "url", StringType(), required=False),
+                NestedField(15, "header", StringType(), required=False),
+                NestedField(16, "brand_etl", IntegerType(), required=False),
+                NestedField(17, "snapshot_date", DateType(), required=False),
+                NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
+            )
+            
+            # Partition by snapshot_date
+            partition_spec = PartitionSpec(
+                PartitionField(
+                    source_id=17,
+                    field_id=1000,
+                    transform=IdentityTransform(),
+                    name="snapshot_date"
+                )
+            )
+            
+            # Create table
+            table = self.catalog.create_table(
+                identifier=TABLE_NAME,
+                schema=schema,
+                partition_spec=partition_spec,
+            )
+            logger.info(f"✅ Created new table: {TABLE_NAME} (partitioned by snapshot_date)")
+            
+            return table
+    
+    def drop_partition_if_exists(self, table):
+        """Drop partition for current snapshot_date if it exists"""
+        try:
+            logger.info(f"Attempting to drop partition snapshot_date={self.snapshot_date}")
+            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
+            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date}")
+        except Exception as e:
+            logger.info(f"Partition does not exist or already empty: {e}")
+    
+    def write_to_bronze(self, df: pd.DataFrame) -> None:
         """
         Write DataFrame to Bronze Iceberg table
-        Auto-creates table if it doesn't exist
-        
-        Args:
-            df: DataFrame to write
-            mode: Write mode - 'overwrite' or 'append' (default: 'append')
+        Strategy: Drop partition if exists, then append new data
         """
         if df.empty:
             logger.warning("No data to write")
             return
         
-        logger.info(f"Writing to Bronze table: {TABLE_NAME} (mode={mode})")
+        logger.info(f"Writing to Bronze table: {TABLE_NAME}")
         
         try:
-            # Try to load existing table
-            try:
-                table = self.catalog.load_table(TABLE_NAME)
-                
-                # Table exists, ready to write
-                logger.info(f"Table {TABLE_NAME} exists, ready to write")
-                logger.info(f"Partition spec: {table.spec()}")
-            except Exception as e:
-                # Table doesn't exist, create it
-                logger.warning(f"Table {TABLE_NAME} not found, creating new table")
-                table = None
+            # Ensure table exists
+            table = self.ensure_table_exists()
             
-            # Create table if needed
-            if table is None:
-                logger.info(f"Creating new partitioned table: {TABLE_NAME}")
-                
-                from pyiceberg.schema import Schema
-                from pyiceberg.types import (
-                    NestedField, LongType, IntegerType, StringType,
-                    TimestampType, DateType
-                )
-                from pyiceberg.partitioning import PartitionSpec, PartitionField
-                from pyiceberg.transforms import IdentityTransform
-                
-                # Define schema matching DataFrame
-                schema = Schema(
-                    NestedField(1, "pk_id", LongType(), required=False),
-                    NestedField(2, "id", IntegerType(), required=False),
-                    NestedField(3, "name", StringType(), required=False),
-                    NestedField(4, "create_uid", IntegerType(), required=False),
-                    NestedField(5, "create_date", TimestampType(), required=False),
-                    NestedField(6, "write_uid", IntegerType(), required=False),
-                    NestedField(7, "write_date", TimestampType(), required=False),
-                    NestedField(8, "type_log", StringType(), required=False),
-                    NestedField(9, "model_id", IntegerType(), required=False),
-                    NestedField(10, "id_record", IntegerType(), required=False),
-                    NestedField(11, "input", StringType(), required=False),
-                    NestedField(12, "response", StringType(), required=False),
-                    NestedField(13, "status_code", IntegerType(), required=False),
-                    NestedField(14, "url", StringType(), required=False),
-                    NestedField(15, "header", StringType(), required=False),
-                    NestedField(16, "brand_etl", IntegerType(), required=False),
-                    NestedField(17, "snapshot_date", DateType(), required=False),
-                    NestedField(18, "ingestion_timestamp", TimestampType(), required=False),
-                )
-                
-                # Partition by snapshot_date for better query performance
-                # PyIceberg supports append/overwrite to partitioned tables
-                partition_spec = PartitionSpec(
-                    PartitionField(
-                        source_id=17,  # snapshot_date field
-                        field_id=1000,
-                        transform=IdentityTransform(),
-                        name="snapshot_date"
-                    )
-                )
-                
-                # Create table WITH partitioning
-                table = self.catalog.create_table(
-                    identifier=TABLE_NAME,
-                    schema=schema,
-                    partition_spec=partition_spec,
-                )
-                logger.info(f"✅ Created new table: {TABLE_NAME} (partitioned by snapshot_date)")
-
+            # Drop partition if exists (idempotent operation)
+            self.drop_partition_if_exists(table)
             
             record_count = len(df)
-            logger.info(f"Writing {record_count} records to Bronze layer")
+            logger.info(f"Writing {record_count} records to partition snapshot_date={self.snapshot_date}")
             
-            # Reorder columns to match Iceberg table schema (pk_id must be first)
+            # Reorder columns to match schema
             column_order = [
                 'pk_id', 'id', 'name', 'create_uid', 'create_date', 
                 'write_uid', 'write_date', 'type_log', 'model_id', 'id_record',
@@ -397,16 +242,14 @@ class ERPDirectIngestion:
                 'brand_etl', 'snapshot_date', 'ingestion_timestamp'
             ]
             df = df[column_order]
-            logger.debug(f"Reordered DataFrame columns: {df.columns.tolist()}")
             
-            # BATCH WRITING to reduce memory footprint
-            # Process in chunks to avoid OOM when converting large DataFrames to PyArrow
-            BATCH_SIZE = 50000  # 50k records per batch
+            # Batch writing to reduce memory footprint
+            BATCH_SIZE = 50000
             total_batches = (record_count + BATCH_SIZE - 1) // BATCH_SIZE
             
             import pyarrow as pa
             
-            # Define target schema once
+            # Define target schema
             target_schema = pa.schema([
                 ('pk_id', pa.int64()),
                 ('id', pa.int32()),
@@ -442,30 +285,8 @@ class ERPDirectIngestion:
                 arrow_table = pa.Table.from_pandas(batch_df)
                 arrow_table = arrow_table.cast(target_schema)
                 
-                # Write batch
-                # First batch: use specified mode (overwrite/append)
-                # Subsequent batches: always append
-                if batch_idx == 0:
-                    if mode == 'overwrite':
-                        # CRITICAL FIX: Overwrite ONLY the current partition, not entire table
-                        # Use delete + append to replace data for specific snapshot_date
-                        logger.info(f"Batch {batch_idx + 1}: Deleting partition snapshot_date={self.snapshot_date}")
-                        try:
-                            # Delete only records matching current snapshot_date
-                            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
-                            logger.info(f"✅ Deleted existing data for partition {self.snapshot_date}")
-                        except Exception as e:
-                            logger.warning(f"Could not delete partition (may not exist): {e}")
-                        
-                        # Now append new data
-                        logger.info(f"Batch {batch_idx + 1}: Appending new data to partition {self.snapshot_date}")
-                        table.append(arrow_table)
-                    else:
-                        logger.info(f"Batch {batch_idx + 1}: Using append()")
-                        table.append(arrow_table)
-                else:
-                    logger.info(f"Batch {batch_idx + 1}: Using append()")
-                    table.append(arrow_table)
+                # Append batch
+                table.append(arrow_table)
                 
                 logger.info(f"✅ Batch {batch_idx + 1}/{total_batches}: Wrote {batch_size} records")
                 
@@ -493,9 +314,8 @@ class ERPDirectIngestion:
         start_time = datetime.now()
         stats = {}
         total_records = 0
-        first_write = True  # Track if this is the first write (for overwrite vs append)
         
-        # Process each ERP system SEQUENTIALLY and write immediately
+        # Process each ERP system SEQUENTIALLY
         for erp_name in ['sci', 'kn', 'pr', 'hh']:
             try:
                 logger.info(f"\n{'='*60}")
@@ -509,7 +329,7 @@ class ERPDirectIngestion:
                     stats[erp_name] = {'status': 'skipped', 'records': 0}
                     continue
                 
-                # Read from ERP
+                # Read from ERP (full load)
                 df_erp = self.read_from_erp(erp_name, engine)
                 
                 if df_erp.empty:
@@ -517,19 +337,11 @@ class ERPDirectIngestion:
                     stats[erp_name] = {'status': 'success', 'records': 0}
                     continue
                 
-                # Add metadata and PK for this ERP's data
+                # Add metadata and PK
                 df_bronze = self.add_metadata_and_pk(df_erp)
                 
-                # Write to Bronze IMMEDIATELY (don't accumulate in memory)
-                # First ERP: overwrite (if full load) or append (if incremental)
-                # Subsequent ERPs: always append
-                if first_write and not self.incremental:
-                    logger.info(f"First ERP write: using overwrite mode")
-                    self.write_to_bronze(df_bronze, mode='overwrite')
-                    first_write = False
-                else:
-                    logger.info(f"Subsequent ERP write: using append mode")
-                    self.write_to_bronze(df_bronze, mode='append')
+                # Write to Bronze IMMEDIATELY
+                self.write_to_bronze(df_bronze)
                 
                 record_count = len(df_bronze)
                 total_records += record_count
@@ -552,7 +364,6 @@ class ERPDirectIngestion:
         
         if total_records == 0:
             logger.warning("No data from any ERP system")
-
         
         # Calculate metrics
         duration = (datetime.now() - start_time).total_seconds()
@@ -573,16 +384,14 @@ def main():
     """Main execution function"""
     # Parse command line arguments
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    incremental = sys.argv[2].lower() == 'true' if len(sys.argv) > 2 else True
     
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
     logger.info(f"Starting ERP Direct Ingestion for {snapshot_date}")
-    logger.info(f"Incremental mode: {incremental}")
     
     try:
         # Run ERP direct ingestion
-        ingestion = ERPDirectIngestion(snapshot_date, incremental)
+        ingestion = ERPDirectIngestion(snapshot_date)
         stats = ingestion.run()
         
         # Check if any ERP failed

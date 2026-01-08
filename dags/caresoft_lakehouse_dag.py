@@ -157,7 +157,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/erp_webhook_ingestion.py', '{{ ds }}', 'false'],  # incremental=false (FULL LOAD)
+    arguments=['/app/caresoft/erp_webhook_ingestion.py', '{{ ds }}'],  # Always full load (drop partition + append)
     
     # Mount NFS for scripts
     volumes=[nfs_volume],
