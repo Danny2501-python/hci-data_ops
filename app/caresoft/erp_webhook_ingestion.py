@@ -118,24 +118,24 @@ class ERPDirectIngestion:
             raise
     
     def add_metadata_and_pk(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add PK_ID and metadata columns"""
+        """Add PK_ID and metadata columns (optimized for memory)"""
         if df.empty:
             return df
         
         logger.info("Adding PK_ID and metadata columns")
         
-        # Generate PK_ID
+        # Generate PK_ID in-place
         df['pk_id'] = df.apply(self.generate_pk_id, axis=1)
         
-        # Add metadata
+        # Add metadata in-place
         df['snapshot_date'] = self.snapshot_date
         df['ingestion_timestamp'] = datetime.now()
         
-        # Ensure correct data types
+        # Convert types in-place
         df['snapshot_date'] = pd.to_datetime(df['snapshot_date']).dt.date
         df['ingestion_timestamp'] = pd.to_datetime(df['ingestion_timestamp'])
         
-        # Convert timestamp columns
+        # Convert timestamp columns if they exist
         if 'create_date' in df.columns:
             df['create_date'] = pd.to_datetime(df['create_date'], errors='coerce')
         if 'write_date' in df.columns:
@@ -260,6 +260,8 @@ class ERPDirectIngestion:
             
             logger.info(f"Processing {total_batches} batches of up to {BATCH_SIZE} records each")
             
+            import gc
+            
             for batch_idx in range(total_batches):
                 start_idx = batch_idx * BATCH_SIZE
                 end_idx = min(start_idx + BATCH_SIZE, record_count)
@@ -277,9 +279,10 @@ class ERPDirectIngestion:
                 
                 logger.info(f"✅ Batch {batch_idx + 1}/{total_batches}: Wrote {batch_size} records")
                 
-                # Free memory
+                # CRITICAL: Free memory immediately after each batch
                 del batch_df
                 del arrow_table
+                gc.collect()
             
             logger.info(f"✅ Successfully wrote all {record_count} records to Bronze layer in {total_batches} batches")
             
@@ -314,45 +317,13 @@ class ERPDirectIngestion:
             from pyiceberg.expressions import EqualTo
             import gc
             
-            logger.info(f"Checking partition snapshot_date={self.snapshot_date} before delete...")
-            
-            # Count rows before delete
-            try:
-                df_before = table.scan(row_filter=EqualTo("snapshot_date", self.snapshot_date)).to_pandas()
-                rows_before = len(df_before)
-                logger.info(f"Found {rows_before:,} rows in partition {self.snapshot_date}")
-                
-                # Free memory immediately
-                del df_before
-                gc.collect()
-                
-            except Exception as e:
-                rows_before = 0
-                logger.info(f"Partition appears empty or doesn't exist: {e}")
-            
-            # Delete partition
+            # Delete partition directly without pre-scan (saves memory)
             logger.info(f"Deleting partition snapshot_date={self.snapshot_date}...")
             table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
+            logger.success(f"✅ Deleted partition snapshot_date={self.snapshot_date}")
             
-            # Verify deletion
-            try:
-                df_after = table.scan(row_filter=EqualTo("snapshot_date", self.snapshot_date)).to_pandas()
-                rows_after = len(df_after)
-                
-                if rows_before > 0:
-                    logger.success(f"✅ Successfully deleted {rows_before:,} rows from partition {self.snapshot_date}")
-                else:
-                    logger.info(f"✅ Partition {self.snapshot_date} was already empty")
-                    
-                if rows_after > 0:
-                    logger.error(f"❌ WARNING: {rows_after:,} rows still remain after delete!")
-                
-                # Free memory immediately
-                del df_after
-                gc.collect()
-                
-            except Exception as e:
-                logger.info(f"✅ Partition {self.snapshot_date} successfully deleted (now empty)")
+            # Force garbage collection
+            gc.collect()
                 
         except Exception as e:
             logger.warning(f"Could not delete partition: {e}")
@@ -396,10 +367,14 @@ class ERPDirectIngestion:
                 
                 logger.info(f"✅ ERP {erp_name.upper()}: {record_count} records written to Bronze")
                 
-                # Close connection and free memory
+                # Close connection and free memory AGGRESSIVELY
                 engine.dispose()
                 del df_erp
                 del df_bronze
+                
+                # Force garbage collection after each ERP
+                import gc
+                gc.collect()
                 
             except Exception as e:
                 logger.error(f"❌ Failed to process ERP {erp_name.upper()}: {str(e)}")
