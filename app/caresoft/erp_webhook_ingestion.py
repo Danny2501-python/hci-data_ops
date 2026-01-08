@@ -25,23 +25,22 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 
 # ERP connection configs (passed from Airflow as URIs)
 ERP_CONFIGS = {
-    # TEMPORARILY DISABLED FOR TESTING PR ONLY
-    # 'sci': {
-    #     'uri': os.getenv('ERP_SCI_URI'),
-    #     'brand_etl': 7  # SCI brand ID
-    # },
-    # 'kn': {
-    #     'uri': os.getenv('ERP_KN_URI'),
-    #     'brand_etl': 1  # KN brand ID
-    # },
+    'sci': {
+        'uri': os.getenv('ERP_SCI_URI'),
+        'brand_etl': 7  # SCI brand ID
+    },
+    'kn': {
+        'uri': os.getenv('ERP_KN_URI'),
+        'brand_etl': 1  # KN brand ID
+    },
     'pr': {
         'uri': os.getenv('ERP_PR_URI'),
         'brand_etl': 3  # PR brand ID
     },
-    # 'hh': {
-    #     'uri': os.getenv('ERP_HH_URI'),
-    #     'brand_etl': 4  # HH brand ID
-    # }
+    'hh': {
+        'uri': os.getenv('ERP_HH_URI'),
+        'brand_etl': 4  # HH brand ID
+    }
 }
 
 
