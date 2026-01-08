@@ -300,24 +300,24 @@ class ERPDirectIngestion:
             df['create_date'] = pd.to_datetime(df['create_date'], errors='coerce')
         if 'write_date' in df.columns:
             df['write_date'] = pd.to_datetime(df['write_date'], errors='coerce')
-        
-        logger.info(f"Generated PK_IDs for {len(df)} records")
+            logger.info(f"Generated PK_IDs for {len(df)} records")
         
         return df
     
-    def write_to_bronze(self, df: pd.DataFrame):
+    def write_to_bronze(self, df: pd.DataFrame, mode: str = 'append') -> None:
         """
         Write DataFrame to Bronze Iceberg table
         Auto-creates table if it doesn't exist
         
         Args:
             df: DataFrame to write
+            mode: Write mode - 'overwrite' or 'append' (default: 'append')
         """
         if df.empty:
             logger.warning("No data to write")
             return
         
-        logger.info(f"Writing to Bronze table: {TABLE_NAME}")
+        logger.info(f"Writing to Bronze table: {TABLE_NAME} (mode={mode})")
         
         try:
             # Try to load existing table
@@ -431,13 +431,12 @@ class ERPDirectIngestion:
             arrow_table = arrow_table.cast(target_schema)
             logger.debug(f"Converted to Iceberg-compatible schema: {arrow_table.schema}")
             
-            # PyIceberg automatically routes data to correct partitions
-            # based on partition spec (snapshot_date in this case)
-            if not self.incremental:
-                logger.info("Full load mode: using overwrite() to replace all data")
+            # Write based on mode parameter
+            if mode == 'overwrite':
+                logger.info("Using overwrite() to replace data")
                 table.overwrite(arrow_table)
-            else:
-                logger.info("Incremental mode: using append()")
+            else:  # append
+                logger.info("Using append() to add data")
                 table.append(arrow_table)
             
             logger.info(f"✅ Successfully wrote {record_count} records to Bronze layer")
@@ -459,9 +458,10 @@ class ERPDirectIngestion:
         
         start_time = datetime.now()
         stats = {}
-        all_data = []
+        total_records = 0
+        first_write = True  # Track if this is the first write (for overwrite vs append)
         
-        # Process each ERP system
+        # Process each ERP system SEQUENTIALLY and write immediately
         for erp_name in ['sci', 'kn', 'pr', 'hh']:
             try:
                 logger.info(f"\n{'='*60}")
@@ -483,41 +483,42 @@ class ERPDirectIngestion:
                     stats[erp_name] = {'status': 'success', 'records': 0}
                     continue
                 
-                # Add to combined data
-                all_data.append(df_erp)
+                # Add metadata and PK for this ERP's data
+                df_bronze = self.add_metadata_and_pk(df_erp)
+                
+                # Write to Bronze IMMEDIATELY (don't accumulate in memory)
+                # First ERP: overwrite (if full load) or append (if incremental)
+                # Subsequent ERPs: always append
+                if first_write and not self.incremental:
+                    logger.info(f"First ERP write: using overwrite mode")
+                    self.write_to_bronze(df_bronze, mode='overwrite')
+                    first_write = False
+                else:
+                    logger.info(f"Subsequent ERP write: using append mode")
+                    self.write_to_bronze(df_bronze, mode='append')
+                
+                record_count = len(df_bronze)
+                total_records += record_count
                 
                 stats[erp_name] = {
                     'status': 'success',
-                    'records': len(df_erp)
+                    'records': record_count
                 }
                 
-                logger.info(f"✅ ERP {erp_name.upper()}: {len(df_erp)} records")
+                logger.info(f"✅ ERP {erp_name.upper()}: {record_count} records written to Bronze")
                 
-                # Close connection
+                # Close connection and free memory
                 engine.dispose()
+                del df_erp
+                del df_bronze
                 
             except Exception as e:
                 logger.error(f"❌ Failed to process ERP {erp_name.upper()}: {str(e)}")
                 stats[erp_name] = {'status': 'failed', 'records': 0, 'error': str(e)}
         
-        # Combine all data
-        if all_data:
-            logger.info(f"\n{'='*60}")
-            logger.info("Combining data from all ERPs")
-            logger.info(f"{'='*60}")
-            
-            df_combined = pd.concat(all_data, ignore_index=True)
-            
-            # Add metadata and PK
-            df_bronze = self.add_metadata_and_pk(df_combined)
-            
-            # Write to Bronze
-            self.write_to_bronze(df_bronze)
-            
-            total_records = len(df_bronze)
-        else:
+        if total_records == 0:
             logger.warning("No data from any ERP system")
-            total_records = 0
+
         
         # Calculate metrics
         duration = (datetime.now() - start_time).total_seconds()
