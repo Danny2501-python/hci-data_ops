@@ -44,21 +44,6 @@ dag = DAG(
 )
 
 
-def log_pipeline_start(**context):
-    """Log pipeline start"""
-    execution_date = context['execution_date']
-    snapshot_date = execution_date.strftime('%Y-%m-%d')
-    logger.info(f"Starting CareSoft Lakehouse ETL for snapshot_date: {snapshot_date}")
-    return snapshot_date
-
-
-def log_pipeline_end(**context):
-    """Log pipeline completion"""
-    execution_date = context['execution_date']
-    snapshot_date = execution_date.strftime('%Y-%m-%d')
-    logger.info(f"Completed CareSoft Lakehouse ETL for snapshot_date: {snapshot_date}")
-
-
 # Common volume configuration for NFS
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
@@ -99,14 +84,6 @@ common_env_vars = {
 resource_requirements = k8s.V1ResourceRequirements(
     requests={'cpu': '500m', 'memory': '2Gi'},
     limits={'cpu': '2000m', 'memory': '8Gi'}
-)
-
-
-# Task 0: Log pipeline start
-task_start = PythonOperator(
-    task_id='log_pipeline_start',
-    python_callable=log_pipeline_start,
-    dag=dag,
 )
 
 
@@ -283,20 +260,13 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
 # )
 
 
-# Task 5: Log pipeline completion
-task_end = PythonOperator(
-    task_id='log_pipeline_end',
-    python_callable=log_pipeline_end,
-    dag=dag,
-)
-
-
 # ============================================================================
 # Define task dependencies
 # ============================================================================
-# SIMPLIFIED: Only ERP ingestion for now
+# SIMPLIFIED: Only ERP ingestion
 
-task_start >> task_erp_webhook_ingestion >> task_end
+# No dependencies - just run the single task
+# task_erp_webhook_ingestion
 
 # # ORIGINAL FLOW (DISABLED):
 # # Flow 1 and Flow 2 run in parallel, then converge at the end
