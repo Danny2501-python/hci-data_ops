@@ -230,7 +230,8 @@ class ERPDirectIngestion:
             df = df[column_order]
             
             # Batch writing to reduce memory footprint
-            BATCH_SIZE = 50000
+            # Reduced from 50k to 20k to prevent OOMKilled errors
+            BATCH_SIZE = 20000
             total_batches = (record_count + BATCH_SIZE - 1) // BATCH_SIZE
             
             import pyarrow as pa
