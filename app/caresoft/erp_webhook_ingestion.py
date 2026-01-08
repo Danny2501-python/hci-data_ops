@@ -310,11 +310,18 @@ class ERPDirectIngestion:
         
         # Drop partition ONCE for all ERPs
         try:
+            from pyiceberg.expressions import EqualTo
+            
             logger.info(f"Dropping partition snapshot_date={self.snapshot_date} (if exists)")
-            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
-            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date}")
+            
+            # CRITICAL: snapshot_date is DateType in schema, must compare with date object
+            # NOT string! This was the bug causing delete to fail silently
+            delete_count = table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
+            
+            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date} (deleted {delete_count} rows)")
         except Exception as e:
-            logger.info(f"Partition does not exist or already empty: {e}")
+            logger.warning(f"Could not delete partition (may not exist): {e}")
+            logger.warning(f"Error details: {type(e).__name__}: {str(e)}")
         
         # Process each ERP system SEQUENTIALLY
         for erp_name in ['sci', 'kn', 'pr', 'hh']:
