@@ -151,7 +151,7 @@ class ERPDirectIngestion:
         
         brand_etl = ERP_CONFIGS[erp_name]['brand_etl']
         total_ingested = 0
-        BATCH_SIZE = 25000  # Increased batch size slightly due to better memory efficiency
+        BATCH_SIZE = 100000  # Increased to 100k for better throughput & file size
         
         logger.info(f"Starting STREAM ingestion for ERP {erp_name.upper()} (brand_etl={brand_etl})")
         
