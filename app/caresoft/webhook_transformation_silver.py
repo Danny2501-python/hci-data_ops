@@ -172,6 +172,17 @@ class WebhookTransformation:
             except:
                 return None
 
+        # Helper for integer conversion (handles numbers, strings, and bools)
+        def to_int(val):
+            if val is None or val == "":
+                return None
+            if isinstance(val, bool):
+                return None # Treat boolean as None for Integer fields
+            try:
+                return int(float(val))
+            except:
+                return None
+
         total_processed = 0
         
         # Iterate through batches
@@ -204,20 +215,20 @@ class WebhookTransformation:
                     record = {
                         "pk_id": str(pk), # Use PK_ID (ensure string)
                         "id": row_id,
-                        "deal_id": deal_info.get("deal_id"),
+                        "deal_id": to_int(deal_info.get("deal_id")),
                         "name": str(deal_info.get("name")) if deal_info.get("name") is not None else None,
-                        "value": deal_info.get("value"),
-                        "probability": deal_info.get("probability"),
-                        "pipeline_id": deal_info.get("pipeline_id"),
-                        "pipeline_stage_id": deal_info.get("pipeline_stage_id"),
-                        "closed_type": deal_info.get("closed_type"),
+                        "value": to_int(deal_info.get("value")),
+                        "probability": to_int(deal_info.get("probability")),
+                        "pipeline_id": to_int(deal_info.get("pipeline_id")),
+                        "pipeline_stage_id": to_int(deal_info.get("pipeline_stage_id")),
+                        "closed_type": to_int(deal_info.get("closed_type")),
                         "source": str(deal_info.get("source")) if deal_info.get("source") is not None else None,
-                        "source_detail_id": deal_info.get("source_detail_id"),
-                        "service_id": deal_info.get("service_id"),
-                        "requester_id": deal_info.get("requester_id"),
-                        "assignee_id": deal_info.get("assignee_id"),
+                        "source_detail_id": to_int(deal_info.get("source_detail_id")),
+                        "service_id": to_int(deal_info.get("service_id")),
+                        "requester_id": to_int(deal_info.get("requester_id")),
+                        "assignee_id": to_int(deal_info.get("assignee_id")),
                         "facebook_page_id": str(deal_info.get("facebook_page_id")) if deal_info.get("facebook_page_id") else None,
-                        "ticket_source_end_status": deal_info.get("ticket_source_end_status"),
+                        "ticket_source_end_status": to_int(deal_info.get("ticket_source_end_status")),
                         
                         "created_at": parse_ts(deal_info.get("created_at")),
                         "updated_at": parse_ts(deal_info.get("updated_at")),
