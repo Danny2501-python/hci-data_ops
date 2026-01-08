@@ -78,13 +78,6 @@ resource_requirements = k8s.V1ResourceRequirements(
     limits={'cpu': '2000m', 'memory': '8Gi'}
 )
 
-
-# ============================================================================
-# FLOW 1: ERP Direct Ingestion (ERP api_log → Iceberg Bronze webhook_raw)
-# ============================================================================
-
-# Load ERP connection URIs from Airflow at DAG parse time
-# Using get_uri() to get complete connection string
 from airflow.hooks.postgres_hook import PostgresHook
 
 erp_connection_env_vars = {}
