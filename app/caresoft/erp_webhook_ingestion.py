@@ -312,15 +312,38 @@ class ERPDirectIngestion:
         try:
             from pyiceberg.expressions import EqualTo
             
-            logger.info(f"Dropping partition snapshot_date={self.snapshot_date} (if exists)")
+            logger.info(f"Checking partition snapshot_date={self.snapshot_date} before delete...")
             
-            # CRITICAL: snapshot_date is DateType in schema, must compare with date object
-            # NOT string! This was the bug causing delete to fail silently
-            delete_count = table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
+            # Count rows before delete
+            try:
+                df_before = table.scan(row_filter=EqualTo("snapshot_date", self.snapshot_date)).to_pandas()
+                rows_before = len(df_before)
+                logger.info(f"Found {rows_before:,} rows in partition {self.snapshot_date}")
+            except Exception as e:
+                rows_before = 0
+                logger.info(f"Partition appears empty or doesn't exist: {e}")
             
-            logger.info(f"✅ Dropped partition snapshot_date={self.snapshot_date} (deleted {delete_count} rows)")
+            # Delete partition
+            logger.info(f"Deleting partition snapshot_date={self.snapshot_date}...")
+            table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
+            
+            # Verify deletion
+            try:
+                df_after = table.scan(row_filter=EqualTo("snapshot_date", self.snapshot_date)).to_pandas()
+                rows_after = len(df_after)
+                
+                if rows_before > 0:
+                    logger.success(f"✅ Successfully deleted {rows_before:,} rows from partition {self.snapshot_date}")
+                else:
+                    logger.info(f"✅ Partition {self.snapshot_date} was already empty")
+                    
+                if rows_after > 0:
+                    logger.error(f"❌ WARNING: {rows_after:,} rows still remain after delete!")
+            except Exception as e:
+                logger.info(f"✅ Partition {self.snapshot_date} successfully deleted (now empty)")
+                
         except Exception as e:
-            logger.warning(f"Could not delete partition (may not exist): {e}")
+            logger.warning(f"Could not delete partition: {e}")
             logger.warning(f"Error details: {type(e).__name__}: {str(e)}")
         
         # Process each ERP system SEQUENTIALLY
