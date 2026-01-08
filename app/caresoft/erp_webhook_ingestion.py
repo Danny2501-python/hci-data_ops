@@ -399,13 +399,14 @@ class ERPDirectIngestion:
             df = df[column_order]
             logger.debug(f"Reordered DataFrame columns: {df.columns.tolist()}")
             
-            # Convert Pandas DataFrame to PyArrow table
-            import pyarrow as pa
-            arrow_table = pa.Table.from_pandas(df)
-            logger.debug(f"Original PyArrow schema: {arrow_table.schema}")
+            # BATCH WRITING to reduce memory footprint
+            # Process in chunks to avoid OOM when converting large DataFrames to PyArrow
+            BATCH_SIZE = 50000  # 50k records per batch
+            total_batches = (record_count + BATCH_SIZE - 1) // BATCH_SIZE
             
-            # Convert Pandas DataFrame schema to match Iceberg table schema
-            # Iceberg uses int32 for integers, timestamp[us] for timestamps
+            import pyarrow as pa
+            
+            # Define target schema once
             target_schema = pa.schema([
                 ('pk_id', pa.int64()),
                 ('id', pa.int32()),
@@ -427,19 +428,41 @@ class ERPDirectIngestion:
                 ('ingestion_timestamp', pa.timestamp('us'))
             ])
             
-            # Cast to target schema
-            arrow_table = arrow_table.cast(target_schema)
-            logger.debug(f"Converted to Iceberg-compatible schema: {arrow_table.schema}")
+            logger.info(f"Processing {total_batches} batches of up to {BATCH_SIZE} records each")
             
-            # Write based on mode parameter
-            if mode == 'overwrite':
-                logger.info("Using overwrite() to replace data")
-                table.overwrite(arrow_table)
-            else:  # append
-                logger.info("Using append() to add data")
-                table.append(arrow_table)
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min(start_idx + BATCH_SIZE, record_count)
+                batch_df = df.iloc[start_idx:end_idx]
+                batch_size = len(batch_df)
+                
+                logger.info(f"Batch {batch_idx + 1}/{total_batches}: Processing {batch_size} records ({start_idx} to {end_idx})")
+                
+                # Convert batch to PyArrow
+                arrow_table = pa.Table.from_pandas(batch_df)
+                arrow_table = arrow_table.cast(target_schema)
+                
+                # Write batch
+                # First batch: use specified mode (overwrite/append)
+                # Subsequent batches: always append
+                if batch_idx == 0:
+                    if mode == 'overwrite':
+                        logger.info(f"Batch {batch_idx + 1}: Using overwrite() to replace data")
+                        table.overwrite(arrow_table)
+                    else:
+                        logger.info(f"Batch {batch_idx + 1}: Using append()")
+                        table.append(arrow_table)
+                else:
+                    logger.info(f"Batch {batch_idx + 1}: Using append()")
+                    table.append(arrow_table)
+                
+                logger.info(f"✅ Batch {batch_idx + 1}/{total_batches}: Wrote {batch_size} records")
+                
+                # Free memory
+                del batch_df
+                del arrow_table
             
-            logger.info(f"✅ Successfully wrote {record_count} records to Bronze layer")
+            logger.info(f"✅ Successfully wrote all {record_count} records to Bronze layer in {total_batches} batches")
             
         except Exception as e:
             logger.error(f"❌ Failed to write to Bronze table: {str(e)}")
