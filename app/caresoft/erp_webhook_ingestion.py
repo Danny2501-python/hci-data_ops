@@ -312,6 +312,7 @@ class ERPDirectIngestion:
         # Drop partition ONCE for all ERPs
         try:
             from pyiceberg.expressions import EqualTo
+            import gc
             
             logger.info(f"Checking partition snapshot_date={self.snapshot_date} before delete...")
             
@@ -320,6 +321,11 @@ class ERPDirectIngestion:
                 df_before = table.scan(row_filter=EqualTo("snapshot_date", self.snapshot_date)).to_pandas()
                 rows_before = len(df_before)
                 logger.info(f"Found {rows_before:,} rows in partition {self.snapshot_date}")
+                
+                # Free memory immediately
+                del df_before
+                gc.collect()
+                
             except Exception as e:
                 rows_before = 0
                 logger.info(f"Partition appears empty or doesn't exist: {e}")
@@ -340,6 +346,11 @@ class ERPDirectIngestion:
                     
                 if rows_after > 0:
                     logger.error(f"❌ WARNING: {rows_after:,} rows still remain after delete!")
+                
+                # Free memory immediately
+                del df_after
+                gc.collect()
+                
             except Exception as e:
                 logger.info(f"✅ Partition {self.snapshot_date} successfully deleted (now empty)")
                 
