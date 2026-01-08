@@ -80,14 +80,7 @@ class ERPDirectIngestion:
         except Exception as e:
             logger.error(f"Failed to create connection to ERP {erp_name.upper()}: {str(e)}")
             return None
-    
-    def generate_pk_id(self, row):
-        """Generate unique PK_ID from row data using hash"""
-        key_string = f"{row['id']}_{row['brand_etl']}_{row.get('create_date', '')}_{row.get('write_date', '')}"
-        hash_object = hashlib.md5(key_string.encode())
-        pk_id = int(hash_object.hexdigest()[:15], 16)
-        return pk_id
-    
+
     def ensure_table_exists(self):
         """Create table if it doesn't exist"""
         try:
