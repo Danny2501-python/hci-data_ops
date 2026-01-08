@@ -305,20 +305,37 @@ class WebhookTransformation:
         total_success = 0
         total_error = 0
         
+        # Pre-fetch schemas as Arrow schema for strict typing
+        target_schema = tbl_target.schema().as_arrow()
+        error_schema = tbl_error.schema().as_arrow()
+
         for success_batch, error_batch in self.parse_and_transform_batch(tbl_source):
             if success_batch:
-                df = pa.Table.from_pylist(success_batch)
-                tbl_target.append(df)
-                total_success += len(success_batch)
+                # Use explicit schema to prevent "tried to convert to boolean" errors
+                try:
+                    df = pa.Table.from_pylist(success_batch, schema=target_schema)
+                    tbl_target.append(df)
+                    total_success += len(success_batch)
+                except Exception as e:
+                    logger.error(f"Error appending success batch: {e}")
+                    # fallback or re-raise? Let's log specifically which column might fail if possible, 
+                    # but for now printing error is critical.
+                    # We might want to move these to error_batch if they fail schema validation?
+                    # For now, let's Raise to not lose data silently.
+                    raise e
             
             if error_batch:
                 error_records = [
                     {"pk_id": pk, "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
                     for (pk, row_id) in error_batch
                 ]
-                df_err = pa.Table.from_pylist(error_records)
-                tbl_error.append(df_err)
-                total_error += len(error_batch)
+                try:
+                    df_err = pa.Table.from_pylist(error_records, schema=error_schema)
+                    tbl_error.append(df_err)
+                    total_error += len(error_batch)
+                except Exception as e:
+                    logger.error(f"Error appending error batch: {e}")
+                    raise e
 
         logger.success(f"Silver Transformation Completed. Success: {total_success}, Errors: {total_error}")
 
