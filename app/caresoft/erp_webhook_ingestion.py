@@ -447,8 +447,19 @@ class ERPDirectIngestion:
                 # Subsequent batches: always append
                 if batch_idx == 0:
                     if mode == 'overwrite':
-                        logger.info(f"Batch {batch_idx + 1}: Using overwrite() to replace data")
-                        table.overwrite(arrow_table)
+                        # CRITICAL FIX: Overwrite ONLY the current partition, not entire table
+                        # Use delete + append to replace data for specific snapshot_date
+                        logger.info(f"Batch {batch_idx + 1}: Deleting partition snapshot_date={self.snapshot_date}")
+                        try:
+                            # Delete only records matching current snapshot_date
+                            table.delete(f"snapshot_date = date('{self.snapshot_date}')")
+                            logger.info(f"✅ Deleted existing data for partition {self.snapshot_date}")
+                        except Exception as e:
+                            logger.warning(f"Could not delete partition (may not exist): {e}")
+                        
+                        # Now append new data
+                        logger.info(f"Batch {batch_idx + 1}: Appending new data to partition {self.snapshot_date}")
+                        table.append(arrow_table)
                     else:
                         logger.info(f"Batch {batch_idx + 1}: Using append()")
                         table.append(arrow_table)
