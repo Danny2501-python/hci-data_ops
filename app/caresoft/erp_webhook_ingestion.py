@@ -207,9 +207,6 @@ class ERPDirectIngestion:
                     # zip(*rows) becomes: [(id, id...), (name, name...), ...]
                     columns = list(zip(*rows))
                     
-                    if not columns:
-                        continue
-
                     # Mapping SQL columns to variables based on query order
                     # id(0), name(1), create_uid(2), create_date(3), write_uid(4), write_date(5)...
                     ids = columns[0]
