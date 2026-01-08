@@ -202,16 +202,16 @@ class WebhookTransformation:
                 try:
                     deal_info = json_data.get('deal', {})
                     record = {
-                        "pk_id": pk, # Use PK_ID
+                        "pk_id": str(pk), # Use PK_ID (ensure string)
                         "id": row_id,
                         "deal_id": deal_info.get("deal_id"),
-                        "name": deal_info.get("name"),
+                        "name": str(deal_info.get("name")) if deal_info.get("name") is not None else None,
                         "value": deal_info.get("value"),
                         "probability": deal_info.get("probability"),
                         "pipeline_id": deal_info.get("pipeline_id"),
                         "pipeline_stage_id": deal_info.get("pipeline_stage_id"),
                         "closed_type": deal_info.get("closed_type"),
-                        "source": deal_info.get("source"),
+                        "source": str(deal_info.get("source")) if deal_info.get("source") is not None else None,
                         "source_detail_id": deal_info.get("source_detail_id"),
                         "service_id": deal_info.get("service_id"),
                         "requester_id": deal_info.get("requester_id"),
@@ -326,7 +326,7 @@ class WebhookTransformation:
             
             if error_batch:
                 error_records = [
-                    {"pk_id": pk, "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
+                    {"pk_id": str(pk), "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
                     for (pk, row_id) in error_batch
                 ]
                 try:
