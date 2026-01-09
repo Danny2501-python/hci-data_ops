@@ -194,7 +194,7 @@ class WebhookTransformation:
                 CAST(convert_from_object AS VARCHAR) as convert_from_object,
                 CAST(object AS VARCHAR) as object,
                 
-                TRY_CAST(fb_psid AS BIGINT) as fb_psid,  # Facebook PSID (numeric)
+                TRY_CAST(fb_psid AS BIGINT) as fb_psid,
                 CAST(gclid AS VARCHAR) as gclid,
                 TRY_CAST(convert_by AS DOUBLE) as convert_by,
                 TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
