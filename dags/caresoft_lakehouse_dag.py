@@ -75,7 +75,7 @@ common_env_vars = {
 # Common# Resource requirements for pods
 resource_requirements = k8s.V1ResourceRequirements(
     requests={'cpu': '500m', 'memory': '2Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
+    limits={'cpu': '2000m', 'memory': '8Gi'}
 )
 
 from airflow.hooks.postgres_hook import PostgresHook
