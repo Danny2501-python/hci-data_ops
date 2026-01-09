@@ -11,7 +11,6 @@ import os
 import sys
 import json
 import ast
-import hashlib
 from datetime import datetime, date
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
@@ -144,17 +143,104 @@ class WebhookTransformation:
             
             return self.catalog.create_table(TARGET_TABLE, schema=schema, partition_spec=partition_spec)
 
-    def parse_and_transform_batch(self, bronze_table):
+
+    def _transform_with_duckdb(self, con, raw_data):
+        """
+        Helper method: Transform raw data using DuckDB SQL
+        Eliminates code duplication (used in both main loop and final batch)
+        
+        Args:
+            con: DuckDB connection
+            raw_data: List of dict records to transform
+            
+        Returns:
+            List of transformed records (pylist)
+        """
+        raw_arrow = pa.Table.from_pylist(raw_data)
+        
+        res = con.sql("""
+            SELECT
+                TRY_CAST(pk_id AS BIGINT) as pk_id,
+                id,
+                
+                TRY_CAST(deal_id AS INTEGER) as deal_id,
+                CAST(name AS VARCHAR) as name,
+                TRY_CAST(value AS INTEGER) as value,
+                TRY_CAST(probability AS INTEGER) as probability,
+                TRY_CAST(pipeline_id AS INTEGER) as pipeline_id,
+                TRY_CAST(pipeline_stage_id AS INTEGER) as pipeline_stage_id,
+                TRY_CAST(closed_type AS INTEGER) as closed_type,
+                CAST(source AS VARCHAR) as source,
+                TRY_CAST(source_detail_id AS INTEGER) as source_detail_id,
+                TRY_CAST(service_id AS INTEGER) as service_id,
+                TRY_CAST(requester_id AS INTEGER) as requester_id,
+                TRY_CAST(assignee_id AS INTEGER) as assignee_id,
+                CAST(facebook_page_id AS VARCHAR) as facebook_page_id,
+                TRY_CAST(ticket_source_end_status AS INTEGER) as ticket_source_end_status,
+                
+                to_timestamp(TRY_CAST(created_at AS DOUBLE) / 1000) as created_at,
+                to_timestamp(TRY_CAST(updated_at AS DOUBLE) / 1000) as updated_at,
+                to_timestamp(TRY_CAST(last_change_status_at AS DOUBLE) / 1000) as last_change_status_at,
+                to_timestamp(TRY_CAST(last_change_stage_at AS DOUBLE) / 1000) as last_change_stage_at,
+                
+                CAST(activity AS VARCHAR) as activity,
+                CAST(addition_fields AS VARCHAR) as addition_fields,
+                CAST(call_info AS VARCHAR) as call_info,
+                CAST(agent_submit AS VARCHAR) as agent_submit,
+                CAST(updated_properties AS VARCHAR) as updated_properties,
+                CAST(account_id AS VARCHAR) as account_id,
+                CAST(activity_source AS VARCHAR) as activity_source,
+                CAST(action AS VARCHAR) as action,
+                CAST(convert_from_object AS VARCHAR) as convert_from_object,
+                CAST(object AS VARCHAR) as object,
+                
+                TRY_CAST(fb_psid AS DOUBLE) as fb_psid,
+                CAST(gclid AS VARCHAR) as gclid,
+                TRY_CAST(convert_by AS DOUBLE) as convert_by,
+                TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
+                CAST(addition_details AS VARCHAR) as addition_details,
+                TRY_CAST(commentator_id AS DOUBLE) as commentator_id,
+                CAST(comment AS VARCHAR) as comment,
+                CAST(convert_type AS VARCHAR) as convert_type,
+                CAST(convert_at AS VARCHAR) as convert_at,
+                CAST(closed_by AS VARCHAR) as closed_by,
+                TRY_CAST(zalo_page_id AS DOUBLE) as zalo_page_id,
+                CAST(closed_at AS VARCHAR) as closed_at,
+                CAST(unqualified_reasons AS VARCHAR) as unqualified_reasons,
+                CAST(lost_reasons AS VARCHAR) as lost_reasons,
+                CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
+                CAST(utm_campaign AS VARCHAR) as utm_campaign,
+                
+                snapshot_date,
+                CAST(now() AS TIMESTAMP) as ingestion_timestamp
+            FROM raw_arrow
+        """).arrow()
+        
+        return res.to_pylist()
+
+    def parse_and_transform_batch(self, bronze_table, processing_batch_size=50000):
         """
         Generator function that yields batches of (success_rows, error_ids)
         Uses batch streaming and DuckDB for efficient SQL-based transformation
+        
+        Args:
+            bronze_table: Source Iceberg table
+            processing_batch_size: Number of records to accumulate before DuckDB processing
+                                   (default: 50000 for optimal DuckDB performance)
         """
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
+        logger.info(f"Processing batch size: {processing_batch_size:,} records")
         
         # Use batch reader (Streaming)
+        # Filter at Iceberg level to reduce I/O (equivalent to SQL: WHERE input ILIKE '{'deal'%')
+        from pyiceberg.expressions import And, StartsWith
+        
         scan = bronze_table.scan(
-            row_filter=EqualTo("snapshot_date", self.snapshot_date),
-            selected_fields=("pk_id", "id", "input") # Select pk_id
+            row_filter=And(
+                EqualTo("snapshot_date", self.snapshot_date),
+                StartsWith("input", "{'deal'")  # Only scan deal-related webhooks
+            ),
+            selected_fields=("pk_id", "id", "input")
         )
         
         # Helper for safer parsing
@@ -168,25 +254,30 @@ class WebhookTransformation:
         total_processed = 0
         con = duckdb.connect()
         
-        # Iterate through batches
+        # Accumulator for batching across Arrow batches
+        accumulated_raw_data = []
+        accumulated_errors = []
+        
+        # Pre-compile empty JSON constant to avoid duplicate string creation
+        EMPTY_JSON = json.dumps({})
+        
+        # Iterate through Arrow batches from Iceberg
         for arrow_batch in scan.to_arrow_batch_reader():
-            # Convert batch to python list for processing
-            pk_ids = arrow_batch["pk_id"].to_pylist()
-            ids = arrow_batch["id"].to_pylist()
-            inputs = arrow_batch["input"].to_pylist()
+            # Use Arrow native iteration (zero-copy) instead of to_pylist()
+            # This avoids creating intermediate Python lists, saving ~150MB per 50K batch
+            batch_size = len(arrow_batch)
             
-            raw_data = []
-            error_batch = []
-            
-            for i, input_str in enumerate(inputs):
-                pk = pk_ids[i]
-                row_id = ids[i]
+            for i in range(batch_size):
+                # Direct Arrow access - no intermediate list creation
+                pk = arrow_batch["pk_id"][i].as_py()
+                row_id = arrow_batch["id"][i].as_py()
+                input_str = arrow_batch["input"][i].as_py()
                 
                 # 1. Parse content
                 data_dict = safe_eval(input_str)
                 if not data_dict:
                      # If parsing fails or invalid format
-                     error_batch.append((pk, row_id))
+                     accumulated_errors.append((pk, row_id))
                      continue
                 
                 # 2. Extract Raw Dict (Flatten logic in Python, Cast in DuckDB)
@@ -235,14 +326,15 @@ class WebhookTransformation:
                         "utm_campaign": deal_info.get("utm_campaign"),
                         
                         # Complex/Nested Objects -> Dump to JSON String
-                        "call_info": json.dumps(data_dict.get("call_info", {})),
-                        "agent_submit": json.dumps(data_dict.get("agent_submit", {})),
-                        "updated_properties": json.dumps(data_dict.get("updated_properties", {})),
-                        "account_id": json.dumps(data_dict.get("account_id", {})),
-                        "activity_source": json.dumps(data_dict.get("activity_source", {})),
-                        "action": json.dumps(data_dict.get("action", {})),
-                        "convert_from_object": json.dumps(data_dict.get("convert_from_object", {})),
-                        "object": json.dumps(data_dict.get("object", {})),
+                        # Use EMPTY_JSON constant for empty dicts to save memory (~50MB per 50K batch)
+                        "call_info": json.dumps(data_dict["call_info"]) if data_dict.get("call_info") else EMPTY_JSON,
+                        "agent_submit": json.dumps(data_dict["agent_submit"]) if data_dict.get("agent_submit") else EMPTY_JSON,
+                        "updated_properties": json.dumps(data_dict["updated_properties"]) if data_dict.get("updated_properties") else EMPTY_JSON,
+                        "account_id": json.dumps(data_dict["account_id"]) if data_dict.get("account_id") else EMPTY_JSON,
+                        "activity_source": json.dumps(data_dict["activity_source"]) if data_dict.get("activity_source") else EMPTY_JSON,
+                        "action": json.dumps(data_dict["action"]) if data_dict.get("action") else EMPTY_JSON,
+                        "convert_from_object": json.dumps(data_dict["convert_from_object"]) if data_dict.get("convert_from_object") else EMPTY_JSON,
+                        "object": json.dumps(data_dict["object"]) if data_dict.get("object") else EMPTY_JSON,
                         
                         # Doubles/Numerics
                         "fb_psid": deal_info.get("fb_psid"),
@@ -253,95 +345,57 @@ class WebhookTransformation:
                         
                         "snapshot_date": self.snapshot_date
                     }
-                    raw_data.append(row)
+                    accumulated_raw_data.append(row)
                 except Exception:
-                    error_batch.append((pk, row_id))
+                    accumulated_errors.append((pk, row_id))
 
-            # 3. Validated Batch via DuckDB
+            total_processed += batch_size
+            
+            # Cleanup Arrow batch immediately (no intermediate lists to delete)
+            del arrow_batch
+            gc.collect()
+            
+            # Process accumulated data when reaching batch size
+            if len(accumulated_raw_data) >= processing_batch_size:
+                logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned: {total_processed:,})")
+                
+                batch_success = []
+                if accumulated_raw_data:
+                    try:
+                        # Use helper method for DuckDB transformation
+                        batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
+                    except Exception as e:
+                        logger.error(f"DuckDB Transformation Error: {e}")
+                        # If whole batch fails, add all to error
+                        for row in accumulated_raw_data:
+                             accumulated_errors.append((row["pk_id"], row["id"]))
+
+                yield batch_success, accumulated_errors
+                
+                # Reset accumulators
+                accumulated_raw_data = []
+                accumulated_errors = []
+                gc.collect()
+        
+        # Process remaining data (last partial batch)
+        if accumulated_raw_data or accumulated_errors:
+            logger.info(f"Processing final batch of {len(accumulated_raw_data):,} records")
+            
             batch_success = []
-            if raw_data:
+            if accumulated_raw_data:
                 try:
-                    # Create temporary Arrow table from raw list
-                    raw_arrow = pa.Table.from_pylist(raw_data)
-                    
-                    # Perform SQL Transformation with Safe Casting
-                    # We utilize TRY_CAST to handle dirty data gracefully (returns NULL on failure instead of error)
-                    res = con.sql("""
-                        SELECT
-                            TRY_CAST(pk_id AS BIGINT) as pk_id,
-                            id,
-                            
-                            TRY_CAST(deal_id AS INTEGER) as deal_id,
-                            CAST(name AS VARCHAR) as name,
-                            TRY_CAST(value AS INTEGER) as value,
-                            TRY_CAST(probability AS INTEGER) as probability,
-                            TRY_CAST(pipeline_id AS INTEGER) as pipeline_id,
-                            TRY_CAST(pipeline_stage_id AS INTEGER) as pipeline_stage_id,
-                            TRY_CAST(closed_type AS INTEGER) as closed_type,
-                            CAST(source AS VARCHAR) as source,
-                            TRY_CAST(source_detail_id AS INTEGER) as source_detail_id,
-                            TRY_CAST(service_id AS INTEGER) as service_id,
-                            TRY_CAST(requester_id AS INTEGER) as requester_id,
-                            TRY_CAST(assignee_id AS INTEGER) as assignee_id,
-                            CAST(facebook_page_id AS VARCHAR) as facebook_page_id,
-                            TRY_CAST(ticket_source_end_status AS INTEGER) as ticket_source_end_status,
-                            
-                            -- Timestamp Handling (Assuming input is ms epoch or needs parsing)
-                            -- If input is None/Null, returns Null.
-                            to_timestamp(TRY_CAST(created_at AS DOUBLE) / 1000) as created_at,
-                            to_timestamp(TRY_CAST(updated_at AS DOUBLE) / 1000) as updated_at,
-                            to_timestamp(TRY_CAST(last_change_status_at AS DOUBLE) / 1000) as last_change_status_at,
-                            to_timestamp(TRY_CAST(last_change_stage_at AS DOUBLE) / 1000) as last_change_stage_at,
-                            
-                            CAST(activity AS VARCHAR) as activity,
-                            CAST(addition_fields AS VARCHAR) as addition_fields,
-                            CAST(call_info AS VARCHAR) as call_info,
-                            CAST(agent_submit AS VARCHAR) as agent_submit,
-                            CAST(updated_properties AS VARCHAR) as updated_properties,
-                            CAST(account_id AS VARCHAR) as account_id,
-                            CAST(activity_source AS VARCHAR) as activity_source,
-                            CAST(action AS VARCHAR) as action,
-                            CAST(convert_from_object AS VARCHAR) as convert_from_object,
-                            CAST(object AS VARCHAR) as object,
-                            
-                            TRY_CAST(fb_psid AS DOUBLE) as fb_psid,
-                            CAST(gclid AS VARCHAR) as gclid,
-                            TRY_CAST(convert_by AS DOUBLE) as convert_by,
-                            TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
-                            CAST(addition_details AS VARCHAR) as addition_details,
-                            TRY_CAST(commentator_id AS DOUBLE) as commentator_id,
-                            CAST(comment AS VARCHAR) as comment,
-                            CAST(convert_type AS VARCHAR) as convert_type,
-                            CAST(convert_at AS VARCHAR) as convert_at,
-                            CAST(closed_by AS VARCHAR) as closed_by,
-                            TRY_CAST(zalo_page_id AS DOUBLE) as zalo_page_id,
-                            CAST(closed_at AS VARCHAR) as closed_at,
-                            CAST(unqualified_reasons AS VARCHAR) as unqualified_reasons,
-                            CAST(lost_reasons AS VARCHAR) as lost_reasons,
-                            CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
-                            CAST(utm_campaign AS VARCHAR) as utm_campaign,
-                            
-                            snapshot_date,
-                            CAST(now() AS TIMESTAMP) as ingestion_timestamp
-                        FROM raw_arrow
-                    """).arrow()
-                    
-                    batch_success = res.to_pylist()
+                    # Use helper method for DuckDB transformation
+                    batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
                 except Exception as e:
                     logger.error(f"DuckDB Transformation Error: {e}")
-                    # If whole batch fails in SQL, add all to error
-                    for row in raw_data:
-                         error_batch.append((row["pk_id"], row["id"]))
-
-            total_processed += len(inputs)
-            logger.info(f"Processed batch of {len(inputs)}. Total scanned: {total_processed}")
+                    for row in accumulated_raw_data:
+                         accumulated_errors.append((row["pk_id"], row["id"]))
             
-            yield batch_success, error_batch
-            
-            # Cleanup
-            del ids, inputs, pk_ids, arrow_batch
-            if raw_data: del raw_data
-            gc.collect()
+            yield batch_success, accumulated_errors
+        
+        # Close DuckDB connection
+        con.close()
+        logger.info(f"Completed processing {total_processed:,} total records")
 
     def run(self):
         # 1. Load Tables
@@ -391,15 +445,12 @@ class WebhookTransformation:
                     total_success += len(success_batch)
                 except Exception as e:
                     logger.error(f"Error appending success batch: {e}")
-                    # fallback or re-raise? Let's log specifically which column might fail if possible, 
-                    # but for now printing error is critical.
-                    # We might want to move these to error_batch if they fail schema validation?
-                    # For now, let's Raise to not lose data silently.
+                    # Raise to prevent silent data loss
                     raise e
             
             if error_batch:
                 error_records = [
-                    {"pk_id": str(pk), "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
+                    {"pk_id": pk, "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
                     for (pk, row_id) in error_batch
                 ]
                 try:
