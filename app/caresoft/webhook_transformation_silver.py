@@ -19,7 +19,6 @@ from loguru import logger
 import gc
 import duckdb
 
-# Configs
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_SILVER')
 CATALOG_NAME = os.getenv('CATALOG_NAME_SILVER')
 SOURCE_TABLE = os.getenv('BRONZE_TABLE', 'caresoft.wehook_api_caresoft')
@@ -35,7 +34,6 @@ class WebhookTransformation:
     def __init__(self, snapshot_date: date):
         self.snapshot_date = snapshot_date
         
-        # Init Catalog
         self.catalog = load_catalog(
             CATALOG_NAME,
             **{
@@ -59,8 +57,8 @@ class WebhookTransformation:
             from pyiceberg.transforms import IdentityTransform
 
             schema = Schema(
-                NestedField(1, "pk_id", LongType(), required=True), # Primary Key (source + id)
-                NestedField(2, "id", LongType(), required=False),     # Original ID
+                NestedField(1, "pk_id", LongType(), required=True),
+                NestedField(2, "id", LongType(), required=False),
                 NestedField(3, "snapshot_date", DateType(), required=False),
                 NestedField(4, "ingestion_timestamp", TimestampType(), required=False),
             )
@@ -82,10 +80,9 @@ class WebhookTransformation:
             from pyiceberg.partitioning import PartitionSpec, PartitionField
             from pyiceberg.transforms import IdentityTransform
 
-            # Schema matching DDL provided
             schema = Schema(
-                NestedField(1, "pk_id", LongType(), required=True), # Primary Key (unique global)
-                NestedField(2, "id", LongType(), required=False),     # Original ID (integer)
+                NestedField(1, "pk_id", LongType(), required=True),
+                NestedField(2, "id", LongType(), required=False),
                 
                 NestedField(3, "last_change_status_at", TimestampType(), required=False),
                 NestedField(4, "probability", IntegerType(), required=False),
@@ -115,7 +112,7 @@ class WebhookTransformation:
                 NestedField(28, "action", StringType(), required=False),
                 NestedField(29, "convert_from_object", StringType(), required=False),
                 NestedField(30, "object", StringType(), required=False),
-                NestedField(31, "fb_psid", LongType(), required=False), # Facebook PSID (numeric ID, up to 19 digits)
+                NestedField(31, "fb_psid", LongType(), required=False),
                 NestedField(32, "gclid", StringType(), required=False),
                 NestedField(33, "convert_by", DoubleType(), required=False),
                 NestedField(34, "csa_acc", DoubleType(), required=False),
@@ -132,7 +129,6 @@ class WebhookTransformation:
                 NestedField(45, "estimated_closed_date", StringType(), required=False),
                 NestedField(46, "utm_campaign", StringType(), required=False),
                 
-                # Partition fields
                 NestedField(100, "snapshot_date", DateType(), required=False),
                 NestedField(101, "ingestion_timestamp", TimestampType(), required=False),
             )
@@ -216,7 +212,6 @@ class WebhookTransformation:
             FROM raw_arrow
         """).arrow()
         
-        # DuckDB .arrow() returns RecordBatchReader, need to convert to Table
         result_table = res.read_all()
         return result_table.to_pylist()
 
@@ -225,34 +220,26 @@ class WebhookTransformation:
         Generator function that yields batches of (success_rows, error_ids)
         Uses batch streaming and DuckDB for efficient SQL-based transformation
         """
-        # Configuration: Batch size for DuckDB processing
-        # Reduced from 50k to 10k to fit within 4GB memory limit (prevents OOMKilled)
-        BATCH_SIZE = 10000
+        BATCH_SIZE = 20000
         
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
         logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
         
-        # Use batch reader (Streaming)
-        # Hybrid approach: Loose filter at Iceberg (I/O optimization), strict filter in Python (correctness)
-        # Iceberg filter: Contains "'deal'" catches most deal webhooks (~50% I/O reduction)
-        # Python filter: Check for 'deal' key in parsed dict (100% accurate)
-        from pyiceberg.expressions import And, Contains
+        from pyiceberg.expressions import And, StartsWith
         
         scan = bronze_table.scan(
             row_filter=And(
                 EqualTo("snapshot_date", self.snapshot_date),
-                Contains("input", "'deal'")  # Loose filter: any JSON with 'deal' string
+                StartsWith("input", "{'deal'")
             ),
             selected_fields=("pk_id", "id", "input")
         )
         
-        # Helper for safer parsing
         def safe_eval(s):
             try:
                 if not s or not s.strip():
                     return None
                 data = ast.literal_eval(s)
-                # Only process if it has 'deal' key (matching old SQL: ILIKE "{'deal'%")
                 if not isinstance(data, dict) or 'deal' not in data:
                     return None
                 return data
@@ -262,60 +249,46 @@ class WebhookTransformation:
         total_processed = 0
         con = duckdb.connect()
         
-        # Accumulator for batching across Arrow batches
         accumulated_raw_data = []
         accumulated_errors = []
         
-        # Pre-compile empty JSON constant to avoid duplicate string creation
         EMPTY_JSON = json.dumps({})
         
-        # Iterate through Arrow batches from Iceberg
         for arrow_batch in scan.to_arrow_batch_reader():
-            # Use Arrow native iteration (zero-copy) instead of to_pylist()
-            # This avoids creating intermediate Python lists, saving ~150MB per 50K batch
             batch_size = len(arrow_batch)
             
             for i in range(batch_size):
-                # Direct Arrow access - no intermediate list creation
                 pk = arrow_batch["pk_id"][i].as_py()
                 row_id = arrow_batch["id"][i].as_py()
                 input_str = arrow_batch["input"][i].as_py()
                 
-                # 1. Parse content
                 data_dict = safe_eval(input_str)
                 if not data_dict:
-                     # If parsing fails or invalid format
                      accumulated_errors.append((pk, row_id))
                      continue
                 
-                # 2. Extract Raw Dict (Flatten logic in Python, Cast in DuckDB)
                 try:
                     deal_info = data_dict.get('deal', {})
                     
-                    # Helper functions for data conversion
                     def safe_str(val):
                         """Convert value to string, handling None and booleans"""
                         if val is None:
                             return None
-                        # Convert boolean to string representation that DuckDB can cast
                         if isinstance(val, bool):
-                            return str(int(val))  # True->1, False->0
+                            return str(int(val))
                         return str(val) if val != '' else None
                     
                     def safe_json(val):
                         """Safely serialize value - handles dict, list, and primitives"""
                         if not val:
                             return EMPTY_JSON
-                        # If dict or list, serialize to JSON
                         if isinstance(val, (dict, list)):
                             return json.dumps(val)
-                        # If primitive (string, int, etc.), convert to string
                         return str(val)
                     
                     row = {
                         "pk_id": pk,
                         "id": row_id,
-                        # Integers - convert to string to avoid boolean issues
                         "deal_id": safe_str(deal_info.get("deal_id")),
                         "value": safe_str(deal_info.get("value")),
                         "probability": safe_str(deal_info.get("probability")),
@@ -328,13 +301,11 @@ class WebhookTransformation:
                         "assignee_id": safe_str(deal_info.get("assignee_id")),
                         "ticket_source_end_status": safe_str(deal_info.get("ticket_source_end_status")),
                         
-                        # Timestamps (ms) - convert to string
                         "created_at": safe_str(deal_info.get("created_at")),
                         "updated_at": safe_str(deal_info.get("updated_at")),
                         "last_change_status_at": safe_str(deal_info.get("last_change_status_at")),
                         "last_change_stage_at": safe_str(deal_info.get("last_change_stage_at")),
                         
-                        # Strings/Texts - already strings but safe_str handles None
                         "name": safe_str(deal_info.get("name")),
                         "source": safe_str(deal_info.get("source")),
                         "facebook_page_id": safe_str(deal_info.get("facebook_page_id")),
@@ -352,8 +323,6 @@ class WebhookTransformation:
                         "estimated_closed_date": safe_str(deal_info.get("estimated_closed_date")),
                         "utm_campaign": safe_str(deal_info.get("utm_campaign")),
                         
-                        # Complex/Nested Objects -> Dump to JSON String
-                        # Handle both dict/list (serialize) and primitives (convert to string)
                         "call_info": safe_json(data_dict.get("call_info")),
                         "agent_submit": safe_json(data_dict.get("agent_submit")),
                         "updated_properties": safe_json(data_dict.get("updated_properties")),
@@ -363,8 +332,7 @@ class WebhookTransformation:
                         "convert_from_object": safe_json(data_dict.get("convert_from_object")),
                         "object": safe_json(data_dict.get("object")),
                         
-                        # Doubles/Numerics - convert to string for DuckDB casting
-                        "fb_psid": safe_str(deal_info.get("fb_psid")),  # Facebook PSID (will be cast to BIGINT)
+                        "fb_psid": safe_str(deal_info.get("fb_psid")),
                         "csa_acc": safe_str(deal_info.get("csa_acc")),
                         "commentator_id": safe_str(deal_info.get("commentator_id")),
                         "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
@@ -378,40 +346,33 @@ class WebhookTransformation:
 
             total_processed += batch_size
             
-            # Cleanup Arrow batch immediately (no intermediate lists to delete)
             del arrow_batch
             gc.collect()
             
-            # Process accumulated data when reaching batch size
             if len(accumulated_raw_data) >= BATCH_SIZE:
                 logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned: {total_processed:,})")
                 
                 batch_success = []
                 if accumulated_raw_data:
                     try:
-                        # Use helper method for DuckDB transformation
                         batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
                     except Exception as e:
                         logger.error(f"DuckDB Transformation Error: {e}")
-                        # If whole batch fails, add all to error
                         for row in accumulated_raw_data:
                              accumulated_errors.append((row["pk_id"], row["id"]))
 
                 yield batch_success, accumulated_errors
                 
-                # Reset accumulators
                 accumulated_raw_data = []
                 accumulated_errors = []
                 gc.collect()
         
-        # Process remaining data (last partial batch)
         if accumulated_raw_data or accumulated_errors:
             logger.info(f"Processing final batch of {len(accumulated_raw_data):,} records")
             
             batch_success = []
             if accumulated_raw_data:
                 try:
-                    # Use helper method for DuckDB transformation
                     batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
                 except Exception as e:
                     logger.error(f"DuckDB Transformation Error: {e}")
@@ -420,12 +381,10 @@ class WebhookTransformation:
             
             yield batch_success, accumulated_errors
         
-        # Close DuckDB connection
         con.close()
         logger.info(f"Completed processing {total_processed:,} total records")
 
     def run(self):
-        # 1. Load Tables
         tbl_error = self.ensure_table_error_exists()
         tbl_target = self.ensure_table_exists()
         
@@ -444,9 +403,6 @@ class WebhookTransformation:
             logger.error(f"Failed to load Bronze table: {e}")
             sys.exit(1)
 
-        # 2. DELETE OLD DATA (Overwrite logic manually implemented)
-        # Because we append batch by batch, we cannot use 'overwrite' mode in loop (it would overwrite previous batches).
-        # Strategy: Delete existing partition FIRST, then Append batches.
         
         logger.info(f"Cleaning existing partition {self.snapshot_date}...")
         try:
@@ -455,24 +411,20 @@ class WebhookTransformation:
         except Exception as e:
             logger.warning(f"Delete partition warning (first run?): {e}")
 
-        # 3. Transform & Append Batch by Batch
         total_success = 0
         total_error = 0
         
-        # Pre-fetch schemas as Arrow schema for strict typing
         target_schema = tbl_target.schema().as_arrow()
         error_schema = tbl_error.schema().as_arrow()
 
         for success_batch, error_batch in self.parse_and_transform_batch(tbl_source):
             if success_batch:
-                # Use explicit schema to prevent "tried to convert to boolean" errors
                 try:
                     df = pa.Table.from_pylist(success_batch, schema=target_schema)
                     tbl_target.append(df)
                     total_success += len(success_batch)
                 except Exception as e:
                     logger.error(f"Error appending success batch: {e}")
-                    # Raise to prevent silent data loss
                     raise e
             
             if error_batch:
