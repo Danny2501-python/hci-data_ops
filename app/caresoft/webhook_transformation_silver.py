@@ -220,18 +220,17 @@ class WebhookTransformation:
         result_table = res.read_all()
         return result_table.to_pylist()
 
-    def parse_and_transform_batch(self, bronze_table, processing_batch_size=50000):
+    def parse_and_transform_batch(self, bronze_table):
         """
         Generator function that yields batches of (success_rows, error_ids)
         Uses batch streaming and DuckDB for efficient SQL-based transformation
-        
-        Args:
-            bronze_table: Source Iceberg table
-            processing_batch_size: Number of records to accumulate before DuckDB processing
-                                   (default: 50000 for optimal DuckDB performance)
         """
+        # Configuration: Batch size for DuckDB processing
+        # Reduced from 50k to 10k to fit within 4GB memory limit (prevents OOMKilled)
+        BATCH_SIZE = 10000
+        
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
-        logger.info(f"Processing batch size: {processing_batch_size:,} records")
+        logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
         
         # Use batch reader (Streaming)
         # Filter at Iceberg level to reduce I/O (equivalent to SQL: WHERE input ILIKE '{'deal'%')
@@ -377,7 +376,7 @@ class WebhookTransformation:
             gc.collect()
             
             # Process accumulated data when reaching batch size
-            if len(accumulated_raw_data) >= processing_batch_size:
+            if len(accumulated_raw_data) >= BATCH_SIZE:
                 logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned: {total_processed:,})")
                 
                 batch_success = []
