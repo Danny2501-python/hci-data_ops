@@ -233,22 +233,24 @@ class WebhookTransformation:
         logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
         
         # Use batch reader (Streaming)
-        # Filter at Iceberg level to reduce I/O (equivalent to SQL: WHERE input ILIKE '{'deal'%')
-        from pyiceberg.expressions import And, StartsWith
+        # Note: Old SQL used ILIKE "{'deal'%" but JSON format varies (spaces, key order)
+        # Safer to scan all records for the date and filter in Python after parsing
         
         scan = bronze_table.scan(
-            row_filter=And(
-                EqualTo("snapshot_date", self.snapshot_date),
-                StartsWith("input", "{'deal'")  # Only scan deal-related webhooks
-            ),
+            row_filter=EqualTo("snapshot_date", self.snapshot_date),
             selected_fields=("pk_id", "id", "input")
         )
         
         # Helper for safer parsing
         def safe_eval(s):
             try:
-                if not s or not s.strip().startswith("{'deal'"): return None
-                return ast.literal_eval(s)
+                if not s or not s.strip():
+                    return None
+                data = ast.literal_eval(s)
+                # Only process if it has 'deal' key (matching old SQL: ILIKE "{'deal'%")
+                if not isinstance(data, dict) or 'deal' not in data:
+                    return None
+                return data
             except:
                 return None
 
