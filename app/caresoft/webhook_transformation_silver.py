@@ -284,64 +284,83 @@ class WebhookTransformation:
                 try:
                     deal_info = data_dict.get('deal', {})
                     
-                    # Prepare row for DuckDB (Keep everything raw/string-ish or native python types)
+                    # Helper functions for data conversion
+                    def safe_str(val):
+                        """Convert value to string, handling None and booleans"""
+                        if val is None:
+                            return None
+                        # Convert boolean to string representation that DuckDB can cast
+                        if isinstance(val, bool):
+                            return str(int(val))  # True->1, False->0
+                        return str(val) if val != '' else None
+                    
+                    def safe_json(val):
+                        """Safely serialize value - handles dict, list, and primitives"""
+                        if not val:
+                            return EMPTY_JSON
+                        # If dict or list, serialize to JSON
+                        if isinstance(val, (dict, list)):
+                            return json.dumps(val)
+                        # If primitive (string, int, etc.), convert to string
+                        return str(val)
+                    
                     row = {
                         "pk_id": pk,
                         "id": row_id,
-                        # Integers
-                        "deal_id": deal_info.get("deal_id"),
-                        "value": deal_info.get("value"),
-                        "probability": deal_info.get("probability"),
-                        "pipeline_id": deal_info.get("pipeline_id"),
-                        "pipeline_stage_id": deal_info.get("pipeline_stage_id"),
-                        "closed_type": deal_info.get("closed_type"),
-                        "source_detail_id": deal_info.get("source_detail_id"),
-                        "service_id": deal_info.get("service_id"),
-                        "requester_id": deal_info.get("requester_id"),
-                        "assignee_id": deal_info.get("assignee_id"),
-                        "ticket_source_end_status": deal_info.get("ticket_source_end_status"),
+                        # Integers - convert to string to avoid boolean issues
+                        "deal_id": safe_str(deal_info.get("deal_id")),
+                        "value": safe_str(deal_info.get("value")),
+                        "probability": safe_str(deal_info.get("probability")),
+                        "pipeline_id": safe_str(deal_info.get("pipeline_id")),
+                        "pipeline_stage_id": safe_str(deal_info.get("pipeline_stage_id")),
+                        "closed_type": safe_str(deal_info.get("closed_type")),
+                        "source_detail_id": safe_str(deal_info.get("source_detail_id")),
+                        "service_id": safe_str(deal_info.get("service_id")),
+                        "requester_id": safe_str(deal_info.get("requester_id")),
+                        "assignee_id": safe_str(deal_info.get("assignee_id")),
+                        "ticket_source_end_status": safe_str(deal_info.get("ticket_source_end_status")),
                         
-                        # Timestamps (ms)
-                        "created_at": deal_info.get("created_at"),
-                        "updated_at": deal_info.get("updated_at"),
-                        "last_change_status_at": deal_info.get("last_change_status_at"),
-                        "last_change_stage_at": deal_info.get("last_change_stage_at"),
+                        # Timestamps (ms) - convert to string
+                        "created_at": safe_str(deal_info.get("created_at")),
+                        "updated_at": safe_str(deal_info.get("updated_at")),
+                        "last_change_status_at": safe_str(deal_info.get("last_change_status_at")),
+                        "last_change_stage_at": safe_str(deal_info.get("last_change_stage_at")),
                         
-                        # Strings/Texts
-                        "name": deal_info.get("name"),
-                        "source": deal_info.get("source"),
-                        "facebook_page_id": deal_info.get("facebook_page_id"),
-                        "activity": deal_info.get("activity"),
-                        "addition_fields": deal_info.get("addition_fields"),
-                        "gclid": deal_info.get("gclid"),
-                        "addition_details": deal_info.get("addition_details"),
-                        "comment": deal_info.get("comment"),
-                        "convert_type": deal_info.get("convert_type"),
-                        "convert_at": deal_info.get("convert_at"),
-                        "closed_by": deal_info.get("closed_by"),
-                        "closed_at": deal_info.get("closed_at"),
-                        "unqualified_reasons": deal_info.get("unqualified_reasons"),
-                        "lost_reasons": deal_info.get("lost_reasons"),
-                        "estimated_closed_date": deal_info.get("estimated_closed_date"),
-                        "utm_campaign": deal_info.get("utm_campaign"),
+                        # Strings/Texts - already strings but safe_str handles None
+                        "name": safe_str(deal_info.get("name")),
+                        "source": safe_str(deal_info.get("source")),
+                        "facebook_page_id": safe_str(deal_info.get("facebook_page_id")),
+                        "activity": safe_str(deal_info.get("activity")),
+                        "addition_fields": safe_str(deal_info.get("addition_fields")),
+                        "gclid": safe_str(deal_info.get("gclid")),
+                        "addition_details": safe_str(deal_info.get("addition_details")),
+                        "comment": safe_str(deal_info.get("comment")),
+                        "convert_type": safe_str(deal_info.get("convert_type")),
+                        "convert_at": safe_str(deal_info.get("convert_at")),
+                        "closed_by": safe_str(deal_info.get("closed_by")),
+                        "closed_at": safe_str(deal_info.get("closed_at")),
+                        "unqualified_reasons": safe_str(deal_info.get("unqualified_reasons")),
+                        "lost_reasons": safe_str(deal_info.get("lost_reasons")),
+                        "estimated_closed_date": safe_str(deal_info.get("estimated_closed_date")),
+                        "utm_campaign": safe_str(deal_info.get("utm_campaign")),
                         
                         # Complex/Nested Objects -> Dump to JSON String
-                        # Use EMPTY_JSON constant for empty dicts to save memory (~50MB per 50K batch)
-                        "call_info": json.dumps(data_dict["call_info"]) if data_dict.get("call_info") else EMPTY_JSON,
-                        "agent_submit": json.dumps(data_dict["agent_submit"]) if data_dict.get("agent_submit") else EMPTY_JSON,
-                        "updated_properties": json.dumps(data_dict["updated_properties"]) if data_dict.get("updated_properties") else EMPTY_JSON,
-                        "account_id": json.dumps(data_dict["account_id"]) if data_dict.get("account_id") else EMPTY_JSON,
-                        "activity_source": json.dumps(data_dict["activity_source"]) if data_dict.get("activity_source") else EMPTY_JSON,
-                        "action": json.dumps(data_dict["action"]) if data_dict.get("action") else EMPTY_JSON,
-                        "convert_from_object": json.dumps(data_dict["convert_from_object"]) if data_dict.get("convert_from_object") else EMPTY_JSON,
-                        "object": json.dumps(data_dict["object"]) if data_dict.get("object") else EMPTY_JSON,
+                        # Handle both dict/list (serialize) and primitives (convert to string)
+                        "call_info": safe_json(data_dict.get("call_info")),
+                        "agent_submit": safe_json(data_dict.get("agent_submit")),
+                        "updated_properties": safe_json(data_dict.get("updated_properties")),
+                        "account_id": safe_json(data_dict.get("account_id")),
+                        "activity_source": safe_json(data_dict.get("activity_source")),
+                        "action": safe_json(data_dict.get("action")),
+                        "convert_from_object": safe_json(data_dict.get("convert_from_object")),
+                        "object": safe_json(data_dict.get("object")),
                         
-                        # Doubles/Numerics
-                        "fb_psid": deal_info.get("fb_psid"),
-                        "csa_acc": deal_info.get("csa_acc"),
-                        "commentator_id": deal_info.get("commentator_id"),
-                        "zalo_page_id": deal_info.get("zalo_page_id"),
-                        "convert_by": deal_info.get("convert_by"),
+                        # Doubles/Numerics - convert to string
+                        "fb_psid": safe_str(deal_info.get("fb_psid")),
+                        "csa_acc": safe_str(deal_info.get("csa_acc")),
+                        "commentator_id": safe_str(deal_info.get("commentator_id")),
+                        "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
+                        "convert_by": safe_str(deal_info.get("convert_by")),
                         
                         "snapshot_date": self.snapshot_date
                     }
