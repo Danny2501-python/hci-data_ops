@@ -18,6 +18,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
 import gc
+import duckdb
 
 # Configs
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_SILVER')
@@ -59,7 +60,7 @@ class WebhookTransformation:
             from pyiceberg.transforms import IdentityTransform
 
             schema = Schema(
-                NestedField(1, "pk_id", StringType(), required=True), # Primary Key (source + id)
+                NestedField(1, "pk_id", LongType(), required=True), # Primary Key (source + id)
                 NestedField(2, "id", LongType(), required=False),     # Original ID
                 NestedField(3, "snapshot_date", DateType(), required=False),
                 NestedField(4, "ingestion_timestamp", TimestampType(), required=False),
@@ -84,7 +85,7 @@ class WebhookTransformation:
 
             # Schema matching DDL provided
             schema = Schema(
-                NestedField(1, "pk_id", StringType(), required=True), # Primary Key (unique global)
+                NestedField(1, "pk_id", LongType(), required=True), # Primary Key (unique global)
                 NestedField(2, "id", LongType(), required=False),     # Original ID (integer)
                 
                 NestedField(3, "last_change_status_at", TimestampType(), required=False),
@@ -146,7 +147,7 @@ class WebhookTransformation:
     def parse_and_transform_batch(self, bronze_table):
         """
         Generator function that yields batches of (success_rows, error_ids)
-        Uses batch streaming to prevent OOM
+        Uses batch streaming and DuckDB for efficient SQL-based transformation
         """
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
         
@@ -159,126 +160,187 @@ class WebhookTransformation:
         # Helper for safer parsing
         def safe_eval(s):
             try:
-                if not s: return None
-                return json.loads(json.dumps(ast.literal_eval(s)))
-            except:
-                return None
-
-        # Helper for timestamp conversion
-        def parse_ts(val):
-            if not val: return None
-            try:
-                return datetime.fromtimestamp(float(val) / 1000.0)
-            except:
-                return None
-
-        # Helper for integer conversion (handles numbers, strings, and bools)
-        def to_int(val):
-            if val is None or val == "":
-                return None
-            if isinstance(val, bool):
-                return None # Treat boolean as None for Integer fields
-            try:
-                return int(float(val))
+                if not s or not s.strip().startswith("{'deal'"): return None
+                return ast.literal_eval(s)
             except:
                 return None
 
         total_processed = 0
+        con = duckdb.connect()
         
         # Iterate through batches
         for arrow_batch in scan.to_arrow_batch_reader():
-            batch_success = []
-            batch_errors = []
-            
             # Convert batch to python list for processing
             pk_ids = arrow_batch["pk_id"].to_pylist()
             ids = arrow_batch["id"].to_pylist()
             inputs = arrow_batch["input"].to_pylist()
             
+            raw_data = []
+            error_batch = []
+            
             for i, input_str in enumerate(inputs):
                 pk = pk_ids[i]
                 row_id = ids[i]
                 
-                # 1. Check content
-                if not input_str or not input_str.strip().startswith("{'deal'"):
+                # 1. Parse content
+                data_dict = safe_eval(input_str)
+                if not data_dict:
+                     # If parsing fails or invalid format
+                     error_batch.append((pk, row_id))
                      continue
                 
-                # 2. Parse
-                json_data = safe_eval(input_str)
-                if not json_data:
-                    batch_errors.append((pk, row_id)) # Store tuple for error
-                    continue
-                
-                # 3. Extract
+                # 2. Extract Raw Dict (Flatten logic in Python, Cast in DuckDB)
                 try:
-                    deal_info = json_data.get('deal', {})
-                    record = {
-                        "pk_id": str(pk), # Use PK_ID (ensure string)
+                    deal_info = data_dict.get('deal', {})
+                    
+                    # Prepare row for DuckDB (Keep everything raw/string-ish or native python types)
+                    row = {
+                        "pk_id": pk,
                         "id": row_id,
-                        "deal_id": to_int(deal_info.get("deal_id")),
-                        "name": str(deal_info.get("name")) if deal_info.get("name") is not None else None,
-                        "value": to_int(deal_info.get("value")),
-                        "probability": to_int(deal_info.get("probability")),
-                        "pipeline_id": to_int(deal_info.get("pipeline_id")),
-                        "pipeline_stage_id": to_int(deal_info.get("pipeline_stage_id")),
-                        "closed_type": to_int(deal_info.get("closed_type")),
-                        "source": str(deal_info.get("source")) if deal_info.get("source") is not None else None,
-                        "source_detail_id": to_int(deal_info.get("source_detail_id")),
-                        "service_id": to_int(deal_info.get("service_id")),
-                        "requester_id": to_int(deal_info.get("requester_id")),
-                        "assignee_id": to_int(deal_info.get("assignee_id")),
-                        "facebook_page_id": str(deal_info.get("facebook_page_id")) if deal_info.get("facebook_page_id") else None,
-                        "ticket_source_end_status": to_int(deal_info.get("ticket_source_end_status")),
+                        # Integers
+                        "deal_id": deal_info.get("deal_id"),
+                        "value": deal_info.get("value"),
+                        "probability": deal_info.get("probability"),
+                        "pipeline_id": deal_info.get("pipeline_id"),
+                        "pipeline_stage_id": deal_info.get("pipeline_stage_id"),
+                        "closed_type": deal_info.get("closed_type"),
+                        "source_detail_id": deal_info.get("source_detail_id"),
+                        "service_id": deal_info.get("service_id"),
+                        "requester_id": deal_info.get("requester_id"),
+                        "assignee_id": deal_info.get("assignee_id"),
+                        "ticket_source_end_status": deal_info.get("ticket_source_end_status"),
                         
-                        "created_at": parse_ts(deal_info.get("created_at")),
-                        "updated_at": parse_ts(deal_info.get("updated_at")),
-                        "last_change_status_at": parse_ts(deal_info.get("last_change_status_at")),
-                        "last_change_stage_at": parse_ts(deal_info.get("last_change_stage_at")),
+                        # Timestamps (ms)
+                        "created_at": deal_info.get("created_at"),
+                        "updated_at": deal_info.get("updated_at"),
+                        "last_change_status_at": deal_info.get("last_change_status_at"),
+                        "last_change_stage_at": deal_info.get("last_change_stage_at"),
                         
-                        "activity": str(deal_info.get("activity")),
-                        "addition_fields": str(deal_info.get("addition_fields")),
-                        "call_info": str(json_data.get("call_info", {})),
-                        "agent_submit": str(json_data.get("agent_submit", {})),
-                        "updated_properties": str(json_data.get("updated_properties", {})),
-                        "account_id": str(json_data.get("account_id", {})),
-                        "activity_source": str(json_data.get("activity_source", {})),
-                        "action": str(json_data.get("action", {})),
-                        "convert_from_object": str(json_data.get("convert_from_object", {})),
-                        "object": str(json_data.get("object", {})),
+                        # Strings/Texts
+                        "name": deal_info.get("name"),
+                        "source": deal_info.get("source"),
+                        "facebook_page_id": deal_info.get("facebook_page_id"),
+                        "activity": deal_info.get("activity"),
+                        "addition_fields": deal_info.get("addition_fields"),
+                        "gclid": deal_info.get("gclid"),
+                        "addition_details": deal_info.get("addition_details"),
+                        "comment": deal_info.get("comment"),
+                        "convert_type": deal_info.get("convert_type"),
+                        "convert_at": deal_info.get("convert_at"),
+                        "closed_by": deal_info.get("closed_by"),
+                        "closed_at": deal_info.get("closed_at"),
+                        "unqualified_reasons": deal_info.get("unqualified_reasons"),
+                        "lost_reasons": deal_info.get("lost_reasons"),
+                        "estimated_closed_date": deal_info.get("estimated_closed_date"),
+                        "utm_campaign": deal_info.get("utm_campaign"),
                         
-                        "fb_psid": float(deal_info.get("fb_psid")) if deal_info.get("fb_psid") else None,
-                        "csa_acc": float(deal_info.get("csa_acc")) if deal_info.get("csa_acc") else None,
-                        "commentator_id": float(deal_info.get("commentator_id")) if deal_info.get("commentator_id") else None,
-                        "zalo_page_id": float(deal_info.get("zalo_page_id")) if deal_info.get("zalo_page_id") else None,
-                        "convert_by": float(deal_info.get("convert_by")) if deal_info.get("convert_by") else None,
-
-                        "gclid": str(deal_info.get("gclid")) if deal_info.get("gclid") else None,
-                        "addition_details": str(deal_info.get("addition_details")) if deal_info.get("addition_details") else None,
-                        "comment": str(deal_info.get("comment")) if deal_info.get("comment") else None,
-                        "convert_type": str(deal_info.get("convert_type")) if deal_info.get("convert_type") else None,
-                        "convert_at": str(deal_info.get("convert_at")) if deal_info.get("convert_at") else None,
-                        "closed_by": str(deal_info.get("closed_by")) if deal_info.get("closed_by") else None,
-                        "closed_at": str(deal_info.get("closed_at")) if deal_info.get("closed_at") else None,
-                        "unqualified_reasons": str(deal_info.get("unqualified_reasons")) if deal_info.get("unqualified_reasons") else None,
-                        "lost_reasons": str(deal_info.get("lost_reasons")) if deal_info.get("lost_reasons") else None,
-                        "estimated_closed_date": str(deal_info.get("estimated_closed_date")) if deal_info.get("estimated_closed_date") else None,
-                        "utm_campaign": str(deal_info.get("utm_campaign")) if deal_info.get("utm_campaign") else None,
-
-                        "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": datetime.now()
+                        # Complex/Nested Objects -> Dump to JSON String
+                        "call_info": json.dumps(data_dict.get("call_info", {})),
+                        "agent_submit": json.dumps(data_dict.get("agent_submit", {})),
+                        "updated_properties": json.dumps(data_dict.get("updated_properties", {})),
+                        "account_id": json.dumps(data_dict.get("account_id", {})),
+                        "activity_source": json.dumps(data_dict.get("activity_source", {})),
+                        "action": json.dumps(data_dict.get("action", {})),
+                        "convert_from_object": json.dumps(data_dict.get("convert_from_object", {})),
+                        "object": json.dumps(data_dict.get("object", {})),
+                        
+                        # Doubles/Numerics
+                        "fb_psid": deal_info.get("fb_psid"),
+                        "csa_acc": deal_info.get("csa_acc"),
+                        "commentator_id": deal_info.get("commentator_id"),
+                        "zalo_page_id": deal_info.get("zalo_page_id"),
+                        "convert_by": deal_info.get("convert_by"),
+                        
+                        "snapshot_date": self.snapshot_date
                     }
-                    batch_success.append(record)
-                except:
-                    batch_errors.append((pk, row_id))
-            
+                    raw_data.append(row)
+                except Exception:
+                    error_batch.append((pk, row_id))
+
+            # 3. Validated Batch via DuckDB
+            batch_success = []
+            if raw_data:
+                try:
+                    # Create temporary Arrow table from raw list
+                    raw_arrow = pa.Table.from_pylist(raw_data)
+                    
+                    # Perform SQL Transformation with Safe Casting
+                    # We utilize TRY_CAST to handle dirty data gracefully (returns NULL on failure instead of error)
+                    res = con.sql("""
+                        SELECT
+                            TRY_CAST(pk_id AS BIGINT) as pk_id,
+                            id,
+                            
+                            TRY_CAST(deal_id AS INTEGER) as deal_id,
+                            CAST(name AS VARCHAR) as name,
+                            TRY_CAST(value AS INTEGER) as value,
+                            TRY_CAST(probability AS INTEGER) as probability,
+                            TRY_CAST(pipeline_id AS INTEGER) as pipeline_id,
+                            TRY_CAST(pipeline_stage_id AS INTEGER) as pipeline_stage_id,
+                            TRY_CAST(closed_type AS INTEGER) as closed_type,
+                            CAST(source AS VARCHAR) as source,
+                            TRY_CAST(source_detail_id AS INTEGER) as source_detail_id,
+                            TRY_CAST(service_id AS INTEGER) as service_id,
+                            TRY_CAST(requester_id AS INTEGER) as requester_id,
+                            TRY_CAST(assignee_id AS INTEGER) as assignee_id,
+                            CAST(facebook_page_id AS VARCHAR) as facebook_page_id,
+                            TRY_CAST(ticket_source_end_status AS INTEGER) as ticket_source_end_status,
+                            
+                            -- Timestamp Handling (Assuming input is ms epoch or needs parsing)
+                            -- If input is None/Null, returns Null.
+                            to_timestamp(TRY_CAST(created_at AS DOUBLE) / 1000) as created_at,
+                            to_timestamp(TRY_CAST(updated_at AS DOUBLE) / 1000) as updated_at,
+                            to_timestamp(TRY_CAST(last_change_status_at AS DOUBLE) / 1000) as last_change_status_at,
+                            to_timestamp(TRY_CAST(last_change_stage_at AS DOUBLE) / 1000) as last_change_stage_at,
+                            
+                            CAST(activity AS VARCHAR) as activity,
+                            CAST(addition_fields AS VARCHAR) as addition_fields,
+                            CAST(call_info AS VARCHAR) as call_info,
+                            CAST(agent_submit AS VARCHAR) as agent_submit,
+                            CAST(updated_properties AS VARCHAR) as updated_properties,
+                            CAST(account_id AS VARCHAR) as account_id,
+                            CAST(activity_source AS VARCHAR) as activity_source,
+                            CAST(action AS VARCHAR) as action,
+                            CAST(convert_from_object AS VARCHAR) as convert_from_object,
+                            CAST(object AS VARCHAR) as object,
+                            
+                            TRY_CAST(fb_psid AS DOUBLE) as fb_psid,
+                            CAST(gclid AS VARCHAR) as gclid,
+                            TRY_CAST(convert_by AS DOUBLE) as convert_by,
+                            TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
+                            CAST(addition_details AS VARCHAR) as addition_details,
+                            TRY_CAST(commentator_id AS DOUBLE) as commentator_id,
+                            CAST(comment AS VARCHAR) as comment,
+                            CAST(convert_type AS VARCHAR) as convert_type,
+                            CAST(convert_at AS VARCHAR) as convert_at,
+                            CAST(closed_by AS VARCHAR) as closed_by,
+                            TRY_CAST(zalo_page_id AS DOUBLE) as zalo_page_id,
+                            CAST(closed_at AS VARCHAR) as closed_at,
+                            CAST(unqualified_reasons AS VARCHAR) as unqualified_reasons,
+                            CAST(lost_reasons AS VARCHAR) as lost_reasons,
+                            CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
+                            CAST(utm_campaign AS VARCHAR) as utm_campaign,
+                            
+                            snapshot_date,
+                            CAST(now() AS TIMESTAMP) as ingestion_timestamp
+                        FROM raw_arrow
+                    """).arrow()
+                    
+                    batch_success = res.to_pylist()
+                except Exception as e:
+                    logger.error(f"DuckDB Transformation Error: {e}")
+                    # If whole batch fails in SQL, add all to error
+                    for row in raw_data:
+                         error_batch.append((row["pk_id"], row["id"]))
+
             total_processed += len(inputs)
             logger.info(f"Processed batch of {len(inputs)}. Total scanned: {total_processed}")
             
-            # Yield results for this batch
-            yield batch_success, batch_errors
+            yield batch_success, error_batch
             
-            # Explicit cleanup
+            # Cleanup
             del ids, inputs, pk_ids, arrow_batch
+            if raw_data: del raw_data
             gc.collect()
 
     def run(self):
