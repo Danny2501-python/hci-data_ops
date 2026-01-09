@@ -115,7 +115,7 @@ class WebhookTransformation:
                 NestedField(28, "action", StringType(), required=False),
                 NestedField(29, "convert_from_object", StringType(), required=False),
                 NestedField(30, "object", StringType(), required=False),
-                NestedField(31, "fb_psid", DoubleType(), required=False), # numeric -> double
+                NestedField(31, "fb_psid", LongType(), required=False), # Facebook PSID (numeric ID, up to 19 digits)
                 NestedField(32, "gclid", StringType(), required=False),
                 NestedField(33, "convert_by", DoubleType(), required=False),
                 NestedField(34, "csa_acc", DoubleType(), required=False),
@@ -194,7 +194,7 @@ class WebhookTransformation:
                 CAST(convert_from_object AS VARCHAR) as convert_from_object,
                 CAST(object AS VARCHAR) as object,
                 
-                TRY_CAST(fb_psid AS DOUBLE) as fb_psid,
+                TRY_CAST(fb_psid AS BIGINT) as fb_psid,  # Facebook PSID (numeric)
                 CAST(gclid AS VARCHAR) as gclid,
                 TRY_CAST(convert_by AS DOUBLE) as convert_by,
                 TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
@@ -216,7 +216,9 @@ class WebhookTransformation:
             FROM raw_arrow
         """).arrow()
         
-        return res.to_pylist()
+        # DuckDB .arrow() returns RecordBatchReader, need to convert to Table
+        result_table = res.read_all()
+        return result_table.to_pylist()
 
     def parse_and_transform_batch(self, bronze_table, processing_batch_size=50000):
         """
@@ -355,8 +357,8 @@ class WebhookTransformation:
                         "convert_from_object": safe_json(data_dict.get("convert_from_object")),
                         "object": safe_json(data_dict.get("object")),
                         
-                        # Doubles/Numerics - convert to string
-                        "fb_psid": safe_str(deal_info.get("fb_psid")),
+                        # Doubles/Numerics - convert to string for DuckDB casting
+                        "fb_psid": safe_str(deal_info.get("fb_psid")),  # Facebook PSID (will be cast to BIGINT)
                         "csa_acc": safe_str(deal_info.get("csa_acc")),
                         "commentator_id": safe_str(deal_info.get("commentator_id")),
                         "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
