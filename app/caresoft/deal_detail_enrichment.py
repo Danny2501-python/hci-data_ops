@@ -25,6 +25,7 @@ import time
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And, NotIn
+from pyiceberg.io.pyarrow import schema_to_pyarrow
 from loguru import logger
 import gc
 
@@ -432,13 +433,10 @@ class DealDetailEnrichment:
     
     def call_caresoft_api(self, brand: dict, deal_id: int):
         """Call CareSoft API to get deal details"""
-        # Extract subdomain (e.g. "kangnam2.caresoft.vn" -> "kangnam2")
-        domain = brand["caresoft_domain"]
-        subdomain = domain.split('.')[0] if '.' in domain else domain
-        
+        subdomain = brand["caresoft_domain"]  # Already just subdomain (e.g. "kangnam2")
         api_key = brand["caresoft_key"]
         
-        # Correct API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/deal/{id}
+        # API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/deal/{id}
         url = f"https://api.caresoft.vn/{subdomain}/api/v1/deal/{deal_id}"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -524,7 +522,7 @@ class DealDetailEnrichment:
             error_records = []
             
             # Process deals in micro-batches
-            BATCH_SIZE = 10
+            BATCH_SIZE = 1000
             batch_records = []
             
             for i, deal_id in enumerate(deal_ids):
@@ -553,19 +551,91 @@ class DealDetailEnrichment:
                         if val is None:
                             return None
                         return str(val)
+
+                    # Helper to safely convert to timestamp
+                    def safe_ts(val):
+                        if val is None:
+                            return None
+                        try:
+                            # Assuming the timestamp is in ISO format or similar string
+                            return datetime.fromisoformat(val.replace('Z', '+00:00')) if isinstance(val, str) else val
+                        except (ValueError, TypeError):
+                            return None
                     
                     record = {
-                        "id": deal_data.get("id"),  # LongType - keep as is
+                        # --- Core IDs & Integers ---
+                        "id": deal_data.get("id"),  # LongType
                         "brand_id": safe_int(brand["erp_id"]),  # IntegerType
-                        "value": safe_int(deal_data.get("value")),  # IntegerType
-                        "probability": safe_int(deal_data.get("probability")),  # IntegerType
-                        "pipeline_id": safe_int(deal_data.get("pipeline_id")),  # IntegerType
-                        "pipeline_stage_id": safe_int(deal_data.get("pipeline_stage_id")),  # IntegerType
-                        "closed_type": safe_str(deal_data.get("closed_type")),  # StringType - convert to string!
-                        "service_id": deal_data.get("service_id"),  # LongType
-                        "requester_id": deal_data.get("requester_id"),  # LongType
-                        "assignee_id": deal_data.get("assignee_id"),  # LongType
-                        "ticket_source_end_status": safe_int(deal_data.get("ticket_source_end_status")),  # IntegerType
+                        "account_id": safe_int(deal_data.get("account_id")),
+                        "deal_no": safe_int(deal_data.get("deal_no")),
+                        "group_id": safe_int(deal_data.get("group_id")),
+                        "ticket_source_end_status": safe_int(deal_data.get("ticket_source_end_status")),
+                        
+                        # --- Long IDs ---
+                        "requester_id": deal_data.get("requester_id"),
+                        "assignee_id": deal_data.get("assignee_id"),
+                        "service_id": deal_data.get("service_id"),
+                        "convert_by": deal_data.get("convert_by"),
+                        
+                        # --- Text Fields ---
+                        "ticket_source": deal_data.get("ticket_source"),
+                        "merge_status": deal_data.get("merge_status"),
+                        "merge_to": deal_data.get("merge_to"),
+                        "clone_from": deal_data.get("clone_from"),
+                        "subject": deal_data.get("subject"),
+                        
+                        # --- Timestamps ---
+                        "created_at": safe_ts(deal_data.get("created_at")),
+                        "updated_at": safe_ts(deal_data.get("updated_at")),
+                        "satisfaction_at": safe_ts(deal_data.get("satisfaction_at")),
+                        "convert_at": safe_ts(deal_data.get("convert_at")),
+                        "estimated_closed_date": safe_ts(deal_data.get("estimated_closed_date")),
+                        "closed_at": safe_ts(deal_data.get("closed_at")),
+                        
+                        # --- More Text Fields ---
+                        "duedate": deal_data.get("duedate"),
+                        "satisfaction": deal_data.get("satisfaction"),
+                        "satisfaction_content": deal_data.get("satisfaction_content"),
+                        "satisfaction_send": deal_data.get("satisfaction_send"),
+                        "campaign_id": safe_str(deal_data.get("campaign_id")),
+                        "campaign_action_id": safe_str(deal_data.get("campaign_action_id")),
+                        "campaign_status": safe_str(deal_data.get("campaign_status")),
+                        "automessage_id": safe_str(deal_data.get("automessage_id")),
+                        "manualmessage_id": safe_str(deal_data.get("manualmessage_id")),
+                        
+                        # --- Integer Fields ---
+                        "incident_id": safe_int(deal_data.get("incident_id")),
+                        "ticket_source_detail_id": safe_int(deal_data.get("ticket_source_detail_id")),
+                        "convert_type": safe_int(deal_data.get("convert_type")),
+                        "last_lead_status_id": safe_int(deal_data.get("last_lead_status_id")),
+                        "lead_status_id": safe_int(deal_data.get("lead_status_id")),
+                        
+                        # --- QA & Other Text ---
+                        "qa_script_id": safe_str(deal_data.get("qa_script_id")),
+                        "qa_agent": deal_data.get("qa_agent"),
+                        "current_agent": deal_data.get("current_agent"),
+                        "unqualified_reasons": safe_str(deal_data.get("unqualified_reasons")),
+                        "closed_by": safe_str(deal_data.get("closed_by")),
+                        "closed_type": safe_str(deal_data.get("closed_type")),
+                        
+                        # --- Deal Specifics ---
+                        "pipeline_id": safe_int(deal_data.get("pipeline_id")),
+                        "pipeline_stage_id": safe_int(deal_data.get("pipeline_stage_id")),
+                        "value": safe_int(deal_data.get("value")),
+                        "probability": safe_int(deal_data.get("probability")),
+                        "last_deal_stage_id": safe_int(deal_data.get("last_deal_stage_id")),
+                        "lost_reasons": safe_str(deal_data.get("lost_reasons")),
+                        
+                        # --- Complex Objects Mapped to String (JSON or Str representation) ---
+                        "comments": json.dumps(deal_data.get("comments", [])),
+                        "tags": json.dumps(deal_data.get("tags", [])),
+                        "ccs": json.dumps(deal_data.get("ccs", [])),
+                        "follows": json.dumps(deal_data.get("follows", [])),
+                        "labels": json.dumps(deal_data.get("labels", [])),
+                        "assignee": json.dumps(deal_data.get("assignee", {})),
+                        "requester": json.dumps(deal_data.get("requester", {})),
+                        
+                        # --- Metadata ---
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {})),
                         "raw_data": json.dumps(deal_data),
                         "snapshot_date": self.snapshot_date,
@@ -596,28 +666,9 @@ class DealDetailEnrichment:
                 
                 # Flush batch
                 if len(batch_records) >= BATCH_SIZE:
-                    # Define PyArrow schema to force int32 for IntegerType fields
-                    pyarrow_schema = pa.schema([
-                        ("id", pa.int64()),  # LongType
-                        ("brand_id", pa.int32()),  # IntegerType
-                        ("name", pa.string()),
-                        ("value", pa.int32()),  # IntegerType
-                        ("probability", pa.int32()),  # IntegerType
-                        ("pipeline_id", pa.int32()),  # IntegerType
-                        ("pipeline_stage_id", pa.int32()),  # IntegerType
-                        ("closed_type", pa.string()),  # StringType
-                        ("source", pa.string()),
-                        ("source_detail_id", pa.int64()),  # LongType
-                        ("service_id", pa.int64()),  # LongType
-                        ("requester_id", pa.int64()),  # LongType
-                        ("assignee_id", pa.int64()),  # LongType
-                        ("facebook_page_id", pa.string()),
-                        ("ticket_source_end_status", pa.int32()),  # IntegerType
-                        ("custom_fields", pa.string()),
-                        ("raw_data", pa.string()),
-                        ("snapshot_date", pa.date32()),
-                        ("ingestion_timestamp", pa.timestamp('us')),
-                    ])
+                    # Derive PyArrow schema dynamically from Iceberg table
+                    # This ensures 100% consistency with the target table
+                    pyarrow_schema = schema_to_pyarrow(detail_table.schema())
                     
                     df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                     detail_table.append(df)
@@ -634,28 +685,9 @@ class DealDetailEnrichment:
             
             # Flush remaining
             if batch_records:
-                # Define PyArrow schema to force int32 for IntegerType fields
-                pyarrow_schema = pa.schema([
-                    ("id", pa.int64()),  # LongType
-                    ("brand_id", pa.int32()),  # IntegerType
-                    ("name", pa.string()),
-                    ("value", pa.int32()),  # IntegerType
-                    ("probability", pa.int32()),  # IntegerType
-                    ("pipeline_id", pa.int32()),  # IntegerType
-                    ("pipeline_stage_id", pa.int32()),  # IntegerType
-                    ("closed_type", pa.string()),  # StringType
-                    ("source", pa.string()),
-                    ("source_detail_id", pa.int64()),  # LongType
-                    ("service_id", pa.int64()),  # LongType
-                    ("requester_id", pa.int64()),  # LongType
-                    ("assignee_id", pa.int64()),  # LongType
-                    ("facebook_page_id", pa.string()),
-                    ("ticket_source_end_status", pa.int32()),  # IntegerType
-                    ("custom_fields", pa.string()),
-                    ("raw_data", pa.string()),
-                    ("snapshot_date", pa.date32()),
-                    ("ingestion_timestamp", pa.timestamp('us')),
-                ])
+                # Derive PyArrow schema dynamically from Iceberg table
+                # This ensures 100% consistency with the target table
+                pyarrow_schema = schema_to_pyarrow(detail_table.schema())
                 
                 df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                 detail_table.append(df)
