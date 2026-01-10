@@ -287,17 +287,16 @@ class DealDetailEnrichment:
     
     def get_deal_ids_to_enrich(self, brand_erp_id: int):
         """
-        Get all deal_ids from Silver webhook for this brand's snapshot
+        Get deal_ids that need enrichment by comparing with previous snapshot
         
-        Uses DuckDB for efficient SQL-like aggregation with batch processing:
-        - Process Arrow batches incrementally to avoid OOM
-        - SELECT deal_id, MAX(updated_at) FROM webhook GROUP BY deal_id
-        - Much faster than Python loops for large datasets
+        Incremental enrichment strategy:
+        1. Get all deals from TODAY's snapshot with their updated_at
+        2. Get all deals from YESTERDAY's snapshot with their updated_at
+        3. Only enrich deals where:
+           - New deal (not in yesterday) OR
+           - updated_at is newer than yesterday
         
-        Handles multiple webhook events per deal_id:
-        - 1 deal_id can have multiple webhook events
-        - We take the event with LATEST updated_at (business timestamp from CareSoft)
-        - This matches legacy system logic
+        This dramatically reduces API calls!
         
         Args:
             brand_erp_id: The erp_id from core_brand table (maps to brand_etl in webhook)
@@ -306,10 +305,14 @@ class DealDetailEnrichment:
         
         logger.info(f"Scanning webhooks for brand_etl={brand_erp_id}, snapshot_date={self.snapshot_date}")
         
-        # Scan Silver webhook for this brand's snapshot
         from pyiceberg.expressions import And, IsNotNull
+        from datetime import timedelta
+        import duckdb
         
-        webhook_scan = webhook_table.scan(
+        con = duckdb.connect()
+        
+        # Step 1: Get TODAY's deals with MAX(updated_at)
+        today_scan = webhook_table.scan(
             row_filter=And(
                 EqualTo("snapshot_date", self.snapshot_date),
                 EqualTo("brand_etl", brand_erp_id),
@@ -318,55 +321,103 @@ class DealDetailEnrichment:
             selected_fields=("deal_id", "updated_at")
         )
         
-        # Use DuckDB with batch processing to avoid OOM
-        import duckdb
-        
-        con = duckdb.connect()
-        
-        # Create temp table for aggregation
         con.execute("""
-            CREATE TEMP TABLE webhook_events (
+            CREATE TEMP TABLE today_deals (
                 deal_id INTEGER,
                 updated_at TIMESTAMP
             )
         """)
         
-        total_events = 0
+        total_today = 0
+        for batch in today_scan.to_arrow_batch_reader():
+            if len(batch) > 0:
+                total_today += len(batch)
+                con.execute("INSERT INTO today_deals SELECT * FROM batch")
         
-        # Process batches incrementally
-        for batch in webhook_scan.to_arrow_batch_reader():
-            batch_size = len(batch)
-            if batch_size == 0:
-                continue
-                
-            total_events += batch_size
-            
-            # Insert batch into DuckDB temp table
-            con.execute("INSERT INTO webhook_events SELECT * FROM batch")
-            
-            logger.debug(f"Processed batch: {batch_size} events (total: {total_events})")
-        
-        if total_events == 0:
-            logger.info(f"No webhook events found for brand {brand_erp_id}")
+        if total_today == 0:
+            logger.info(f"No deals in today's snapshot for brand {brand_erp_id}")
             con.close()
             return []
         
-        # Aggregate using SQL (like legacy system)
-        result = con.execute("""
-            SELECT deal_id, MAX(updated_at) as max_updated_at
-            FROM webhook_events
-            WHERE deal_id IS NOT NULL AND deal_id != 0
-            GROUP BY deal_id
-            ORDER BY deal_id
-        """).fetchall()
+        logger.info(f"Today's snapshot: {total_today} webhook events")
+        
+        # Step 2: Get YESTERDAY's deals with MAX(updated_at)
+        yesterday = self.snapshot_date - timedelta(days=1)
+        
+        try:
+            yesterday_scan = webhook_table.scan(
+                row_filter=And(
+                    EqualTo("snapshot_date", yesterday),
+                    EqualTo("brand_etl", brand_erp_id),
+                    IsNotNull("deal_id")
+                ),
+                selected_fields=("deal_id", "updated_at")
+            )
+            
+            con.execute("""
+                CREATE TEMP TABLE yesterday_deals (
+                    deal_id INTEGER,
+                    updated_at TIMESTAMP
+                )
+            """)
+            
+            total_yesterday = 0
+            for batch in yesterday_scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    total_yesterday += len(batch)
+                    con.execute("INSERT INTO yesterday_deals SELECT * FROM batch")
+            
+            logger.info(f"Yesterday's snapshot: {total_yesterday} webhook events")
+            
+        except Exception as e:
+            logger.warning(f"No yesterday snapshot found ({yesterday}): {e}")
+            logger.info("Will enrich ALL deals (first run or missing yesterday data)")
+            total_yesterday = 0
+        
+        # Step 3: Find deals to enrich (NEW or UPDATED)
+        if total_yesterday == 0:
+            # No yesterday data - enrich all today's deals
+            result = con.execute("""
+                SELECT DISTINCT deal_id
+                FROM today_deals
+                WHERE deal_id IS NOT NULL AND deal_id != 0
+                ORDER BY deal_id
+            """).fetchall()
+        else:
+            # Compare with yesterday - only enrich NEW or UPDATED deals
+            result = con.execute("""
+                WITH today_max AS (
+                    SELECT deal_id, MAX(updated_at) as max_updated_at
+                    FROM today_deals
+                    WHERE deal_id IS NOT NULL AND deal_id != 0
+                    GROUP BY deal_id
+                ),
+                yesterday_max AS (
+                    SELECT deal_id, MAX(updated_at) as max_updated_at
+                    FROM yesterday_deals
+                    WHERE deal_id IS NOT NULL AND deal_id != 0
+                    GROUP BY deal_id
+                )
+                SELECT t.deal_id
+                FROM today_max t
+                LEFT JOIN yesterday_max y ON t.deal_id = y.deal_id
+                WHERE 
+                    -- New deal (not in yesterday)
+                    y.deal_id IS NULL
+                    OR
+                    -- Updated deal (newer timestamp)
+                    t.max_updated_at > y.max_updated_at
+                ORDER BY t.deal_id
+            """).fetchall()
         
         con.close()
         
         deal_ids = [row[0] for row in result]
         
-        logger.info(f"✅ Found {len(deal_ids)} unique deals from {total_events} webhook events")
-        if total_events > 0:
-            logger.debug(f"Deduplication rate: {(1 - len(deal_ids)/total_events)*100:.1f}%")
+        logger.info(f"✅ Found {len(deal_ids)} deals to enrich from {total_today} webhook events")
+        if total_yesterday > 0:
+            savings = total_today - len(deal_ids)
+            logger.success(f"💰 Saved {savings} API calls by incremental comparison ({savings/total_today*100:.1f}%)")
         
         return deal_ids
     
