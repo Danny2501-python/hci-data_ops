@@ -141,6 +141,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
+
 task_webhook_transformation_silver = KubernetesPodOperator(
     task_id='webhook_transformation_silver',
     name='caresoft-webhook-transformation-silver',
@@ -172,5 +173,39 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     dag=dag,
 )
 
-# Define Dependency
-task_erp_webhook_ingestion >> task_webhook_transformation_silver
+task_deal_detail_enrichment = KubernetesPodOperator(
+    task_id='deal_detail_enrichment',
+    name='caresoft-deal-detail-enrichment',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/deal_detail_enrichment.py', '{{ ds }}'],
+    
+    # Mount NFS for scripts
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_volume_mount],
+    
+    # Environment variables
+    env_vars={
+        **common_env_vars,
+        # Source tables (Silver)
+        'WEBHOOK_TABLE': 'caresoft.cs_deal_wehook',
+        # Target tables (Gold)
+        'DEAL_DETAIL_TABLE': 'caresoft.cs_deal_detail',
+        'DEAL_DETAIL_ERROR_TABLE': 'caresoft.cs_deal_detail_error',
+        'BRAND_TABLE': 'caresoft.core_brand',
+    },
+    
+    # Resource limits
+    container_resources=resource_requirements,
+    
+    # Pod settings
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# Define Dependencies
+# Bronze → Silver → Gold
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
