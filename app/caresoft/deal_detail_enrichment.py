@@ -321,23 +321,23 @@ class DealDetailEnrichment:
             selected_fields=("deal_id", "updated_at")
         )
         
-        con.execute("""
-            CREATE TEMP TABLE today_deals (
-                deal_id INTEGER,
-                updated_at TIMESTAMP
-            )
-        """)
-        
         total_today = 0
+        batches_today = []
+        
         for batch in today_scan.to_arrow_batch_reader():
             if len(batch) > 0:
                 total_today += len(batch)
-                con.execute("INSERT INTO today_deals SELECT * FROM batch")
+                batches_today.append(batch)
         
         if total_today == 0:
             logger.info(f"No deals in today's snapshot for brand {brand_erp_id}")
             con.close()
             return []
+        
+        # Combine batches and register with DuckDB
+        import pyarrow as pa
+        today_table = pa.concat_tables(batches_today)
+        con.register('today_deals', today_table)
         
         logger.info(f"Today's snapshot: {total_today} webhook events")
         
@@ -354,18 +354,18 @@ class DealDetailEnrichment:
                 selected_fields=("deal_id", "updated_at")
             )
             
-            con.execute("""
-                CREATE TEMP TABLE yesterday_deals (
-                    deal_id INTEGER,
-                    updated_at TIMESTAMP
-                )
-            """)
-            
             total_yesterday = 0
+            batches_yesterday = []
+            
             for batch in yesterday_scan.to_arrow_batch_reader():
                 if len(batch) > 0:
                     total_yesterday += len(batch)
-                    con.execute("INSERT INTO yesterday_deals SELECT * FROM batch")
+                    batches_yesterday.append(batch)
+            
+            if total_yesterday > 0:
+                # Combine batches and register with DuckDB
+                yesterday_table = pa.concat_tables(batches_yesterday)
+                con.register('yesterday_deals', yesterday_table)
             
             logger.info(f"Yesterday's snapshot: {total_yesterday} webhook events")
             
