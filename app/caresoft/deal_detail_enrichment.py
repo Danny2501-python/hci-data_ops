@@ -554,6 +554,12 @@ class DealDetailEnrichment:
                         except (ValueError, TypeError):
                             return None
                     
+                    # Helper to convert to string
+                    def safe_str(val):
+                        if val is None:
+                            return None
+                        return str(val)
+                    
                     record = {
                         "id": deal_data.get("id"),  # LongType - keep as is
                         "brand_id": safe_int(brand["erp_id"]),  # IntegerType
@@ -562,7 +568,7 @@ class DealDetailEnrichment:
                         "probability": safe_int(deal_data.get("probability")),  # IntegerType
                         "pipeline_id": safe_int(deal_data.get("pipeline_id")),  # IntegerType
                         "pipeline_stage_id": safe_int(deal_data.get("pipeline_stage_id")),  # IntegerType
-                        "closed_type": deal_data.get("closed_type"),  # StringType
+                        "closed_type": safe_str(deal_data.get("closed_type")),  # StringType - convert to string!
                         "source": deal_data.get("source"),
                         "source_detail_id": deal_data.get("source_detail_id"),  # LongType
                         "service_id": deal_data.get("service_id"),  # LongType
@@ -600,7 +606,30 @@ class DealDetailEnrichment:
                 
                 # Flush batch
                 if len(batch_records) >= BATCH_SIZE:
-                    df = pa.Table.from_pylist(batch_records)
+                    # Define PyArrow schema to force int32 for IntegerType fields
+                    pyarrow_schema = pa.schema([
+                        ("id", pa.int64()),  # LongType
+                        ("brand_id", pa.int32()),  # IntegerType
+                        ("name", pa.string()),
+                        ("value", pa.int32()),  # IntegerType
+                        ("probability", pa.int32()),  # IntegerType
+                        ("pipeline_id", pa.int32()),  # IntegerType
+                        ("pipeline_stage_id", pa.int32()),  # IntegerType
+                        ("closed_type", pa.string()),  # StringType
+                        ("source", pa.string()),
+                        ("source_detail_id", pa.int64()),  # LongType
+                        ("service_id", pa.int64()),  # LongType
+                        ("requester_id", pa.int64()),  # LongType
+                        ("assignee_id", pa.int64()),  # LongType
+                        ("facebook_page_id", pa.string()),
+                        ("ticket_source_end_status", pa.int32()),  # IntegerType
+                        ("custom_fields", pa.string()),
+                        ("raw_data", pa.string()),
+                        ("snapshot_date", pa.date32()),
+                        ("ingestion_timestamp", pa.timestamp('us')),
+                    ])
+                    
+                    df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                     detail_table.append(df)
                     total_success += len(batch_records)
                     
@@ -615,7 +644,30 @@ class DealDetailEnrichment:
             
             # Flush remaining
             if batch_records:
-                df = pa.Table.from_pylist(batch_records)
+                # Define PyArrow schema to force int32 for IntegerType fields
+                pyarrow_schema = pa.schema([
+                    ("id", pa.int64()),  # LongType
+                    ("brand_id", pa.int32()),  # IntegerType
+                    ("name", pa.string()),
+                    ("value", pa.int32()),  # IntegerType
+                    ("probability", pa.int32()),  # IntegerType
+                    ("pipeline_id", pa.int32()),  # IntegerType
+                    ("pipeline_stage_id", pa.int32()),  # IntegerType
+                    ("closed_type", pa.string()),  # StringType
+                    ("source", pa.string()),
+                    ("source_detail_id", pa.int64()),  # LongType
+                    ("service_id", pa.int64()),  # LongType
+                    ("requester_id", pa.int64()),  # LongType
+                    ("assignee_id", pa.int64()),  # LongType
+                    ("facebook_page_id", pa.string()),
+                    ("ticket_source_end_status", pa.int32()),  # IntegerType
+                    ("custom_fields", pa.string()),
+                    ("raw_data", pa.string()),
+                    ("snapshot_date", pa.date32()),
+                    ("ingestion_timestamp", pa.timestamp('us')),
+                ])
+                
+                df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                 detail_table.append(df)
                 total_success += len(batch_records)
                 logger.success(f"✅ Flushed final {len(batch_records)} records.")
