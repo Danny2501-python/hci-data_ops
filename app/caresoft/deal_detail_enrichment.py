@@ -544,22 +544,32 @@ class DealDetailEnrichment:
                 if deal_data:
                     # Success - prepare record
                     import json
+                    
+                    # Helper to safely cast to int (for IntegerType fields)
+                    def safe_int(val):
+                        if val is None:
+                            return None
+                        try:
+                            return int(val)
+                        except (ValueError, TypeError):
+                            return None
+                    
                     record = {
-                        "id": deal_data.get("id"),
-                        "brand_id": brand["erp_id"],
+                        "id": deal_data.get("id"),  # LongType - keep as is
+                        "brand_id": safe_int(brand["erp_id"]),  # IntegerType
                         "name": deal_data.get("name"),
-                        "value": deal_data.get("value"),
-                        "probability": deal_data.get("probability"),
-                        "pipeline_id": deal_data.get("pipeline_id"),
-                        "pipeline_stage_id": deal_data.get("pipeline_stage_id"),
-                        "closed_type": deal_data.get("closed_type"),
+                        "value": safe_int(deal_data.get("value")),  # IntegerType
+                        "probability": safe_int(deal_data.get("probability")),  # IntegerType
+                        "pipeline_id": safe_int(deal_data.get("pipeline_id")),  # IntegerType
+                        "pipeline_stage_id": safe_int(deal_data.get("pipeline_stage_id")),  # IntegerType
+                        "closed_type": deal_data.get("closed_type"),  # StringType
                         "source": deal_data.get("source"),
-                        "source_detail_id": deal_data.get("source_detail_id"),
-                        "service_id": deal_data.get("service_id"),
-                        "requester_id": deal_data.get("requester_id"),
-                        "assignee_id": deal_data.get("assignee_id"),
+                        "source_detail_id": deal_data.get("source_detail_id"),  # LongType
+                        "service_id": deal_data.get("service_id"),  # LongType
+                        "requester_id": deal_data.get("requester_id"),  # LongType
+                        "assignee_id": deal_data.get("assignee_id"),  # LongType
                         "facebook_page_id": deal_data.get("facebook_page_id"),
-                        "ticket_source_end_status": deal_data.get("ticket_source_end_status"),
+                        "ticket_source_end_status": safe_int(deal_data.get("ticket_source_end_status")),  # IntegerType
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {})),
                         "raw_data": json.dumps(deal_data),
                         "snapshot_date": self.snapshot_date,
