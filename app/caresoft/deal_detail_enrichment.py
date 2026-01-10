@@ -127,7 +127,7 @@ class DealDetailEnrichment:
             # Schema matching legacy cs_deal_detail_api table
             schema = Schema(
                 # Core fields
-                NestedField(1, "id", LongType(), required=True),  # numeric(20) → LongType
+                NestedField(1, "id", LongType(), required=False),  # numeric(20) NULL → LongType
                 NestedField(2, "account_id", IntegerType(), required=False),
                 NestedField(3, "deal_no", IntegerType(), required=False),
                 NestedField(4, "requester_id", LongType(), required=False),  # numeric(20)
