@@ -341,6 +341,26 @@ class WebhookTransformation:
                         "snapshot_date": self.snapshot_date
                     }
                     accumulated_raw_data.append(row)
+                    
+                    # Check and flush immediately after each append
+                    if len(accumulated_raw_data) >= BATCH_SIZE:
+                        logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned so far: ~{total_processed + i + 1:,})")
+                        
+                        batch_success = []
+                        if accumulated_raw_data:
+                            try:
+                                batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
+                            except Exception as e:
+                                logger.error(f"DuckDB Transformation Error: {e}")
+                                for row in accumulated_raw_data:
+                                    accumulated_errors.append((row["pk_id"], row["id"]))
+
+                        yield batch_success, accumulated_errors
+                        
+                        accumulated_raw_data = []
+                        accumulated_errors = []
+                        gc.collect()
+                        
                 except Exception:
                     accumulated_errors.append((pk, row_id))
 
@@ -348,24 +368,6 @@ class WebhookTransformation:
             
             del arrow_batch
             gc.collect()
-            
-            if len(accumulated_raw_data) >= BATCH_SIZE:
-                logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned: {total_processed:,})")
-                
-                batch_success = []
-                if accumulated_raw_data:
-                    try:
-                        batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
-                    except Exception as e:
-                        logger.error(f"DuckDB Transformation Error: {e}")
-                        for row in accumulated_raw_data:
-                             accumulated_errors.append((row["pk_id"], row["id"]))
-
-                yield batch_success, accumulated_errors
-                
-                accumulated_raw_data = []
-                accumulated_errors = []
-                gc.collect()
         
         if accumulated_raw_data or accumulated_errors:
             logger.info(f"Processing final batch of {len(accumulated_raw_data):,} records")
