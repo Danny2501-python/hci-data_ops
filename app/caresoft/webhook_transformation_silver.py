@@ -425,8 +425,9 @@ class WebhookTransformation:
         for success_batch, error_batch in self.parse_and_transform_batch(tbl_source):
             if success_batch is not None:
                 try:
-                    # success_batch is already an Arrow Table - cast to target schema
-                    df = success_batch.cast(target_schema)
+                    # Reorder columns to match target schema, then cast types
+                    column_order = target_schema.names
+                    df = success_batch.select(column_order).cast(target_schema)
                     tbl_target.append(df)
                     total_success += len(success_batch)
                 except Exception as e:
