@@ -578,11 +578,11 @@ class DealDetailEnrichment:
                         "convert_by": deal_data.get("convert_by"),
                         
                         # --- Text Fields ---
-                        "ticket_source": deal_data.get("ticket_source"),
-                        "merge_status": deal_data.get("merge_status"),
-                        "merge_to": deal_data.get("merge_to"),
-                        "clone_from": deal_data.get("clone_from"),
-                        "subject": deal_data.get("subject"),
+                        "ticket_source": safe_str(deal_data.get("ticket_source")),
+                        "merge_status": safe_str(deal_data.get("merge_status")),
+                        "merge_to": safe_str(deal_data.get("merge_to")),
+                        "clone_from": safe_str(deal_data.get("clone_from")),
+                        "subject": safe_str(deal_data.get("subject")),
                         
                         # --- Timestamps ---
                         "created_at": safe_ts(deal_data.get("created_at")),
@@ -593,10 +593,10 @@ class DealDetailEnrichment:
                         "closed_at": safe_ts(deal_data.get("closed_at")),
                         
                         # --- More Text Fields ---
-                        "duedate": deal_data.get("duedate"),
-                        "satisfaction": deal_data.get("satisfaction"),
-                        "satisfaction_content": deal_data.get("satisfaction_content"),
-                        "satisfaction_send": deal_data.get("satisfaction_send"),
+                        "duedate": safe_str(deal_data.get("duedate")),
+                        "satisfaction": safe_str(deal_data.get("satisfaction")),
+                        "satisfaction_content": safe_str(deal_data.get("satisfaction_content")),
+                        "satisfaction_send": safe_str(deal_data.get("satisfaction_send")),
                         "campaign_id": safe_str(deal_data.get("campaign_id")),
                         "campaign_action_id": safe_str(deal_data.get("campaign_action_id")),
                         "campaign_status": safe_str(deal_data.get("campaign_status")),
@@ -612,8 +612,8 @@ class DealDetailEnrichment:
                         
                         # --- QA & Other Text ---
                         "qa_script_id": safe_str(deal_data.get("qa_script_id")),
-                        "qa_agent": deal_data.get("qa_agent"),
-                        "current_agent": deal_data.get("current_agent"),
+                        "qa_agent": safe_str(deal_data.get("qa_agent")),
+                        "current_agent": safe_str(deal_data.get("current_agent")),
                         "unqualified_reasons": safe_str(deal_data.get("unqualified_reasons")),
                         "closed_by": safe_str(deal_data.get("closed_by")),
                         "closed_type": safe_str(deal_data.get("closed_type")),
