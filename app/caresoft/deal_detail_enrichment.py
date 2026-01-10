@@ -424,6 +424,11 @@ class DealDetailEnrichment:
     def call_caresoft_api(self, brand: dict, deal_id: int):
         """Call CareSoft API to get deal details"""
         domain = brand["caresoft_domain"]
+        
+        # Handle subdomain only (e.g. "kangnam2" -> "kangnam2.caresoft.vn")
+        if "." not in domain:
+            domain = f"{domain}.caresoft.vn"
+            
         api_key = brand["caresoft_key"]
         
         url = f"https://{domain}/api/deal/{deal_id}"
