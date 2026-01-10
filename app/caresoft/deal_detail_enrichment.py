@@ -423,15 +423,14 @@ class DealDetailEnrichment:
     
     def call_caresoft_api(self, brand: dict, deal_id: int):
         """Call CareSoft API to get deal details"""
+        # Extract subdomain (e.g. "kangnam2.caresoft.vn" -> "kangnam2")
         domain = brand["caresoft_domain"]
+        subdomain = domain.split('.')[0] if '.' in domain else domain
         
-        # Handle subdomain only (e.g. "kangnam2" -> "kangnam2.caresoft.vn")
-        if "." not in domain:
-            domain = f"{domain}.caresoft.vn"
-            
         api_key = brand["caresoft_key"]
         
-        url = f"https://{domain}/api/deal/{deal_id}"
+        # Correct API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/deals/{id}
+        url = f"https://api.caresoft.vn/{subdomain}/api/v1/deals/{deal_id}"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
