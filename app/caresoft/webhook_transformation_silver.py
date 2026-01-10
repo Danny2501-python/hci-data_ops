@@ -54,18 +54,19 @@ class WebhookTransformation:
         except:
             logger.info(f"Creating table {TARGET_TABLE_ERROR}...")
             from pyiceberg.schema import Schema
-            from pyiceberg.types import NestedField, LongType, DateType, TimestampType, StringType
+            from pyiceberg.types import NestedField, LongType, IntegerType, DateType, TimestampType, StringType
             from pyiceberg.partitioning import PartitionSpec, PartitionField
             from pyiceberg.transforms import IdentityTransform
 
             schema = Schema(
                 NestedField(1, "pk_id", LongType(), required=True),
                 NestedField(2, "id", LongType(), required=False),
-                NestedField(3, "snapshot_date", DateType(), required=False),
-                NestedField(4, "ingestion_timestamp", TimestampType(), required=False),
+                NestedField(3, "brand_etl", IntegerType(), required=False),  # For filtering by brand
+                NestedField(100, "snapshot_date", DateType(), required=False),
+                NestedField(101, "ingestion_timestamp", TimestampType(), required=False),
             )
             partition_spec = PartitionSpec(
-                PartitionField(source_id=3, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
+                PartitionField(source_id=100, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
             )
             return self.catalog.create_table(TARGET_TABLE_ERROR, schema=schema, partition_spec=partition_spec)
 
@@ -130,6 +131,7 @@ class WebhookTransformation:
                 NestedField(44, "lost_reasons", StringType(), required=False),
                 NestedField(45, "estimated_closed_date", StringType(), required=False),
                 NestedField(46, "utm_campaign", StringType(), required=False),
+                NestedField(47, "brand_etl", IntegerType(), required=False),  # For filtering in Gold enrichment
                 
                 NestedField(100, "snapshot_date", DateType(), required=False),
                 NestedField(101, "ingestion_timestamp", TimestampType(), required=False),
@@ -208,6 +210,7 @@ class WebhookTransformation:
                 CAST(lost_reasons AS VARCHAR) as lost_reasons,
                 CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
                 CAST(utm_campaign AS VARCHAR) as utm_campaign,
+                TRY_CAST(brand_etl AS INTEGER) as brand_etl,
                 
                 snapshot_date,
                 CAST(now() AS TIMESTAMP) as ingestion_timestamp
@@ -234,7 +237,7 @@ class WebhookTransformation:
                 EqualTo("snapshot_date", self.snapshot_date),
                 StartsWith("input", "{'deal'")
             ),
-            selected_fields=("pk_id", "id", "input")
+            selected_fields=("pk_id", "id", "input", "brand_etl")  # Include brand_etl from Bronze
         )
         
         def safe_eval(s):
@@ -263,10 +266,11 @@ class WebhookTransformation:
                 pk = arrow_batch["pk_id"][i].as_py()
                 row_id = arrow_batch["id"][i].as_py()
                 input_str = arrow_batch["input"][i].as_py()
+                brand_etl = arrow_batch["brand_etl"][i].as_py()  # Extract brand_etl from Bronze
                 
                 data_dict = safe_eval(input_str)
                 if not data_dict:
-                     accumulated_errors.append((pk, row_id))
+                     accumulated_errors.append((pk, row_id, brand_etl))  # Include brand_etl
                      continue
                 
                 try:
@@ -340,6 +344,7 @@ class WebhookTransformation:
                         "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
                         "convert_by": safe_str(deal_info.get("convert_by")),
                         
+                        "brand_etl": brand_etl,  # Include brand_etl from Bronze
                         "snapshot_date": self.snapshot_date
                     }
                     accumulated_raw_data.append(row)
@@ -355,7 +360,7 @@ class WebhookTransformation:
                             except Exception as e:
                                 logger.error(f"DuckDB Transformation Error: {e}")
                                 for row in accumulated_raw_data:
-                                    accumulated_errors.append((row["pk_id"], row["id"]))
+                                    accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
 
                         yield batch_success, accumulated_errors
                         
@@ -364,7 +369,7 @@ class WebhookTransformation:
                         gc.collect()
                         
                 except Exception:
-                    accumulated_errors.append((pk, row_id))
+                    accumulated_errors.append((pk, row_id, brand_etl))
 
             total_processed += batch_size
             
@@ -384,7 +389,7 @@ class WebhookTransformation:
                 except Exception as e:
                     logger.error(f"DuckDB Transformation Error: {e}")
                     for row in accumulated_raw_data:
-                         accumulated_errors.append((row["pk_id"], row["id"]))
+                         accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
             
             yield batch_success, accumulated_errors
         
@@ -439,8 +444,8 @@ class WebhookTransformation:
             
             if error_batch:
                 error_records = [
-                    {"pk_id": pk, "id": row_id, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
-                    for (pk, row_id) in error_batch
+                    {"pk_id": pk, "id": row_id, "brand_etl": brand_etl, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
+                    for (pk, row_id, brand_etl) in error_batch
                 ]
                 try:
                     df_err = pa.Table.from_pylist(error_records, schema=error_schema)

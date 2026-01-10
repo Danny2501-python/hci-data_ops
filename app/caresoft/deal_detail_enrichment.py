@@ -235,13 +235,14 @@ class DealDetailEnrichment:
             logger.info(f"Creating table {DEAL_DETAIL_ERROR_TABLE}...")
             
             from pyiceberg.schema import Schema
-            from pyiceberg.types import NestedField, LongType, DateType, TimestampType
+            from pyiceberg.types import NestedField, LongType, IntegerType, DateType, TimestampType
             from pyiceberg.partitioning import PartitionSpec, PartitionField
             from pyiceberg.transforms import IdentityTransform
             
-            # Schema matching legacy cs_deal_detail_error_api table
+            # Schema matching legacy cs_deal_detail_error_api table + brand_id
             schema = Schema(
-                NestedField(1, "id", LongType(), required=True),  # numeric(20)
+                NestedField(1, "id", LongType(), required=True),  # numeric(20) - deal_id
+                NestedField(2, "brand_id", IntegerType(), required=False),  # For filtering by brand
                 
                 # Metadata (not in legacy, but useful for tracking)
                 NestedField(100, "snapshot_date", DateType(), required=False),
@@ -284,37 +285,90 @@ class DealDetailEnrichment:
         logger.info(f"Found {len(brands)} active brands")
         return brands
     
-    def get_deal_ids_to_enrich(self, brand_id: int):
+    def get_deal_ids_to_enrich(self, brand_erp_id: int):
         """
-        Get deal_ids that need enrichment
-        Logic: Find deals from webhook that don't exist in detail table or have newer updated_at
+        Get all deal_ids from Silver webhook for this brand's snapshot
+        
+        Uses DuckDB for efficient SQL-like aggregation with batch processing:
+        - Process Arrow batches incrementally to avoid OOM
+        - SELECT deal_id, MAX(updated_at) FROM webhook GROUP BY deal_id
+        - Much faster than Python loops for large datasets
+        
+        Handles multiple webhook events per deal_id:
+        - 1 deal_id can have multiple webhook events
+        - We take the event with LATEST updated_at (business timestamp from CareSoft)
+        - This matches legacy system logic
+        
+        Args:
+            brand_erp_id: The erp_id from core_brand table (maps to brand_etl in webhook)
         """
         webhook_table = self.silver_catalog.load_table(WEBHOOK_TABLE)
-        detail_table = self.ensure_deal_detail_table_exists()
-        error_table = self.ensure_deal_detail_error_table_exists()
         
-        # TODO: Implement SQL-like logic using Iceberg scans
-        # For now, simplified version
-        logger.info(f"Scanning webhooks for brand_id={brand_id}")
+        logger.info(f"Scanning webhooks for brand_etl={brand_erp_id}, snapshot_date={self.snapshot_date}")
         
-        # This is a simplified placeholder - in production, you'd need more complex logic
-        scan = webhook_table.scan(
+        # Scan Silver webhook for this brand's snapshot
+        from pyiceberg.expressions import And, IsNotNull
+        
+        webhook_scan = webhook_table.scan(
             row_filter=And(
                 EqualTo("snapshot_date", self.snapshot_date),
-                # Add more filters
+                EqualTo("brand_etl", brand_erp_id),
+                IsNotNull("deal_id")
             ),
             selected_fields=("deal_id", "updated_at")
         )
         
-        deal_ids = set()
-        for batch in scan.to_arrow_batch_reader():
-            for i in range(len(batch)):
-                deal_id = batch["deal_id"][i].as_py()
-                if deal_id and deal_id != 0:
-                    deal_ids.add(deal_id)
+        # Use DuckDB with batch processing to avoid OOM
+        import duckdb
         
-        logger.info(f"Found {len(deal_ids)} deal_ids to enrich for brand {brand_id}")
-        return list(deal_ids)[:100]  # Limit for safety
+        con = duckdb.connect()
+        
+        # Create temp table for aggregation
+        con.execute("""
+            CREATE TEMP TABLE webhook_events (
+                deal_id INTEGER,
+                updated_at TIMESTAMP
+            )
+        """)
+        
+        total_events = 0
+        
+        # Process batches incrementally
+        for batch in webhook_scan.to_arrow_batch_reader():
+            batch_size = len(batch)
+            if batch_size == 0:
+                continue
+                
+            total_events += batch_size
+            
+            # Insert batch into DuckDB temp table
+            con.execute("INSERT INTO webhook_events SELECT * FROM batch")
+            
+            logger.debug(f"Processed batch: {batch_size} events (total: {total_events})")
+        
+        if total_events == 0:
+            logger.info(f"No webhook events found for brand {brand_erp_id}")
+            con.close()
+            return []
+        
+        # Aggregate using SQL (like legacy system)
+        result = con.execute("""
+            SELECT deal_id, MAX(updated_at) as max_updated_at
+            FROM webhook_events
+            WHERE deal_id IS NOT NULL AND deal_id != 0
+            GROUP BY deal_id
+            ORDER BY deal_id
+        """).fetchall()
+        
+        con.close()
+        
+        deal_ids = [row[0] for row in result]
+        
+        logger.info(f"✅ Found {len(deal_ids)} unique deals from {total_events} webhook events")
+        if total_events > 0:
+            logger.debug(f"Deduplication rate: {(1 - len(deal_ids)/total_events)*100:.1f}%")
+        
+        return deal_ids
     
     def call_caresoft_api(self, brand: dict, deal_id: int):
         """Call CareSoft API to get deal details"""
@@ -372,6 +426,31 @@ class DealDetailEnrichment:
             
             logger.info(f"Enriching {len(deal_ids)} deals...")
             
+            # DELETE old partition data for this brand+snapshot (snapshot overwrite pattern)
+            try:
+                from pyiceberg.expressions import And
+                logger.info(f"🗑️  Deleting old data for brand {brand['erp_id']}, snapshot {self.snapshot_date}...")
+                
+                # Delete from detail table
+                detail_table.delete(
+                    And(
+                        EqualTo("snapshot_date", self.snapshot_date),
+                        EqualTo("brand_id", brand["erp_id"])
+                    )
+                )
+                
+                # Delete from error table
+                error_table.delete(
+                    And(
+                        EqualTo("snapshot_date", self.snapshot_date),
+                        EqualTo("brand_id", brand["erp_id"])
+                    )
+                )
+                
+                logger.success(f"✅ Deleted old partition data")
+            except Exception as e:
+                logger.warning(f"Could not delete old data (table might be empty): {e}")
+            
             success_records = []
             error_records = []
             
@@ -410,9 +489,8 @@ class DealDetailEnrichment:
                 else:
                     # Error - prepare error record
                     error_records.append({
-                        "deal_id": deal_id,
+                        "id": deal_id,  # id = deal_id in error table
                         "brand_id": brand["erp_id"],
-                        "error_message": error,
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     })

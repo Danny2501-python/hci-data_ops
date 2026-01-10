@@ -103,6 +103,7 @@
 | # | Legacy Field | Iceberg Field | Type | Match |
 |---|-------------|---------------|------|-------|
 | 1 | `id` (numeric(20)) | `id` | LongType | ✅ |
+| 2 | N/A (new) | `brand_id` | IntegerType | ➕ For filtering by brand |
 | 100 | N/A (new) | `snapshot_date` | DateType | ➕ Partition key |
 | 101 | N/A (new) | `ingestion_timestamp` | TimestampType | ➕ Metadata |
 
