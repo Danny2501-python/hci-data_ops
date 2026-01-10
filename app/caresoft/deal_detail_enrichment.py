@@ -453,6 +453,9 @@ class DealDetailEnrichment:
         detail_table = self.ensure_deal_detail_table_exists()
         error_table = self.ensure_deal_detail_error_table_exists()
         
+        logger.info(f"📊 Writing to table: {DEAL_DETAIL_TABLE}")
+        logger.info(f"📊 Error table: {DEAL_DETAIL_ERROR_TABLE}")
+        
         # Get brands
         brands = self.get_brands()
         
@@ -505,7 +508,10 @@ class DealDetailEnrichment:
             success_records = []
             error_records = []
             
-            # Process deals one by one with immediate flush
+            # Process deals in micro-batches
+            BATCH_SIZE = 10
+            batch_records = []
+            
             for i, deal_id in enumerate(deal_ids):
                 # Progress logging every 10 deals
                 if (i + 1) % 10 == 0:
@@ -538,14 +544,10 @@ class DealDetailEnrichment:
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     }
-                    
-                    # Immediate flush - write single record
-                    df = pa.Table.from_pylist([record])
-                    detail_table.append(df)
-                    total_success += 1
+                    batch_records.append(record)
                     
                 else:
-                    # Error - write immediately
+                    # Error - write immediately (errors are rare)
                     error_record = {
                         "id": deal_id,
                         "brand_id": brand["erp_id"],
@@ -557,9 +559,30 @@ class DealDetailEnrichment:
                     total_errors += 1
                 
                 # Rate limiting
-                time.sleep(0.5)
+                time.sleep(0.05)  # Faster sleep since we batch writes
+                
+                # Flush batch
+                if len(batch_records) >= BATCH_SIZE:
+                    df = pa.Table.from_pylist(batch_records)
+                    detail_table.append(df)
+                    total_success += len(batch_records)
+                    
+                    # LOG PROOF OF WRITE
+                    try:
+                        snapshot_id = detail_table.current_snapshot().snapshot_id
+                        logger.success(f"✅ Flushed {len(batch_records)} records. Current Snapshot ID: {snapshot_id}")
+                    except:
+                        logger.success(f"✅ Flushed {len(batch_records)} records.")
+                        
+                    batch_records = []
             
-            # No need to flush remaining - already flushed immediately
+            # Flush remaining
+            if batch_records:
+                df = pa.Table.from_pylist(batch_records)
+                detail_table.append(df)
+                total_success += len(batch_records)
+                logger.success(f"✅ Flushed final {len(batch_records)} records.")
+            
             gc.collect()
         
         logger.success(f"Deal enrichment completed. Success: {total_success}, Errors: {total_errors}")
