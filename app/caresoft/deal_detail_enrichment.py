@@ -305,7 +305,7 @@ class DealDetailEnrichment:
         
         logger.info(f"Scanning webhooks for brand_etl={brand_erp_id}, snapshot_date={self.snapshot_date}")
         
-        from pyiceberg.expressions import And, IsNotNull
+        from pyiceberg.expressions import And, NotNull
         from datetime import timedelta
         import duckdb
         
@@ -316,7 +316,7 @@ class DealDetailEnrichment:
             row_filter=And(
                 EqualTo("snapshot_date", self.snapshot_date),
                 EqualTo("brand_etl", brand_erp_id),
-                IsNotNull("deal_id")
+                NotNull("deal_id")
             ),
             selected_fields=("deal_id", "updated_at")
         )
@@ -349,7 +349,7 @@ class DealDetailEnrichment:
                 row_filter=And(
                     EqualTo("snapshot_date", yesterday),
                     EqualTo("brand_etl", brand_erp_id),
-                    IsNotNull("deal_id")
+                    NotNull("deal_id")
                 ),
                 selected_fields=("deal_id", "updated_at")
             )
