@@ -150,7 +150,7 @@ class WebhookTransformation:
             raw_data: List of dict records to transform
             
         Returns:
-            List of transformed records (pylist)
+            PyArrow Table (optimized - no conversion to pylist)
         """
         raw_arrow = pa.Table.from_pylist(raw_data)
         
@@ -212,8 +212,8 @@ class WebhookTransformation:
             FROM raw_arrow
         """).arrow()
         
-        result_table = res.read_all()
-        return result_table.to_pylist()
+        # Return Arrow Table directly - no conversion to pylist
+        return res.read_all()
 
     def parse_and_transform_batch(self, bronze_table):
         """
@@ -346,7 +346,7 @@ class WebhookTransformation:
                     if len(accumulated_raw_data) >= BATCH_SIZE:
                         logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned so far: ~{total_processed + i + 1:,})")
                         
-                        batch_success = []
+                        batch_success = None  # Arrow Table or None
                         if accumulated_raw_data:
                             try:
                                 batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
@@ -370,9 +370,12 @@ class WebhookTransformation:
             gc.collect()
         
         if accumulated_raw_data or accumulated_errors:
-            logger.info(f"Processing final batch of {len(accumulated_raw_data):,} records")
+            logger.info(
+                f"Processing final batch: {len(accumulated_raw_data):,} records, "
+                f"{len(accumulated_errors):,} accumulated errors"
+            )
             
-            batch_success = []
+            batch_success = None  # Arrow Table or None
             if accumulated_raw_data:
                 try:
                     batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
@@ -420,9 +423,10 @@ class WebhookTransformation:
         error_schema = tbl_error.schema().as_arrow()
 
         for success_batch, error_batch in self.parse_and_transform_batch(tbl_source):
-            if success_batch:
+            if success_batch is not None:
                 try:
-                    df = pa.Table.from_pylist(success_batch, schema=target_schema)
+                    # success_batch is already an Arrow Table - cast to target schema
+                    df = success_batch.cast(target_schema)
                     tbl_target.append(df)
                     total_success += len(success_batch)
                 except Exception as e:
