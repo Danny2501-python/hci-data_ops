@@ -429,8 +429,8 @@ class DealDetailEnrichment:
         
         api_key = brand["caresoft_key"]
         
-        # Correct API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/deals/{id}
-        url = f"https://api.caresoft.vn/{subdomain}/api/v1/deals/{deal_id}"
+        # Correct API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/deal/{id}
+        url = f"https://api.caresoft.vn/{subdomain}/api/v1/deal/{deal_id}"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -442,7 +442,9 @@ class DealDetailEnrichment:
             if response.status_code == 200:
                 return response.json().get("deal"), None
             else:
-                return None, f"HTTP {response.status_code}"
+                # Log response content for debugging
+                logger.warning(f"API Error {response.status_code} for {url}: {response.text[:200]}")
+                return None, f"HTTP {response.status_code}: {response.text[:100]}"
                 
         except Exception as e:
             return None, str(e)
