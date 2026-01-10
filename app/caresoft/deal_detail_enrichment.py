@@ -505,9 +505,12 @@ class DealDetailEnrichment:
             success_records = []
             error_records = []
             
-            # Process deals in batches
-            BATCH_SIZE = 100
+            # Process deals one by one with immediate flush
             for i, deal_id in enumerate(deal_ids):
+                # Progress logging every 10 deals
+                if (i + 1) % 10 == 0:
+                    logger.info(f"Progress: {i + 1}/{len(deal_ids)} deals ({(i+1)/len(deal_ids)*100:.1f}%)")
+                
                 # Call API
                 deal_data, error = self.call_caresoft_api(brand, deal_id)
                 
@@ -530,47 +533,33 @@ class DealDetailEnrichment:
                         "assignee_id": deal_data.get("assignee_id"),
                         "facebook_page_id": deal_data.get("facebook_page_id"),
                         "ticket_source_end_status": deal_data.get("ticket_source_end_status"),
-                        # Timestamps would need parsing
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {})),
                         "raw_data": json.dumps(deal_data),
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     }
-                    success_records.append(record)
+                    
+                    # Immediate flush - write single record
+                    df = pa.Table.from_pylist([record])
+                    detail_table.append(df)
+                    total_success += 1
+                    
                 else:
-                    # Error - prepare error record
-                    error_records.append({
-                        "id": deal_id,  # id = deal_id in error table
+                    # Error - write immediately
+                    error_record = {
+                        "id": deal_id,
                         "brand_id": brand["erp_id"],
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
-                    })
-                
-                # Flush batch
-                if len(success_records) >= BATCH_SIZE:
-                    # Write to Iceberg
-                    df = pa.Table.from_pylist(success_records)
-                    detail_table.append(df)
-                    total_success += len(success_records)
-                    logger.info(f"✅ Wrote {len(success_records)} successful deals")
-                    success_records = []
+                    }
+                    df_err = pa.Table.from_pylist([error_record])
+                    error_table.append(df_err)
+                    total_errors += 1
                 
                 # Rate limiting
                 time.sleep(0.5)
             
-            # Flush remaining
-            if success_records:
-                df = pa.Table.from_pylist(success_records)
-                detail_table.append(df)
-                total_success += len(success_records)
-                logger.info(f"✅ Wrote {len(success_records)} successful deals")
-            
-            if error_records:
-                df_err = pa.Table.from_pylist(error_records)
-                error_table.append(df_err)
-                total_errors += len(error_records)
-                logger.warning(f"⚠️  Wrote {len(error_records)} error records")
-            
+            # No need to flush remaining - already flushed immediately
             gc.collect()
         
         logger.success(f"Deal enrichment completed. Success: {total_success}, Errors: {total_errors}")
