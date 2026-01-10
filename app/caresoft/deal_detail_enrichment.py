@@ -206,14 +206,11 @@ class DealDetailEnrichment:
                 NestedField(53, "assignee", StringType(), required=False),
                 NestedField(54, "requester", StringType(), required=False),
                 
-                # Missing fields causing errors
+                # Additional API fields (not in Postgres DDL but used in code)
                 NestedField(57, "name", StringType(), required=False),
                 NestedField(58, "source", StringType(), required=False),
                 NestedField(59, "source_detail_id", LongType(), required=False),
                 NestedField(60, "facebook_page_id", StringType(), required=False),
-                NestedField(61, "ticket_source_end_status", StringType(), required=False),
-                NestedField(62, "assignee_id", LongType(), required=False),
-                NestedField(63, "requester_id", LongType(), required=False),
                 
                 # Brand and raw data
                 NestedField(55, "brand_id", IntegerType(), required=False),
