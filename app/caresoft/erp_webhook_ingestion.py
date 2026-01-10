@@ -21,6 +21,7 @@ TABLE_NAME = os.getenv('BRONZE_TABLE')
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_REGION = os.getenv('AWS_REGION')
 
 # ERP connection configs
 ERP_CONFIGS = {
@@ -54,6 +55,7 @@ class ERPDirectIngestion:
                 "s3.endpoint": S3_ENDPOINT,
                 "s3.access-key-id": AWS_ACCESS_KEY,
                 "s3.secret-access-key": AWS_SECRET_KEY,
+                "s3.region": AWS_REGION,
             }
         )
         logger.info(f"Iceberg catalog '{CATALOG_NAME}' initialized")

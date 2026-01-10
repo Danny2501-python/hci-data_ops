@@ -21,13 +21,14 @@ import duckdb
 
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_SILVER')
 CATALOG_NAME = os.getenv('CATALOG_NAME_SILVER')
-SOURCE_TABLE = os.getenv('BRONZE_TABLE', 'caresoft.wehook_api_caresoft')
-TARGET_TABLE = os.getenv('SILVER_TABLE_DEAL', 'caresoft.cs_deal_wehook')
-TARGET_TABLE_ERROR = os.getenv('SILVER_TABLE_DEAL_ERROR', 'caresoft.cs_deal_wehook_error')
+SOURCE_TABLE = os.getenv('BRONZE_TABLE')
+TARGET_TABLE = os.getenv('SILVER_TABLE_DEAL')
+TARGET_TABLE_ERROR = os.getenv('SILVER_TABLE_DEAL_ERROR')
 
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_REGION = os.getenv('AWS_REGION')
 
 
 class WebhookTransformation:
@@ -41,6 +42,7 @@ class WebhookTransformation:
                 "s3.endpoint": S3_ENDPOINT,
                 "s3.access-key-id": AWS_ACCESS_KEY,
                 "s3.secret-access-key": AWS_SECRET_KEY,
+                "s3.region": AWS_REGION,
             }
         )
         logger.info(f"Initialized WebhookTransformation for {self.snapshot_date}")
@@ -401,6 +403,7 @@ class WebhookTransformation:
                      "s3.endpoint": S3_ENDPOINT,
                      "s3.access-key-id": AWS_ACCESS_KEY,
                      "s3.secret-access-key": AWS_SECRET_KEY,
+                     "s3.region": AWS_REGION,
                 }
             )
             tbl_source = bronze_catalog.load_table(SOURCE_TABLE)
