@@ -334,9 +334,9 @@ class DealDetailEnrichment:
             con.close()
             return []
         
-        # Combine batches and register with DuckDB
+        # Convert RecordBatches to Table and register with DuckDB
         import pyarrow as pa
-        today_table = pa.concat_tables(batches_today)
+        today_table = pa.Table.from_batches(batches_today)  # ✅ from_batches, not concat_tables
         con.register('today_deals', today_table)
         
         logger.info(f"Today's snapshot: {total_today} webhook events")
@@ -363,8 +363,8 @@ class DealDetailEnrichment:
                     batches_yesterday.append(batch)
             
             if total_yesterday > 0:
-                # Combine batches and register with DuckDB
-                yesterday_table = pa.concat_tables(batches_yesterday)
+                # Convert RecordBatches to Table and register with DuckDB
+                yesterday_table = pa.Table.from_batches(batches_yesterday)
                 con.register('yesterday_deals', yesterday_table)
             
             logger.info(f"Yesterday's snapshot: {total_yesterday} webhook events")
