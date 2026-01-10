@@ -241,8 +241,8 @@ class DealDetailEnrichment:
             
             # Schema matching legacy cs_deal_detail_error_api table + brand_id
             schema = Schema(
-                NestedField(1, "id", LongType(), required=True),  # numeric(20) - deal_id
-                NestedField(2, "brand_id", IntegerType(), required=False),  # For filtering by brand
+                NestedField(1, "id", LongType(), required=False),  # deal_id (optional in case of errors)
+                NestedField(2, "brand_id", LongType(), required=False),  # LongType to match erp_id type
                 
                 # Metadata (not in legacy, but useful for tracking)
                 NestedField(100, "snapshot_date", DateType(), required=False),
