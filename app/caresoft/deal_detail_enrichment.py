@@ -206,6 +206,15 @@ class DealDetailEnrichment:
                 NestedField(53, "assignee", StringType(), required=False),
                 NestedField(54, "requester", StringType(), required=False),
                 
+                # Missing fields causing errors
+                NestedField(57, "name", StringType(), required=False),
+                NestedField(58, "source", StringType(), required=False),
+                NestedField(59, "source_detail_id", LongType(), required=False),
+                NestedField(60, "facebook_page_id", StringType(), required=False),
+                NestedField(61, "ticket_source_end_status", StringType(), required=False),
+                NestedField(62, "assignee_id", LongType(), required=False),
+                NestedField(63, "requester_id", LongType(), required=False),
+                
                 # Brand and raw data
                 NestedField(55, "brand_id", IntegerType(), required=False),
                 NestedField(56, "raw_data", StringType(), required=False),
@@ -218,14 +227,23 @@ class DealDetailEnrichment:
             partition_spec = PartitionSpec(
                 PartitionField(source_id=100, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
             )
-            
-            table = self.gold_catalog.create_table(
-                identifier=DEAL_DETAIL_TABLE,
-                schema=schema,
-                partition_spec=partition_spec
-            )
-            logger.success(f"✅ Created table: {DEAL_DETAIL_TABLE}")
-            return table
+
+            try:
+                table = self.gold_catalog.load_table(DEAL_DETAIL_TABLE)
+                logger.info(f"Loading existing table {DEAL_DETAIL_TABLE}")
+                
+                # Evolution: Update schema if needed
+                with table.update_schema() as update:
+                    update.union_by_name(schema)
+                    
+                return table
+            except:
+                logger.info(f"Creating table {DEAL_DETAIL_TABLE}...")
+                return self.gold_catalog.create_table(
+                    identifier=DEAL_DETAIL_TABLE,
+                    schema=schema,
+                    partition_spec=partition_spec
+                )
     
     def ensure_deal_detail_error_table_exists(self):
         """Create deal detail error table if not exists"""
