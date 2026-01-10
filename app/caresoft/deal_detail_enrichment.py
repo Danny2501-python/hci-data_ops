@@ -206,12 +206,6 @@ class DealDetailEnrichment:
                 NestedField(53, "assignee", StringType(), required=False),
                 NestedField(54, "requester", StringType(), required=False),
                 
-                # Additional API fields (not in Postgres DDL but used in code)
-                NestedField(57, "name", StringType(), required=False),
-                NestedField(58, "source", StringType(), required=False),
-                NestedField(59, "source_detail_id", LongType(), required=False),
-                NestedField(60, "facebook_page_id", StringType(), required=False),
-                
                 # Brand and raw data
                 NestedField(55, "brand_id", IntegerType(), required=False),
                 NestedField(56, "raw_data", StringType(), required=False),
@@ -563,18 +557,14 @@ class DealDetailEnrichment:
                     record = {
                         "id": deal_data.get("id"),  # LongType - keep as is
                         "brand_id": safe_int(brand["erp_id"]),  # IntegerType
-                        "name": deal_data.get("name"),
                         "value": safe_int(deal_data.get("value")),  # IntegerType
                         "probability": safe_int(deal_data.get("probability")),  # IntegerType
                         "pipeline_id": safe_int(deal_data.get("pipeline_id")),  # IntegerType
                         "pipeline_stage_id": safe_int(deal_data.get("pipeline_stage_id")),  # IntegerType
                         "closed_type": safe_str(deal_data.get("closed_type")),  # StringType - convert to string!
-                        "source": deal_data.get("source"),
-                        "source_detail_id": deal_data.get("source_detail_id"),  # LongType
                         "service_id": deal_data.get("service_id"),  # LongType
                         "requester_id": deal_data.get("requester_id"),  # LongType
                         "assignee_id": deal_data.get("assignee_id"),  # LongType
-                        "facebook_page_id": deal_data.get("facebook_page_id"),
                         "ticket_source_end_status": safe_int(deal_data.get("ticket_source_end_status")),  # IntegerType
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {})),
                         "raw_data": json.dumps(deal_data),
