@@ -547,7 +547,13 @@ class DealDetailEnrichment:
                     batch_records.append(record)
                     
                 else:
-                    # Error - write immediately (errors are rare)
+                    # Error - write immediately
+                    # Log error for debugging (only first 5 errors to avoid spam)
+                    if total_errors < 5:
+                        logger.error(f"❌ Failed for deal {deal_id}: {error}")
+                    elif total_errors == 5:
+                         logger.error(f"❌ ... suppressing further error logs")
+
                     error_record = {
                         "id": deal_id,
                         "brand_id": brand["erp_id"],
