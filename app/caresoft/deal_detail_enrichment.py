@@ -92,7 +92,7 @@ class DealDetailEnrichment:
             
             # Schema matching legacy core_brand table
             schema = Schema(
-                NestedField(1, "id", LongType(), required=True),  # int8 → LongType
+                NestedField(1, "id", LongType(), required=False),  # int8 → LongType
                 NestedField(2, "name", StringType(), required=False),  # varchar(255)
                 NestedField(3, "erp_id", IntegerType(), required=False),  # int4
                 NestedField(4, "etl_job_name", StringType(), required=False),  # varchar(255)
