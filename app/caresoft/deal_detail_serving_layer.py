@@ -95,11 +95,10 @@ class ServingLayerRefresh:
         temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
         con.execute(f"SET temp_directory='{temp_dir}'")
         
-        # Enable spilling to disk when memory is full
-        con.execute("SET max_memory='3GB'")  # Limit DuckDB memory usage
-        con.execute("SET enable_external_access=true")  # Allow disk access
+        # Limit memory to enable automatic spilling to disk
+        con.execute("SET max_memory='3GB'")
         
-        logger.info(f"DuckDB configured: temp_dir={temp_dir}, max_memory=3GB, spilling=enabled")
+        logger.info(f"DuckDB configured: temp_dir={temp_dir}, max_memory=3GB")
         
         # Scan Iceberg table to Arrow
         logger.info("Reading from Iceberg...")

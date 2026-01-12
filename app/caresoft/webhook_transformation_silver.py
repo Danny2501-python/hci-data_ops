@@ -258,9 +258,8 @@ class WebhookTransformation:
         temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
         con.execute(f"SET temp_directory='{temp_dir}'")
         
-        # Enable spilling to disk when memory is full
+        # Limit memory to enable automatic spilling to disk
         con.execute("SET max_memory='3GB'")
-        con.execute("SET enable_external_access=true")
         
         accumulated_raw_data = []
         accumulated_errors = []

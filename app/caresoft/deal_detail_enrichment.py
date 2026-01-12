@@ -326,9 +326,8 @@ class DealDetailEnrichment:
         temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
         con.execute(f"SET temp_directory='{temp_dir}'")
         
-        # Enable spilling to disk when memory is full
+        # Limit memory to enable automatic spilling to disk
         con.execute("SET max_memory='3GB'")
-        con.execute("SET enable_external_access=true")
         
         # Step 1: Get TODAY's deals with MAX(updated_at)
         today_scan = webhook_table.scan(
