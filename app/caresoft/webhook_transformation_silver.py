@@ -225,7 +225,7 @@ class WebhookTransformation:
         Generator function that yields batches of (success_rows, error_ids)
         Uses batch streaming and DuckDB for efficient SQL-based transformation
         """
-        BATCH_SIZE = 50000
+        BATCH_SIZE = 100000
         
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
         logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
