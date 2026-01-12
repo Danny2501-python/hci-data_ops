@@ -322,6 +322,10 @@ class DealDetailEnrichment:
         
         con = duckdb.connect()
         
+        # Configure temp directory for disk spilling (safe in containers)
+        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
+        con.execute(f"SET temp_directory='{temp_dir}'")
+        
         # Step 1: Get TODAY's deals with MAX(updated_at)
         today_scan = webhook_table.scan(
             row_filter=And(
@@ -689,6 +693,8 @@ class DealDetailEnrichment:
             if batch_records:
                 # Derive PyArrow schema dynamically from Iceberg table
                 # This ensures 100% consistency with the target table
+                pyarrow_schema = schema_to_pyarrow(detail_table.schema())
+                
                 df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                 detail_table.append(df)
                 total_success += len(batch_records)

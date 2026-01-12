@@ -254,6 +254,10 @@ class WebhookTransformation:
         total_processed = 0
         con = duckdb.connect()
         
+        # Configure temp directory for disk spilling (safe in containers)
+        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
+        con.execute(f"SET temp_directory='{temp_dir}'")
+        
         accumulated_raw_data = []
         accumulated_errors = []
         

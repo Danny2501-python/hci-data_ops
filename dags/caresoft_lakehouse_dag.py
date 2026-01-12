@@ -1,19 +1,35 @@
+"""
+CareSoft Lakehouse ETL DAG
+Architecture: ERP → Bronze → Silver → Gold → Serving
+"""
+
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-from airflow.utils.dates import days_ago
+from airflow.hooks.postgres_hook import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Configuration
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Docker image
 PYTHON_ETL_IMAGE = '111050/python-etl-base:1.0.0'
-NFS_SERVER = '10.10.10.245'
-NFS_PATH = '/srv/nfs_share/app'
+
+# Kubernetes
 NAMESPACE = 'default'
 
-# Default arguments for the DAG
+# NFS
+NFS_SERVER = '10.10.10.245'
+NFS_PATH = '/srv/nfs_share/app'
+
+# ============================================================================
+# DAG DEFINITION
+# ============================================================================
+
 default_args = {
     'owner': 'data-engineering',
     'depends_on_past': False,
@@ -24,34 +40,21 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# DAG definition
 dag = DAG(
     'caresoft_lakehouse_etl',
     default_args=default_args,
-    description='CareSoft ETL: ERP → Bronze → Silver → Gold',
+    description='CareSoft ETL: ERP → Bronze → Silver → Gold → Serving',
     schedule_interval='0 2 * * *',  # Daily at 2:00 AM UTC+7
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=['caresoft', 'lakehouse', 'etl', 'iceberg'],
 )
 
+# ============================================================================
+# COMMON RESOURCES
+# ============================================================================
 
-# Common volume configuration for NFS
-nfs_volume = k8s.V1Volume(
-    name='nfs-scripts',
-    nfs=k8s.V1NFSVolumeSource(
-        server=NFS_SERVER,
-        path=NFS_PATH
-    )
-)
-
-nfs_volume_mount = k8s.V1VolumeMount(
-    name='nfs-scripts',
-    mount_path='/app',
-    read_only=True
-)
-
-# Common environment variables
+# Environment variables (Iceberg catalogs + MinIO)
 common_env_vars = {
     # Bronze zone
     'ICEBERG_REST_URI_BRONZE': 'http://iceberg-rest-bronze-zone:8181',
@@ -72,14 +75,47 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
 }
 
-# Common# Resource requirements for pods
+# Resource requirements
 resource_requirements = k8s.V1ResourceRequirements(
     requests={'cpu': '500m', 'memory': '2Gi'},
     limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
-from airflow.hooks.postgres_hook import PostgresHook
+# NFS Volume (for scripts)
+nfs_volume = k8s.V1Volume(
+    name='nfs-scripts',
+    nfs=k8s.V1NFSVolumeSource(
+        server=NFS_SERVER,
+        path=NFS_PATH
+    )
+)
 
+nfs_volume_mount = k8s.V1VolumeMount(
+    name='nfs-scripts',
+    mount_path='/app',
+    read_only=True
+)
+
+# DuckDB Temp Volume (disk-backed for spilling)
+duckdb_temp_volume = k8s.V1Volume(
+    name='duckdb-temp',
+    empty_dir=k8s.V1EmptyDirVolumeSource(
+        medium='',  # Empty string = disk-backed (not RAM)
+        size_limit='10Gi'
+    )
+)
+
+duckdb_temp_volume_mount = k8s.V1VolumeMount(
+    name='duckdb-temp',
+    mount_path='/tmp/duckdb',
+    read_only=False
+)
+
+# ============================================================================
+# LOAD DATABASE CONNECTIONS (at DAG parse time)
+# ============================================================================
+
+# ERP Connections
 erp_connection_env_vars = {}
 erp_connections_config = {
     'SCI': 'sci_erp_sci',
@@ -88,28 +124,40 @@ erp_connections_config = {
     'HH': 'sci_erp_hh',
 }
 
-# Load connection URIs at DAG parse time
 for erp_name, conn_id in erp_connections_config.items():
     try:
         hook = PostgresHook(postgres_conn_id=conn_id)
         conn = hook.get_connection(conn_id)
-        
-        # Get complete connection URI (postgresql://user:password@host:port/database)
         uri = conn.get_uri()
         
-        # Clean URI: Remove __extra__ parameter that causes psycopg2 errors
+        # Clean URI: Remove __extra__ parameter
         if '?__extra__=' in uri:
             uri = uri.split('?__extra__=')[0]
-            logger.info(f"Cleaned __extra__ parameter from {erp_name} URI")
         
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = uri
-        
         logger.info(f"✅ Loaded connection URI for ERP {erp_name}")
         
     except Exception as e:
-        logger.warning(f"⚠️  Could not load {erp_name} connection at parse time: {e}")
-        # Set empty default if connection not found
+        logger.warning(f"⚠️  Could not load {erp_name} connection: {e}")
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = ''
+
+# DWH Product Connection (for serving layer)
+dwh_product_uri = ''
+try:
+    hook = PostgresHook(postgres_conn_id='dwh_product')
+    conn = hook.get_connection('dwh_product')
+    dwh_product_uri = conn.get_uri()
+    
+    if '?__extra__=' in dwh_product_uri:
+        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+
+# ============================================================================
+# TASK 1: ERP → BRONZE (Webhook Ingestion)
+# ============================================================================
 
 task_erp_webhook_ingestion = KubernetesPodOperator(
     task_id='erp_direct_ingestion',
@@ -120,27 +168,24 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=['/app/caresoft/erp_webhook_ingestion.py', '{{ ds }}'],
     
-    # Mount NFS for scripts
     volumes=[nfs_volume],
     volume_mounts=[nfs_volume_mount],
     
-    # Environment variables - Bronze zone with ERP connections
     env_vars={
         **common_env_vars,
-        **erp_connection_env_vars,  # Add ERP connections from PostgresHook
-        # Task-specific table name (match PostgreSQL naming)
+        **erp_connection_env_vars,
         'BRONZE_TABLE': 'caresoft.wehook_api_caresoft',
     },
     
-    # Resource limits
     container_resources=resource_requirements,
-    
-    # Pod settings
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
 )
 
+# ============================================================================
+# TASK 2: BRONZE → SILVER (Webhook Transformation)
+# ============================================================================
 
 task_webhook_transformation_silver = KubernetesPodOperator(
     task_id='webhook_transformation_silver',
@@ -151,27 +196,26 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     cmds=['python'],
     arguments=['/app/caresoft/webhook_transformation_silver.py', '{{ ds }}'],
     
-    # Mount NFS for scripts
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_volume_mount],
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
     
-    # Environment variables
     env_vars={
         **common_env_vars,
-        # Transformation configs
         'BRONZE_TABLE': 'caresoft.wehook_api_caresoft',
         'SILVER_TABLE_DEAL': 'caresoft.cs_deal_wehook',
         'SILVER_TABLE_DEAL_ERROR': 'caresoft.cs_deal_wehook_error',
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
     },
     
-    # Resource limits
     container_resources=resource_requirements,
-    
-    # Pod settings
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
 )
+
+# ============================================================================
+# TASK 3: SILVER → GOLD (Deal Detail Enrichment via API)
+# ============================================================================
 
 task_deal_detail_enrichment = KubernetesPodOperator(
     task_id='deal_detail_enrichment',
@@ -182,30 +226,54 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=['/app/caresoft/deal_detail_enrichment.py', '{{ ds }}'],
     
-    # Mount NFS for scripts
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_volume_mount],
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
     
-    # Environment variables
     env_vars={
         **common_env_vars,
-        # Source tables (Silver)
         'WEBHOOK_TABLE': 'caresoft.cs_deal_wehook',
-        # Target tables (Gold)
         'DEAL_DETAIL_TABLE': 'caresoft.cs_deal_detail',
         'DEAL_DETAIL_ERROR_TABLE': 'caresoft.cs_deal_detail_error',
         'BRAND_TABLE': 'caresoft.core_brand',
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
     },
     
-    # Resource limits
     container_resources=resource_requirements,
-    
-    # Pod settings
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
 )
 
-# Define Dependencies
-# Bronze → Silver → Gold
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
+# ============================================================================
+# TASK 4: GOLD → SERVING (Refresh PostgreSQL Serving Layer)
+# ============================================================================
+
+task_refresh_serving_layer = KubernetesPodOperator(
+    task_id='refresh_serving_layer',
+    name='caresoft-refresh-serving-layer',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/deal_detail_serving_layer.py'],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_product_uri,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
+# TASK DEPENDENCIES
+# ============================================================================
+
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_refresh_serving_layer
