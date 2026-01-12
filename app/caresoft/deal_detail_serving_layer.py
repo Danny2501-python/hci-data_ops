@@ -152,26 +152,25 @@ class ServingLayerRefresh:
         cursor = self.pg_conn.cursor()
         
         try:
-            # Step 1: Drop existing table
-            logger.info(f"Dropping table caresoft.{TARGET_TABLE} if exists...")
-            cursor.execute(f"DROP TABLE IF EXISTS caresoft.{TARGET_TABLE}")
-            
-            # Step 2: Create table structure
-            logger.info(f"Creating table caresoft.{TARGET_TABLE}...")
+            # Step 1: Create table if not exists (first run)
+            logger.info(f"Ensuring table {TARGET_TABLE} exists...")
             
             # Build CREATE TABLE statement
-            # Default to TEXT for safety (you can refine types later)
             column_defs = []
             for col in columns:
                 column_defs.append(f'"{col}" TEXT')
             
             create_sql = f"""
-            CREATE TABLE caresoft.{TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
                 {', '.join(column_defs)}
             )
             """
             cursor.execute(create_sql)
-            logger.success(f"✅ Created table caresoft.{TARGET_TABLE}")
+            
+            # Step 2: Truncate table (clear existing data)
+            logger.info(f"Truncating table {TARGET_TABLE}...")
+            cursor.execute(f"TRUNCATE TABLE {TARGET_TABLE}")
+            logger.success(f"✅ Table {TARGET_TABLE} ready for data")
             
             # Step 3: Bulk insert data in batches
             BATCH_SIZE = 10000
@@ -183,7 +182,7 @@ class ServingLayerRefresh:
             placeholders = ', '.join(['%s'] * len(columns))
             column_names = ', '.join([f'"{col}"' for col in columns])
             insert_sql = f"""
-            INSERT INTO caresoft.{TARGET_TABLE} ({column_names})
+            INSERT INTO {TARGET_TABLE} ({column_names})
             VALUES ({placeholders})
             """
             
@@ -196,7 +195,7 @@ class ServingLayerRefresh:
             
             # Commit transaction
             self.pg_conn.commit()
-            logger.success(f"✅ Inserted {total_inserted} rows into caresoft.{TARGET_TABLE}")
+            logger.success(f"✅ Inserted {total_inserted} rows into {TARGET_TABLE}")
             
         except Exception as e:
             self.pg_conn.rollback()
