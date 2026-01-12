@@ -245,7 +245,7 @@ class DealDetailEnrichment:
             logger.info(f"Creating table {DEAL_DETAIL_ERROR_TABLE}...")
             
             from pyiceberg.schema import Schema
-            from pyiceberg.types import NestedField, LongType, IntegerType, DateType, TimestampType
+            from pyiceberg.types import NestedField, LongType, IntegerType, DateType, TimestampType, StringType
             from pyiceberg.partitioning import PartitionSpec, PartitionField
             from pyiceberg.transforms import IdentityTransform
             
@@ -253,6 +253,7 @@ class DealDetailEnrichment:
             schema = Schema(
                 NestedField(1, "id", LongType(), required=False),  # deal_id (optional in case of errors)
                 NestedField(2, "brand_id", LongType(), required=False),  # LongType to match erp_id type
+                NestedField(3, "error_message", StringType(), required=False), # Error details
                 
                 # Metadata (not in legacy, but useful for tracking)
                 NestedField(100, "snapshot_date", DateType(), required=False),
@@ -411,12 +412,7 @@ class DealDetailEnrichment:
                 SELECT t.deal_id
                 FROM today_max t
                 LEFT JOIN yesterday_max y ON t.deal_id = y.deal_id
-                WHERE 
-                    -- New deal (not in yesterday)
-                    y.deal_id IS NULL
-                    OR
-                    -- Updated deal (newer timestamp)
-                    t.max_updated_at > y.max_updated_at
+                WHERE y.deal_id IS NULL OR t.max_updated_at > y.max_updated_at
                 ORDER BY t.deal_id
             """).fetchall()
         
@@ -451,7 +447,7 @@ class DealDetailEnrichment:
             else:
                 # Log response content for debugging
                 logger.warning(f"API Error {response.status_code} for {url}: {response.text[:200]}")
-                return None, f"HTTP {response.status_code}: {response.text[:100]}"
+                return None, f"HTTP {response.status_code}: {response.text[:500]}"
                 
         except Exception as e:
             return None, str(e)
@@ -522,7 +518,7 @@ class DealDetailEnrichment:
             error_records = []
             
             # Process deals in micro-batches
-            BATCH_SIZE = 1000
+            BATCH_SIZE = 10000
             batch_records = []
             
             for i, deal_id in enumerate(deal_ids):
@@ -654,6 +650,7 @@ class DealDetailEnrichment:
                     error_record = {
                         "id": deal_id,
                         "brand_id": brand["erp_id"],
+                        "error_message": str(error)[:1000],  # Truncate to avoid huge logs
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     }
