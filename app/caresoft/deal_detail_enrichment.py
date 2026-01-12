@@ -477,6 +477,7 @@ class DealDetailEnrichment:
         
         # Process each brand
         for brand in brands:
+            total_errors = 0  # Reset error count per brand to fix logging suppression logic
             logger.info(f"\n{'='*60}")
             logger.info(f"Processing brand: {brand['name']} (ID: {brand['id']})")
             
@@ -520,6 +521,7 @@ class DealDetailEnrichment:
             # Process deals in micro-batches
             BATCH_SIZE = 10000
             batch_records = []
+            batch_error_records = []
             
             for i, deal_id in enumerate(deal_ids):
                 # Progress logging every 10 deals
@@ -638,15 +640,8 @@ class DealDetailEnrichment:
                         "ingestion_timestamp": datetime.now(),
                     }
                     batch_records.append(record)
-                    
+                
                 else:
-                    # Error - write immediately
-                    # Log error for debugging (only first 5 errors to avoid spam)
-                    if total_errors < 5:
-                        logger.error(f"❌ Failed for deal {deal_id}: {error}")
-                    elif total_errors == 5:
-                         logger.error(f"❌ ... suppressing further error logs")
-
                     error_record = {
                         "id": deal_id,
                         "brand_id": brand["erp_id"],
@@ -654,8 +649,7 @@ class DealDetailEnrichment:
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     }
-                    df_err = pa.Table.from_pylist([error_record])
-                    error_table.append(df_err)
+                    batch_error_records.append(error_record)
                     total_errors += 1
                 
                 # Rate limiting
@@ -679,17 +673,33 @@ class DealDetailEnrichment:
                         logger.success(f"✅ Flushed {len(batch_records)} records.")
                         
                     batch_records = []
+                
+                # Flush error batch
+                if len(batch_error_records) >= BATCH_SIZE:
+                    # Derive PyArrow schema dynamically from Iceberg table for errors
+                    # Note: We rely on the table having 100% consistent schema
+                    pyarrow_schema_err = schema_to_pyarrow(error_table.schema())
+                    
+                    df_err = pa.Table.from_pylist(batch_error_records, schema=pyarrow_schema_err)
+                    error_table.append(df_err)
+                    logger.info(f"⚠️ Flushed {len(batch_error_records)} error records.")
+                    batch_error_records = []
             
             # Flush remaining
             if batch_records:
                 # Derive PyArrow schema dynamically from Iceberg table
                 # This ensures 100% consistency with the target table
-                pyarrow_schema = schema_to_pyarrow(detail_table.schema())
-                
                 df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                 detail_table.append(df)
                 total_success += len(batch_records)
                 logger.success(f"✅ Flushed final {len(batch_records)} records.")
+            
+            # Flush remaining errors
+            if batch_error_records:
+                pyarrow_schema_err = schema_to_pyarrow(error_table.schema())
+                df_err = pa.Table.from_pylist(batch_error_records, schema=pyarrow_schema_err)
+                error_table.append(df_err)
+                logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records.")
             
             gc.collect()
         
