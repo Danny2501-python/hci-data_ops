@@ -34,7 +34,7 @@ AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
-SOURCE_TABLE = 'caresoft.cs_deal_detail'
+SOURCE_TABLE = 'caresoft.cs_deal_detail_api'
 TARGET_TABLE = 'cs_deal_detail_api_v1'
 
 

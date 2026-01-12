@@ -264,7 +264,7 @@ class WebhookTransformation:
         accumulated_raw_data = []
         accumulated_errors = []
         
-        EMPTY_JSON = json.dumps({})
+        EMPTY_JSON = json.dumps({}, ensure_ascii=False)
         
         for arrow_batch in scan.to_arrow_batch_reader():
             batch_size = len(arrow_batch)
@@ -296,7 +296,7 @@ class WebhookTransformation:
                         if not val:
                             return EMPTY_JSON
                         if isinstance(val, (dict, list)):
-                            return json.dumps(val)
+                            return json.dumps(val, ensure_ascii=False)
                         return str(val)
                     
                     row = {

@@ -44,8 +44,8 @@ AWS_REGION = os.getenv('AWS_REGION')
 WEBHOOK_TABLE = 'caresoft.cs_deal_wehook'
 
 # Target tables (Gold)
-DEAL_DETAIL_TABLE = 'caresoft.cs_deal_detail'
-DEAL_DETAIL_ERROR_TABLE = 'caresoft.cs_deal_detail_error'
+DEAL_DETAIL_TABLE = 'caresoft.cs_deal_detail_api'
+DEAL_DETAIL_ERROR_TABLE = 'caresoft.cs_deal_detail_error_api'
 BRAND_TABLE = 'caresoft.core_brand'
 
 
@@ -632,17 +632,17 @@ class DealDetailEnrichment:
                         "lost_reasons": safe_str(deal_data.get("lost_reasons")),
                         
                         # --- Complex Objects Mapped to String (JSON or Str representation) ---
-                        "comments": json.dumps(deal_data.get("comments", [])),
-                        "tags": json.dumps(deal_data.get("tags", [])),
-                        "ccs": json.dumps(deal_data.get("ccs", [])),
-                        "follows": json.dumps(deal_data.get("follows", [])),
-                        "labels": json.dumps(deal_data.get("labels", [])),
-                        "assignee": json.dumps(deal_data.get("assignee", {})),
-                        "requester": json.dumps(deal_data.get("requester", {})),
+                        "comments": json.dumps(deal_data.get("comments", []), ensure_ascii=False),
+                        "tags": json.dumps(deal_data.get("tags", []), ensure_ascii=False),
+                        "ccs": json.dumps(deal_data.get("ccs", []), ensure_ascii=False),
+                        "follows": json.dumps(deal_data.get("follows", []), ensure_ascii=False),
+                        "labels": json.dumps(deal_data.get("labels", []), ensure_ascii=False),
+                        "assignee": json.dumps(deal_data.get("assignee", {}), ensure_ascii=False),
+                        "requester": json.dumps(deal_data.get("requester", {}), ensure_ascii=False),
                         
                         # --- Metadata ---
-                        "custom_fields": json.dumps(deal_data.get("custom_fields", {})),
-                        "raw_data": json.dumps(deal_data),
+                        "custom_fields": json.dumps(deal_data.get("custom_fields", {}), ensure_ascii=False),
+                        "raw_data": json.dumps(deal_data, ensure_ascii=False),
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": datetime.now(),
                     }

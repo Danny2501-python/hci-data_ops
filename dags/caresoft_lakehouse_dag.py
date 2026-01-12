@@ -232,8 +232,8 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         'WEBHOOK_TABLE': 'caresoft.cs_deal_wehook',
-        'DEAL_DETAIL_TABLE': 'caresoft.cs_deal_detail',
-        'DEAL_DETAIL_ERROR_TABLE': 'caresoft.cs_deal_detail_error',
+        'DEAL_DETAIL_TABLE': 'caresoft.cs_deal_detail_api',
+        'DEAL_DETAIL_ERROR_TABLE': 'caresoft.cs_deal_detail_error_api',
         'BRAND_TABLE': 'caresoft.core_brand',
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
     },
