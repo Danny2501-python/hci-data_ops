@@ -28,6 +28,7 @@ from pyiceberg.expressions import EqualTo, And, NotIn
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from loguru import logger
 import gc
+from caresoft.brand_config import get_active_brands
 
 # Iceberg configuration
 ICEBERG_REST_URI_SILVER = os.getenv('ICEBERG_REST_URI_SILVER')
@@ -79,36 +80,6 @@ class DealDetailEnrichment:
         )
         
         logger.info(f"Initialized DealDetailEnrichment for {self.snapshot_date}")
-    
-    def ensure_brand_table_exists(self):
-        """Create core_brand table if not exists"""
-        try:
-            return self.gold_catalog.load_table(BRAND_TABLE)
-        except:
-            logger.info(f"Creating table {BRAND_TABLE}...")
-            
-            from pyiceberg.schema import Schema
-            from pyiceberg.types import NestedField, LongType, IntegerType, StringType, BooleanType, TimestampType
-            
-            # Schema matching legacy core_brand table
-            schema = Schema(
-                NestedField(1, "id", LongType(), required=False),  # int8 → LongType
-                NestedField(2, "name", StringType(), required=False),  # varchar(255)
-                NestedField(3, "erp_id", IntegerType(), required=False),  # int4
-                NestedField(4, "etl_job_name", StringType(), required=False),  # varchar(255)
-                NestedField(5, "is_active", BooleanType(), required=False),  # bool
-                NestedField(6, "caresoft_domain", StringType(), required=False),  # varchar(255)
-                NestedField(7, "caresoft_key", StringType(), required=False),  # varchar(50)
-                NestedField(8, "created", TimestampType(), required=False),  # timestamptz
-                NestedField(9, "updated", TimestampType(), required=False),  # timestamptz
-            )
-            
-            table = self.gold_catalog.create_table(
-                identifier=BRAND_TABLE,
-                schema=schema
-            )
-            logger.success(f"✅ Created table: {BRAND_TABLE}")
-            return table
     
     def ensure_deal_detail_table_exists(self):
         """Create deal detail table if not exists"""
@@ -271,30 +242,6 @@ class DealDetailEnrichment:
             )
             logger.success(f"✅ Created table: {DEAL_DETAIL_ERROR_TABLE}")
             return table
-    
-    def get_brands(self):
-        """Get active brands from core_brand table"""
-        brand_table = self.ensure_brand_table_exists()
-        
-        # Scan for active brands
-        scan = brand_table.scan(
-            row_filter=EqualTo("is_active", True),
-            selected_fields=("id", "name", "erp_id", "caresoft_domain", "caresoft_key")
-        )
-        
-        brands = []
-        for batch in scan.to_arrow_batch_reader():
-            for i in range(len(batch)):
-                brands.append({
-                    "id": batch["id"][i].as_py(),
-                    "name": batch["name"][i].as_py(),
-                    "erp_id": batch["erp_id"][i].as_py(),
-                    "caresoft_domain": batch["caresoft_domain"][i].as_py(),
-                    "caresoft_key": batch["caresoft_key"][i].as_py(),
-                })
-        
-        logger.info(f"Found {len(brands)} active brands")
-        return brands
     
     def get_deal_ids_to_enrich(self, brand_erp_id: int):
         """
@@ -473,7 +420,7 @@ class DealDetailEnrichment:
         logger.info(f"📊 Error table: {DEAL_DETAIL_ERROR_TABLE}")
         
         # Get brands
-        brands = self.get_brands()
+        brands = get_active_brands()
         
         if not brands:
             logger.warning("No active brands found")
