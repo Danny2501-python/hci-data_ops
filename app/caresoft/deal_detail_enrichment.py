@@ -484,7 +484,6 @@ class DealDetailEnrichment:
         
         # Process each brand
         for brand in brands:
-            total_errors = 0  # Reset error count per brand to fix logging suppression logic
             logger.info(f"\n{'='*60}")
             logger.info(f"Processing brand: {brand['name']} (ID: {brand['id']})")
             
