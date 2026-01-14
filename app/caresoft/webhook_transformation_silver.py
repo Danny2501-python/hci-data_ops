@@ -265,8 +265,8 @@ class WebhookTransformation:
         logger.warning("⚠️ DuckDB memory set to 64MB for AGGRESSIVE SPILLING TEST!")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
         
+        
         # Check if temp dir exists and is writable
-        import os
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir, exist_ok=True)
             logger.info(f"✅ Created temp directory: {temp_dir}")
