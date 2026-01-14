@@ -158,6 +158,10 @@ class WebhookTransformation:
         """
         # Log data size for debugging
         import sys
+        import pyarrow.parquet as pq
+        import gc
+        import tempfile
+        
         data_size_mb = sys.getsizeof(raw_data) / 1024 / 1024
         logger.info(f"🔍 DuckDB processing: {len(raw_data):,} records, ~{data_size_mb:.2f} MB in Python memory")
         
@@ -165,73 +169,95 @@ class WebhookTransformation:
         arrow_size_mb = raw_arrow.nbytes / 1024 / 1024
         logger.info(f"🔍 Arrow table size: {arrow_size_mb:.2f} MB")
         
-        # FORCE DuckDB to materialize data (not zero-copy from Arrow)
-        # This makes DuckDB actually use its memory limit and spill to disk
-        logger.info("🔄 Creating temp table to force DuckDB materialization...")
-        con.execute("CREATE TEMP TABLE IF NOT EXISTS raw_data AS SELECT * FROM raw_arrow")
-        logger.info("✅ Temp table created - DuckDB now manages this data")
+        # Write Arrow to Parquet, then query from file
+        # This enables DuckDB spilling without double memory usage!
+        # Use simple PID-based naming to avoid collision in basic cases
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"temp_batch_{os.getpid()}_{int(time.time()*1000)}.parquet")
         
-        res = con.sql("""
-            SELECT
-                TRY_CAST(pk_id AS BIGINT) as pk_id,
-                id,
-                
-                TRY_CAST(deal_id AS INTEGER) as deal_id,
-                CAST(name AS VARCHAR) as name,
-                TRY_CAST(value AS INTEGER) as value,
-                TRY_CAST(probability AS INTEGER) as probability,
-                TRY_CAST(pipeline_id AS INTEGER) as pipeline_id,
-                TRY_CAST(pipeline_stage_id AS INTEGER) as pipeline_stage_id,
-                TRY_CAST(closed_type AS INTEGER) as closed_type,
-                CAST(source AS VARCHAR) as source,
-                TRY_CAST(source_detail_id AS INTEGER) as source_detail_id,
-                TRY_CAST(service_id AS INTEGER) as service_id,
-                TRY_CAST(requester_id AS INTEGER) as requester_id,
-                TRY_CAST(assignee_id AS INTEGER) as assignee_id,
-                CAST(facebook_page_id AS VARCHAR) as facebook_page_id,
-                TRY_CAST(ticket_source_end_status AS INTEGER) as ticket_source_end_status,
-                
-                to_timestamp(TRY_CAST(created_at AS DOUBLE) / 1000) as created_at,
-                to_timestamp(TRY_CAST(updated_at AS DOUBLE) / 1000) as updated_at,
-                to_timestamp(TRY_CAST(last_change_status_at AS DOUBLE) / 1000) as last_change_status_at,
-                to_timestamp(TRY_CAST(last_change_stage_at AS DOUBLE) / 1000) as last_change_stage_at,
-                
-                CAST(activity AS VARCHAR) as activity,
-                CAST(addition_fields AS VARCHAR) as addition_fields,
-                CAST(call_info AS VARCHAR) as call_info,
-                CAST(agent_submit AS VARCHAR) as agent_submit,
-                CAST(updated_properties AS VARCHAR) as updated_properties,
-                CAST(account_id AS VARCHAR) as account_id,
-                CAST(activity_source AS VARCHAR) as activity_source,
-                CAST(action AS VARCHAR) as action,
-                CAST(convert_from_object AS VARCHAR) as convert_from_object,
-                CAST(object AS VARCHAR) as object,
-                
-                TRY_CAST(fb_psid AS BIGINT) as fb_psid,
-                CAST(gclid AS VARCHAR) as gclid,
-                TRY_CAST(convert_by AS DOUBLE) as convert_by,
-                TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
-                CAST(addition_details AS VARCHAR) as addition_details,
-                TRY_CAST(commentator_id AS DOUBLE) as commentator_id,
-                CAST(comment AS VARCHAR) as comment,
-                CAST(convert_type AS VARCHAR) as convert_type,
-                CAST(convert_at AS VARCHAR) as convert_at,
-                CAST(closed_by AS VARCHAR) as closed_by,
-                TRY_CAST(zalo_page_id AS DOUBLE) as zalo_page_id,
-                CAST(closed_at AS VARCHAR) as closed_at,
-                CAST(unqualified_reasons AS VARCHAR) as unqualified_reasons,
-                CAST(lost_reasons AS VARCHAR) as lost_reasons,
-                CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
-                CAST(utm_campaign AS VARCHAR) as utm_campaign,
-                TRY_CAST(brand_etl AS INTEGER) as brand_etl,
-                
-                snapshot_date,
-                CAST(now() AS TIMESTAMP) as ingestion_timestamp
-            FROM raw_data
-        """).arrow()
+        logger.info(f"� Writing Arrow table to Parquet: {temp_parquet}")
+        pq.write_table(raw_arrow, temp_parquet)
         
-        # Return Arrow Table directly - no conversion to pylist
-        return res.read_all()
+        # Free Arrow memory immediately after write and before DuckDB query
+        del raw_arrow
+        gc.collect()
+        logger.info(f"🗑️  Released Arrow table memory, Parquet file created")
+        
+        # Now query from Parquet - DuckDB will manage memory and spill if needed!
+        logger.info("🔄 Querying Parquet file with DuckDB (spilling enabled)...")
+        
+        try:
+            res = con.sql(f"""
+                SELECT
+                    TRY_CAST(pk_id AS BIGINT) as pk_id,
+                    id,
+                    
+                    TRY_CAST(deal_id AS INTEGER) as deal_id,
+                    CAST(name AS VARCHAR) as name,
+                    TRY_CAST(value AS INTEGER) as value,
+                    TRY_CAST(probability AS INTEGER) as probability,
+                    TRY_CAST(pipeline_id AS INTEGER) as pipeline_id,
+                    TRY_CAST(pipeline_stage_id AS INTEGER) as pipeline_stage_id,
+                    TRY_CAST(closed_type AS INTEGER) as closed_type,
+                    CAST(source AS VARCHAR) as source,
+                    TRY_CAST(source_detail_id AS INTEGER) as source_detail_id,
+                    TRY_CAST(service_id AS INTEGER) as service_id,
+                    TRY_CAST(requester_id AS INTEGER) as requester_id,
+                    TRY_CAST(assignee_id AS INTEGER) as assignee_id,
+                    CAST(facebook_page_id AS VARCHAR) as facebook_page_id,
+                    TRY_CAST(ticket_source_end_status AS INTEGER) as ticket_source_end_status,
+                    
+                    to_timestamp(TRY_CAST(created_at AS DOUBLE) / 1000) as created_at,
+                    to_timestamp(TRY_CAST(updated_at AS DOUBLE) / 1000) as updated_at,
+                    to_timestamp(TRY_CAST(last_change_status_at AS DOUBLE) / 1000) as last_change_status_at,
+                    to_timestamp(TRY_CAST(last_change_stage_at AS DOUBLE) / 1000) as last_change_stage_at,
+                    
+                    CAST(activity AS VARCHAR) as activity,
+                    CAST(addition_fields AS VARCHAR) as addition_fields,
+                    CAST(call_info AS VARCHAR) as call_info,
+                    CAST(agent_submit AS VARCHAR) as agent_submit,
+                    CAST(updated_properties AS VARCHAR) as updated_properties,
+                    CAST(account_id AS VARCHAR) as account_id,
+                    CAST(activity_source AS VARCHAR) as activity_source,
+                    CAST(action AS VARCHAR) as action,
+                    CAST(convert_from_object AS VARCHAR) as convert_from_object,
+                    CAST(object AS VARCHAR) as object,
+                    
+                    TRY_CAST(fb_psid AS BIGINT) as fb_psid,
+                    CAST(gclid AS VARCHAR) as gclid,
+                    TRY_CAST(convert_by AS DOUBLE) as convert_by,
+                    TRY_CAST(csa_acc AS DOUBLE) as csa_acc,
+                    CAST(addition_details AS VARCHAR) as addition_details,
+                    TRY_CAST(commentator_id AS DOUBLE) as commentator_id,
+                    CAST(comment AS VARCHAR) as comment,
+                    CAST(convert_type AS VARCHAR) as convert_type,
+                    CAST(convert_at AS VARCHAR) as convert_at,
+                    CAST(closed_by AS VARCHAR) as closed_by,
+                    TRY_CAST(zalo_page_id AS DOUBLE) as zalo_page_id,
+                    CAST(closed_at AS VARCHAR) as closed_at,
+                    CAST(unqualified_reasons AS VARCHAR) as unqualified_reasons,
+                    CAST(lost_reasons AS VARCHAR) as lost_reasons,
+                    CAST(estimated_closed_date AS VARCHAR) as estimated_closed_date,
+                    CAST(utm_campaign AS VARCHAR) as utm_campaign,
+                    TRY_CAST(brand_etl AS INTEGER) as brand_etl,
+                    
+                    snapshot_date,
+                    CAST(now() AS TIMESTAMP) as ingestion_timestamp
+                FROM read_parquet('{temp_parquet}')
+            """).arrow()
+            
+            # Return Arrow Table directly
+            return res.read_all()
+            
+        finally:
+            # Cleanup temp file
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                    logger.info("🗑️  Cleaned up temp Parquet file")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to remove temp file {temp_parquet}: {e}")
 
     def parse_and_transform_batch(self, bronze_table):
         """
@@ -273,7 +299,9 @@ class WebhookTransformation:
         
         # Limit memory to enable automatic spilling to disk
         # Set lower than pod limit to leave headroom for Python overhead
-        con.execute("SET max_memory='2GB'")  # Production: 2GB with 3GB pod limit
+        # TEST: 256MB limit < 389MB data → Forces spilling!
+        con.execute("SET max_memory='256MB'")
+        logger.warning(f"⚠️ DuckDB memory set to 256MB to FORCE SPILLING (Data: ~400MB)")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
         
         
