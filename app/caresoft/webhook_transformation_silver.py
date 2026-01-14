@@ -156,7 +156,14 @@ class WebhookTransformation:
         Returns:
             PyArrow Table (optimized - no conversion to pylist)
         """
+        # Log data size for debugging
+        import sys
+        data_size_mb = sys.getsizeof(raw_data) / 1024 / 1024
+        logger.info(f"🔍 DuckDB processing: {len(raw_data):,} records, ~{data_size_mb:.2f} MB in Python memory")
+        
         raw_arrow = pa.Table.from_pylist(raw_data)
+        arrow_size_mb = raw_arrow.nbytes / 1024 / 1024
+        logger.info(f"🔍 Arrow table size: {arrow_size_mb:.2f} MB")
         
         res = con.sql("""
             SELECT
@@ -260,9 +267,9 @@ class WebhookTransformation:
         
         # Limit memory to enable automatic spilling to disk
         # Set lower than pod limit to leave headroom for Python overhead
-        # TESTING: Force spilling with VERY low memory limit
-        con.execute("SET max_memory='64MB'")  # ← VERY aggressive - will definitely spill!
-        logger.warning("⚠️ DuckDB memory set to 64MB for AGGRESSIVE SPILLING TEST!")
+        # TESTING: Force spilling with EXTREMELY low memory limit
+        con.execute("SET max_memory='16MB'")  # ← EXTREMELY aggressive - will DEFINITELY spill!
+        logger.warning("⚠️ DuckDB memory set to 16MB for EXTREME SPILLING TEST!")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
         
         
