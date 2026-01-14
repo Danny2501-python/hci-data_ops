@@ -246,18 +246,7 @@ class DealDetailEnrichment:
     def get_deal_ids_to_enrich(self, brand_erp_id: int):
         """
         Get deal_ids that need enrichment by comparing with previous snapshot
-        
-        Incremental enrichment strategy:
-        1. Get all deals from TODAY's snapshot with their updated_at
-        2. Get all deals from YESTERDAY's snapshot with their updated_at
-        3. Only enrich deals where:
-           - New deal (not in yesterday) OR
-           - updated_at is newer than yesterday
-        
-        This dramatically reduces API calls!
-        
-        Args:
-            brand_erp_id: The erp_id from core_brand table (maps to brand_etl in webhook)
+        Optimized to use Parquet spill to avoid OOM
         """
         webhook_table = self.silver_catalog.load_table(WEBHOOK_TABLE)
         
@@ -266,120 +255,123 @@ class DealDetailEnrichment:
         from pyiceberg.expressions import And, NotNull
         from datetime import timedelta
         import duckdb
+        import pyarrow.parquet as pq
+        import tempfile
         
-        con = duckdb.connect()
-        
-        # Configure temp directory for disk spilling (safe in containers)
-        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
-        con.execute(f"SET temp_directory='{temp_dir}'")
-        
-        # Limit memory to enable automatic spilling to disk
-        con.execute("SET max_memory='3GB'")
-        
-        # Step 1: Get TODAY's deals with MAX(updated_at)
-        today_scan = webhook_table.scan(
-            row_filter=And(
-                EqualTo("snapshot_date", self.snapshot_date),
-                EqualTo("brand_etl", brand_erp_id),
-                NotNull("deal_id")
-            ),
-            selected_fields=("deal_id", "updated_at")
-        )
-        
-        total_today = 0
-        batches_today = []
-        
-        for batch in today_scan.to_arrow_batch_reader():
-            if len(batch) > 0:
-                total_today += len(batch)
-                batches_today.append(batch)
-        
-        if total_today == 0:
-            logger.info(f"No deals in today's snapshot for brand {brand_erp_id}")
-            con.close()
-            return []
-        
-        # Convert RecordBatches to Table and register with DuckDB
-        import pyarrow as pa
-        today_table = pa.Table.from_batches(batches_today)  # ✅ from_batches, not concat_tables
-        con.register('today_deals', today_table)
-        
-        logger.info(f"Today's snapshot: {total_today} webhook events")
-        
-        # Step 2: Get YESTERDAY's deals with MAX(updated_at)
-        yesterday = self.snapshot_date - timedelta(days=1)
+        # Temp files for Parquet approach
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        today_parquet = os.path.join(temp_dir, f"today_{brand_erp_id}_{os.getpid()}.parquet")
+        yesterday_parquet = os.path.join(temp_dir, f"yesterday_{brand_erp_id}_{os.getpid()}.parquet")
         
         try:
-            yesterday_scan = webhook_table.scan(
+            # --- Step 1: Get TODAY's deals ---
+            today_scan = webhook_table.scan(
                 row_filter=And(
-                    EqualTo("snapshot_date", yesterday),
+                    EqualTo("snapshot_date", self.snapshot_date),
                     EqualTo("brand_etl", brand_erp_id),
                     NotNull("deal_id")
                 ),
                 selected_fields=("deal_id", "updated_at")
             )
             
+            # Read batches
+            batches_today = [b for b in today_scan.to_arrow_batch_reader() if len(b) > 0]
+            total_today = sum(len(b) for b in batches_today)
+            
+            if total_today == 0:
+                logger.info(f"No deals in today's snapshot for brand {brand_erp_id}")
+                return []
+            
+            # Write to Parquet & Free RAM
+            today_table = pa.Table.from_batches(batches_today)
+            pq.write_table(today_table, today_parquet)
+            del batches_today, today_table
+            gc.collect()
+            logger.info(f"Written {total_today} today's events to {today_parquet}")
+            
+            # --- Step 2: Get YESTERDAY's deals ---
+            yesterday = self.snapshot_date - timedelta(days=1)
             total_yesterday = 0
-            batches_yesterday = []
             
-            for batch in yesterday_scan.to_arrow_batch_reader():
-                if len(batch) > 0:
-                    total_yesterday += len(batch)
-                    batches_yesterday.append(batch)
-            
-            if total_yesterday > 0:
-                # Convert RecordBatches to Table and register with DuckDB
-                yesterday_table = pa.Table.from_batches(batches_yesterday)
-                con.register('yesterday_deals', yesterday_table)
-            
-            logger.info(f"Yesterday's snapshot: {total_yesterday} webhook events")
-            
-        except Exception as e:
-            logger.warning(f"No yesterday snapshot found ({yesterday}): {e}")
-            logger.info("Will enrich ALL deals (first run or missing yesterday data)")
-            total_yesterday = 0
-        
-        # Step 3: Find deals to enrich (NEW or UPDATED)
-        if total_yesterday == 0:
-            # No yesterday data - enrich all today's deals
-            result = con.execute("""
-                SELECT DISTINCT deal_id
-                FROM today_deals
-                WHERE deal_id IS NOT NULL AND deal_id != 0
-                ORDER BY deal_id
-            """).fetchall()
-        else:
-            # Compare with yesterday - only enrich NEW or UPDATED deals
-            result = con.execute("""
-                WITH today_max AS (
-                    SELECT deal_id, MAX(updated_at) as max_updated_at
-                    FROM today_deals
-                    WHERE deal_id IS NOT NULL AND deal_id != 0
-                    GROUP BY deal_id
-                ),
-                yesterday_max AS (
-                    SELECT deal_id, MAX(updated_at) as max_updated_at
-                    FROM yesterday_deals
-                    WHERE deal_id IS NOT NULL AND deal_id != 0
-                    GROUP BY deal_id
+            try:
+                yesterday_scan = webhook_table.scan(
+                    row_filter=And(
+                        EqualTo("snapshot_date", yesterday),
+                        EqualTo("brand_etl", brand_erp_id),
+                        NotNull("deal_id")
+                    ),
+                    selected_fields=("deal_id", "updated_at")
                 )
-                SELECT t.deal_id
-                FROM today_max t
-                LEFT JOIN yesterday_max y ON t.deal_id = y.deal_id
-                WHERE y.deal_id IS NULL OR t.max_updated_at > y.max_updated_at
-                ORDER BY t.deal_id
-            """).fetchall()
-        
-        con.close()
-        
-        deal_ids = [row[0] for row in result]
-        
-        logger.info(f"✅ Found {len(deal_ids)} deals to enrich from {total_today} webhook events")
-        if total_yesterday > 0:
-            savings = total_today - len(deal_ids)
-            logger.success(f"💰 Saved {savings} API calls by incremental comparison ({savings/total_today*100:.1f}%)")
-        
-        return deal_ids
+                batches_yesterday = [b for b in yesterday_scan.to_arrow_batch_reader() if len(b) > 0]
+                total_yesterday = sum(len(b) for b in batches_yesterday)
+                
+                if total_yesterday > 0:
+                    yesterday_table = pa.Table.from_batches(batches_yesterday)
+                    pq.write_table(yesterday_table, yesterday_parquet)
+                    del batches_yesterday, yesterday_table
+                    gc.collect()
+                    logger.info(f"Written {total_yesterday} yesterday's events to {yesterday_parquet}")
+                    
+            except Exception as e:
+                logger.warning(f"No yesterday snapshot found ({yesterday}): {e}")
+            
+            # --- Step 3: DuckDB Query (from Parquet) --- 
+            # Use reduced memory limit and in-memory DB as data is now on disk
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            if total_yesterday == 0:
+                # No yesterday data - enrich all today's deals
+                query = f"""
+                    SELECT DISTINCT deal_id
+                    FROM read_parquet('{today_parquet}')
+                    WHERE deal_id IS NOT NULL AND deal_id != 0
+                """
+            else:
+                # Compare with yesterday - only enrich NEW or UPDATED deals
+                query = f"""
+                    WITH today_max AS (
+                        SELECT deal_id, MAX(updated_at) as max_updated_at
+                        FROM read_parquet('{today_parquet}')
+                        WHERE deal_id IS NOT NULL AND deal_id != 0
+                        GROUP BY deal_id
+                    ),
+                    yesterday_max AS (
+                        SELECT deal_id, MAX(updated_at) as max_updated_at
+                        FROM read_parquet('{yesterday_parquet}')
+                        WHERE deal_id IS NOT NULL AND deal_id != 0
+                        GROUP BY deal_id
+                    )
+                    SELECT t.deal_id
+                    FROM today_max t
+                    LEFT JOIN yesterday_max y ON t.deal_id = y.deal_id
+                    WHERE y.deal_id IS NULL OR t.max_updated_at > y.max_updated_at
+                """
+            
+            result = con.execute(query).fetchall()
+            con.close()
+            
+            deal_ids = [row[0] for row in result]
+            
+            logger.info(f"✅ Found {len(deal_ids)} deals to enrich from {total_today} webhook events")
+            if total_yesterday > 0:
+                savings = total_today - len(deal_ids)
+                logger.success(f"💰 Saved {savings} API calls ({savings/total_today*100:.1f}%)")
+            
+            return deal_ids
+            
+        finally:
+            # Cleanup temp files
+            for f in [today_parquet, yesterday_parquet]:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except: pass
     
     def call_caresoft_api(self, brand: dict, deal_id: int):
         """Call CareSoft API to get deal details"""

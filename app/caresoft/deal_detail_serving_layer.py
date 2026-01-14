@@ -78,64 +78,81 @@ class ServingLayerRefresh:
     def get_latest_deals(self):
         """
         Read from Iceberg and get the latest snapshot of each deal using DuckDB
-        
-        Returns:
-            Tuple of (columns, rows)
+        Optimized to use Parquet Spill (OOM Safety)
         """
-        logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}")
+        import pyarrow.parquet as pq
+        import tempfile
+        import gc
         
-        # Load Iceberg table
+        logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}")
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
-        # Use DuckDB in-memory with automatic disk spilling
-        logger.info("Setting up DuckDB (in-memory with disk spilling)...")
-        con = duckdb.connect()
+        # Temp file setup
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"serving_source_{os.getpid()}.parquet")
         
-        # Configure temp directory for spilling (if RAM is full)
-        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
-        con.execute(f"SET temp_directory='{temp_dir}'")
-        
-        # Limit memory to enable automatic spilling to disk
-        con.execute("SET max_memory='3GB'")
-        
-        logger.info(f"DuckDB configured: temp_dir={temp_dir}, max_memory=3GB")
-        
-        # Scan Iceberg table to Arrow
-        logger.info("Reading from Iceberg...")
-        scan = table.scan()
-        arrow_table = scan.to_arrow()
-        
-        logger.info(f"Read {len(arrow_table):,} rows from Iceberg")
-        
-        # Execute aggregation query directly on Arrow table (zero-copy)
-        # DuckDB will automatically spill to disk if RAM is insufficient
-        logger.info("Finding latest snapshot per deal...")
-        result = con.execute("""
-            SELECT t.*
-            FROM arrow_table t
-            JOIN (
-                SELECT id, MAX(snapshot_date) as max_date
-                FROM arrow_table
-                WHERE id IS NOT NULL
-                GROUP BY id
-            ) latest 
-            ON t.id = latest.id 
-            AND t.snapshot_date = latest.max_date
-            ORDER BY t.id
-        """).fetch_arrow_table()
-        
-        con.close()
-        
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        logger.success(f"✅ Found {len(rows)} latest deals")
-        
-        return columns, rows
+        try:
+            logger.info("Streaming Iceberg data to temp Parquet...")
+            scan = table.scan()
+            
+            # Streaming write: Scan -> Batch -> Parquet
+            # This avoids loading the whole table into RAM at once!
+            with pq.ParquetWriter(temp_parquet, scan.schema.as_arrow()) as writer:
+                for batch in scan.to_arrow_batch_reader():
+                    if len(batch) > 0:
+                        table_batch = pa.Table.from_batches([batch])
+                        writer.write_table(table_batch)
+                        del batch, table_batch
+                        
+            logger.info(f"Buffered Iceberg data to {temp_parquet}")
+            gc.collect()
+            
+            # DuckDB Query from Disk
+            logger.info("Finding latest snapshot per deal (DuckDB over Parquet)...")
+            
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Query Logic: Join latest snapshot
+            query = f"""
+                WITH latest_snapshots AS (
+                    SELECT id, MAX(snapshot_date) as max_date
+                    FROM read_parquet('{temp_parquet}')
+                    WHERE id IS NOT NULL
+                    GROUP BY id
+                )
+                SELECT t.*
+                FROM read_parquet('{temp_parquet}') t
+                JOIN latest_snapshots l 
+                ON t.id = l.id 
+                AND t.snapshot_date = l.max_date
+                ORDER BY t.id
+            """
+            
+            result = con.execute(query).fetch_arrow_table()
+            con.close()
+            
+            # Convert to columns and rows
+            columns = result.schema.names
+            rows = []
+            for i in range(len(result)):
+                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+                rows.append(row)
+            
+            logger.success(f"✅ Found {len(rows)} latest deals")
+            return columns, rows
+            
+        finally:
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                    logger.info("🗑️  Cleaned up temp Parquet file")
+                except: pass
         
     def refresh_serving_table(self, columns, rows):
         """

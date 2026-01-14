@@ -156,37 +156,29 @@ class WebhookTransformation:
         Returns:
             PyArrow Table (optimized - no conversion to pylist)
         """
-        # Log data size for debugging
         import sys
         import pyarrow.parquet as pq
         import gc
         import tempfile
         import time
         
-        data_size_mb = sys.getsizeof(raw_data) / 1024 / 1024
-        logger.info(f"🔍 DuckDB processing: {len(raw_data):,} records, ~{data_size_mb:.2f} MB in Python memory")
+        # Log minimal info
+        # data_size_mb = sys.getsizeof(raw_data) / 1024 / 1024
+        # logger.info(f"DuckDB transforming {len(raw_data):,} records...")
         
         raw_arrow = pa.Table.from_pylist(raw_data)
-        arrow_size_mb = raw_arrow.nbytes / 1024 / 1024
-        logger.info(f"🔍 Arrow table size: {arrow_size_mb:.2f} MB")
         
         # Write Arrow to Parquet, then query from file
-        # This enables DuckDB spilling without double memory usage!
-        # Use simple PID-based naming to avoid collision in basic cases
+        # This enables DuckDB streaming and minimizes RAM
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
         os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"temp_batch_{os.getpid()}_{int(time.time()*1000)}.parquet")
+        temp_parquet = os.path.join(temp_dir, f"batch_{os.getpid()}_{int(time.time()*1000)}.parquet")
         
-        logger.info(f"� Writing Arrow table to Parquet: {temp_parquet}")
         pq.write_table(raw_arrow, temp_parquet)
         
-        # Free Arrow memory immediately after write and before DuckDB query
+        # Free Arrow memory immediately
         del raw_arrow
         gc.collect()
-        logger.info(f"🗑️  Released Arrow table memory, Parquet file created")
-        
-        # Now query from Parquet - DuckDB will manage memory and spill if needed!
-        logger.info("🔄 Querying Parquet file with DuckDB (spilling enabled)...")
         
         try:
             res = con.sql(f"""
@@ -245,21 +237,16 @@ class WebhookTransformation:
                     
                     snapshot_date,
                     CAST(now() AS TIMESTAMP) as ingestion_timestamp
-                FROM read_parquet('{temp_parquet}'), range(5)
-                ORDER BY pk_id
+                FROM read_parquet('{temp_parquet}')
             """).arrow()
             
-            # Return Arrow Table directly
             return res.read_all()
             
         finally:
-            # Cleanup temp file
             if os.path.exists(temp_parquet):
                 try:
                     os.remove(temp_parquet)
-                    logger.info("🗑️  Cleaned up temp Parquet file")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to remove temp file {temp_parquet}: {e}")
+                except: pass
 
     def parse_and_transform_batch(self, bronze_table):
         """
@@ -293,199 +280,161 @@ class WebhookTransformation:
                 return None
 
         total_processed = 0
-        # Configure DuckDB with file-backed storage for reliable spilling
-        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir, exist_ok=True)
-            
-        db_path = os.path.join(temp_dir, f'duckdb_spill_test_{os.getpid()}.db')
+        
+        # Configure DuckDB for Production (In-Memory, 2GB Limit)
+        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp/duckdb')
         
         duckdb_config = {
-            'enable_external_access': 'true',
             'temp_directory': temp_dir,
-            'memory_limit': '256MB',        # Reduced limit for testing
-            'threads': '1',                 
-            'preserve_insertion_order': 'false' 
+            'memory_limit': '2GB',          # Safe limit for Pod 3GB
+            'preserve_insertion_order': 'false', # Save RAM
+            'threads': '1'                  # Single thread for stability on small Pods
         }
         
-        logger.info(f"🦆 Connecting to File-Backed DuckDB: {db_path}")
-        con = duckdb.connect(database=db_path, config=duckdb_config)
+        con = duckdb.connect(config=duckdb_config)
         logger.info(f"🦆 DuckDB Configured: {duckdb_config}")
-
-        try:
-            logger.info(f"✅ Temp directory ready: {temp_dir}")
         
-        # Enable verbose logging for spilling (optional)
-        # con.execute("SET enable_progress_bar=true")
+        accumulated_raw_data = []
+        accumulated_errors = []
         
-            accumulated_raw_data = []
-            accumulated_errors = []
+        EMPTY_JSON = json.dumps({}, ensure_ascii=False)
             
-            EMPTY_JSON = json.dumps({}, ensure_ascii=False)
+        for arrow_batch in scan.to_arrow_batch_reader():
+            batch_size = len(arrow_batch)
             
-            for arrow_batch in scan.to_arrow_batch_reader():
-                batch_size = len(arrow_batch)
-            
-                for i in range(batch_size):
-                    pk = arrow_batch["pk_id"][i].as_py()
-                    row_id = arrow_batch["id"][i].as_py()
-                    input_str = arrow_batch["input"][i].as_py()
-                    brand_etl = arrow_batch["brand_etl"][i].as_py()  # Extract brand_etl from Bronze
+            for i in range(batch_size):
+                pk = arrow_batch["pk_id"][i].as_py()
+                row_id = arrow_batch["id"][i].as_py()
+                input_str = arrow_batch["input"][i].as_py()
+                brand_etl = arrow_batch["brand_etl"][i].as_py()  # Extract brand_etl from Bronze
+                
+                data_dict = safe_eval(input_str)
+                if not data_dict:
+                     accumulated_errors.append((pk, row_id, brand_etl))  # Include brand_etl
+                     continue
+                
+                try:
+                    deal_info = data_dict.get('deal', {})
                     
-                    data_dict = safe_eval(input_str)
-                    if not data_dict:
-                         accumulated_errors.append((pk, row_id, brand_etl))  # Include brand_etl
-                         continue
+                    def safe_str(val):
+                        """Convert value to string, handling None and booleans"""
+                        if val is None:
+                            return None
+                        if isinstance(val, bool):
+                            return str(int(val))
+                        return str(val) if val != '' else None
                     
-                    try:
-                        deal_info = data_dict.get('deal', {})
+                    def safe_json(val):
+                        """Safely serialize value - handles dict, list, and primitives"""
+                        if not val:
+                            return EMPTY_JSON
+                        if isinstance(val, (dict, list)):
+                            return json.dumps(val, ensure_ascii=False)
+                        return str(val)
+                    
+                    row = {
+                        "pk_id": pk,
+                        "id": row_id,
+                        "deal_id": safe_str(deal_info.get("deal_id")),
+                        "value": safe_str(deal_info.get("value")),
+                        "probability": safe_str(deal_info.get("probability")),
+                        "pipeline_id": safe_str(deal_info.get("pipeline_id")),
+                        "pipeline_stage_id": safe_str(deal_info.get("pipeline_stage_id")),
+                        "closed_type": safe_str(deal_info.get("closed_type")),
+                        "source_detail_id": safe_str(deal_info.get("source_detail_id")),
+                        "service_id": safe_str(deal_info.get("service_id")),
+                        "requester_id": safe_str(deal_info.get("requester_id")),
+                        "assignee_id": safe_str(deal_info.get("assignee_id")),
+                        "ticket_source_end_status": safe_str(deal_info.get("ticket_source_end_status")),
                         
-                        def safe_str(val):
-                            """Convert value to string, handling None and booleans"""
-                            if val is None:
-                                return None
-                            if isinstance(val, bool):
-                                return str(int(val))
-                            return str(val) if val != '' else None
+                        "created_at": safe_str(deal_info.get("created_at")),
+                        "updated_at": safe_str(deal_info.get("updated_at")),
+                        "last_change_status_at": safe_str(deal_info.get("last_change_status_at")),
+                        "last_change_stage_at": safe_str(deal_info.get("last_change_stage_at")),
                         
-                        def safe_json(val):
-                            """Safely serialize value - handles dict, list, and primitives"""
-                            if not val:
-                                return EMPTY_JSON
-                            if isinstance(val, (dict, list)):
-                                return json.dumps(val, ensure_ascii=False)
-                            return str(val)
+                        "name": safe_str(deal_info.get("name")),
+                        "source": safe_str(deal_info.get("source")),
+                        "facebook_page_id": safe_str(deal_info.get("facebook_page_id")),
+                        "activity": safe_str(deal_info.get("activity")),
+                        "addition_fields": safe_str(deal_info.get("addition_fields")),
+                        "gclid": safe_str(deal_info.get("gclid")),
+                        "addition_details": safe_str(deal_info.get("addition_details")),
+                        "comment": safe_str(deal_info.get("comment")),
+                        "convert_type": safe_str(deal_info.get("convert_type")),
+                        "convert_at": safe_str(deal_info.get("convert_at")),
+                        "closed_by": safe_str(deal_info.get("closed_by")),
+                        "closed_at": safe_str(deal_info.get("closed_at")),
+                        "unqualified_reasons": safe_str(deal_info.get("unqualified_reasons")),
+                        "lost_reasons": safe_str(deal_info.get("lost_reasons")),
+                        "estimated_closed_date": safe_str(deal_info.get("estimated_closed_date")),
+                        "utm_campaign": safe_str(deal_info.get("utm_campaign")),
                         
-                        row = {
-                            "pk_id": pk,
-                            "id": row_id,
-                            "deal_id": safe_str(deal_info.get("deal_id")),
-                            "value": safe_str(deal_info.get("value")),
-                            "probability": safe_str(deal_info.get("probability")),
-                            "pipeline_id": safe_str(deal_info.get("pipeline_id")),
-                            "pipeline_stage_id": safe_str(deal_info.get("pipeline_stage_id")),
-                            "closed_type": safe_str(deal_info.get("closed_type")),
-                            "source_detail_id": safe_str(deal_info.get("source_detail_id")),
-                            "service_id": safe_str(deal_info.get("service_id")),
-                            "requester_id": safe_str(deal_info.get("requester_id")),
-                            "assignee_id": safe_str(deal_info.get("assignee_id")),
-                            "ticket_source_end_status": safe_str(deal_info.get("ticket_source_end_status")),
-                            
-                            "created_at": safe_str(deal_info.get("created_at")),
-                            "updated_at": safe_str(deal_info.get("updated_at")),
-                            "last_change_status_at": safe_str(deal_info.get("last_change_status_at")),
-                            "last_change_stage_at": safe_str(deal_info.get("last_change_stage_at")),
-                            
-                            "name": safe_str(deal_info.get("name")),
-                            "source": safe_str(deal_info.get("source")),
-                            "facebook_page_id": safe_str(deal_info.get("facebook_page_id")),
-                            "activity": safe_str(deal_info.get("activity")),
-                            "addition_fields": safe_str(deal_info.get("addition_fields")),
-                            "gclid": safe_str(deal_info.get("gclid")),
-                            "addition_details": safe_str(deal_info.get("addition_details")),
-                            "comment": safe_str(deal_info.get("comment")),
-                            "convert_type": safe_str(deal_info.get("convert_type")),
-                            "convert_at": safe_str(deal_info.get("convert_at")),
-                            "closed_by": safe_str(deal_info.get("closed_by")),
-                            "closed_at": safe_str(deal_info.get("closed_at")),
-                            "unqualified_reasons": safe_str(deal_info.get("unqualified_reasons")),
-                            "lost_reasons": safe_str(deal_info.get("lost_reasons")),
-                            "estimated_closed_date": safe_str(deal_info.get("estimated_closed_date")),
-                            "utm_campaign": safe_str(deal_info.get("utm_campaign")),
-                            
-                            "call_info": safe_json(data_dict.get("call_info")),
-                            "agent_submit": safe_json(data_dict.get("agent_submit")),
-                            "updated_properties": safe_json(data_dict.get("updated_properties")),
-                            "account_id": safe_json(data_dict.get("account_id")),
-                            "activity_source": safe_json(data_dict.get("activity_source")),
-                            "action": safe_json(data_dict.get("action")),
-                            "convert_from_object": safe_json(data_dict.get("convert_from_object")),
-                            "object": safe_json(data_dict.get("object")),
-                            
-                            "fb_psid": safe_str(deal_info.get("fb_psid")),
-                            "csa_acc": safe_str(deal_info.get("csa_acc")),
-                            "commentator_id": safe_str(deal_info.get("commentator_id")),
-                            "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
-                            "convert_by": safe_str(deal_info.get("convert_by")),
-                            
-                            "brand_etl": brand_etl,  # Include brand_etl from Bronze
-                            "snapshot_date": self.snapshot_date
-                        }
-                        accumulated_raw_data.append(row)
+                        "call_info": safe_json(data_dict.get("call_info")),
+                        "agent_submit": safe_json(data_dict.get("agent_submit")),
+                        "updated_properties": safe_json(data_dict.get("updated_properties")),
+                        "account_id": safe_json(data_dict.get("account_id")),
+                        "activity_source": safe_json(data_dict.get("activity_source")),
+                        "action": safe_json(data_dict.get("action")),
+                        "convert_from_object": safe_json(data_dict.get("convert_from_object")),
+                        "object": safe_json(data_dict.get("object")),
                         
-                        # Check and flush immediately after each append
-                        if len(accumulated_raw_data) >= BATCH_SIZE:
-                            logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned so far: ~{total_processed + i + 1:,})")
-                            
-                            # Check temp files BEFORE processing
-                            temp_files_before = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
-                            logger.info(f"📊 Temp files BEFORE processing: {len(temp_files_before)}")
-                            
-                            batch_success = None  # Arrow Table or None
-                            if accumulated_raw_data:
-                                try:
-                                    batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
-                                    
-                                    # Check temp files AFTER processing
-                                    temp_files_after = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
-                                    if temp_files_after:
-                                        logger.warning(f"🔥 SPILLING DETECTED! Temp files: {len(temp_files_after)}")
-                                        total_size = sum(os.path.getsize(os.path.join(temp_dir, f)) for f in temp_files_after) / 1024 / 1024
-                                        logger.info(f"   Total spilled: {total_size:.2f} MB")
-                                    else:
-                                        logger.info(f"✅ No spilling - all in-memory")
-                                        
-                                except Exception as e:
-                                    logger.error(f"DuckDB Transformation Error: {e}")
-                                    for row in accumulated_raw_data:
-                                        accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
-    
-                            yield batch_success, accumulated_errors
-                            
-                            accumulated_raw_data = []
-                            accumulated_errors = []
-                            gc.collect()
-                            
-                    except Exception:
-                        accumulated_errors.append((pk, row_id, brand_etl))
-    
-                total_processed += batch_size
-                
-                del arrow_batch
-                gc.collect()
-        
-            if accumulated_raw_data or accumulated_errors:
-                logger.info(
-                    f"Processing final batch: {len(accumulated_raw_data):,} records, "
-                    f"{len(accumulated_errors):,} accumulated errors"
-                )
-                
-                batch_success = None  # Arrow Table or None
-                if accumulated_raw_data:
-                    try:
-                        batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
-                    except Exception as e:
-                        logger.error(f"DuckDB Transformation Error: {e}")
-                        for row in accumulated_raw_data:
-                             accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
-                
-                yield batch_success, accumulated_errors
-                
-        finally:
-            # Cleanup DuckDB
-            try:
-                con.close()
-                logger.info("🦆 DuckDB connection closed")
-            except: pass
-            
-            try:
-                if os.path.exists(db_path):
-                    os.remove(db_path)
-                    logger.info(f"🗑️  Removed temp DB file: {db_path}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to remove temp DB: {e}")
+                        "fb_psid": safe_str(deal_info.get("fb_psid")),
+                        "csa_acc": safe_str(deal_info.get("csa_acc")),
+                        "commentator_id": safe_str(deal_info.get("commentator_id")),
+                        "zalo_page_id": safe_str(deal_info.get("zalo_page_id")),
+                        "convert_by": safe_str(deal_info.get("convert_by")),
+                        
+                        "brand_etl": brand_etl,  # Include brand_etl from Bronze
+                        "snapshot_date": self.snapshot_date
+                    }
+                    accumulated_raw_data.append(row)
+                    
+                    # Check and flush immediately after each append
+                    if len(accumulated_raw_data) >= BATCH_SIZE:
+                        logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned so far: ~{total_processed + i + 1:,})")
+                        
+                        batch_success = None  # Arrow Table or None
+                        if accumulated_raw_data:
+                            try:
+                                batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
+                            except Exception as e:
+                                logger.error(f"DuckDB Transformation Error: {e}")
+                                for row in accumulated_raw_data:
+                                    accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
 
-        logger.info(f"Completed processing {total_processed:,} total records")
+                        yield batch_success, accumulated_errors
+                        
+                        accumulated_raw_data = []
+                        accumulated_errors = []
+                        gc.collect()
+                        
+                except Exception:
+                    accumulated_errors.append((pk, row_id, brand_etl))
+
+            total_processed += batch_size
+            
+            del arrow_batch
+            gc.collect()
+    
+        if accumulated_raw_data or accumulated_errors:
+            logger.info(
+                f"Processing final batch: {len(accumulated_raw_data):,} records, "
+                f"{len(accumulated_errors):,} accumulated errors"
+            )
+            
+            batch_success = None  # Arrow Table or None
+            if accumulated_raw_data:
+                try:
+                    batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
+                except Exception as e:
+                    logger.error(f"DuckDB Transformation Error: {e}")
+                    for row in accumulated_raw_data:
+                         accumulated_errors.append((row["pk_id"], row["id"], row["brand_etl"]))
+            
+            yield batch_success, accumulated_errors
+            
+        con.close()
+        logger.info(f"Completed processing {float(total_processed):,} total records")
 
     def run(self):
         tbl_error = self.ensure_table_error_exists()
