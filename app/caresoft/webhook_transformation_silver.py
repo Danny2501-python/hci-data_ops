@@ -165,6 +165,12 @@ class WebhookTransformation:
         arrow_size_mb = raw_arrow.nbytes / 1024 / 1024
         logger.info(f"🔍 Arrow table size: {arrow_size_mb:.2f} MB")
         
+        # FORCE DuckDB to materialize data (not zero-copy from Arrow)
+        # This makes DuckDB actually use its memory limit and spill to disk
+        logger.info("🔄 Creating temp table to force DuckDB materialization...")
+        con.execute("CREATE TEMP TABLE IF NOT EXISTS raw_data AS SELECT * FROM raw_arrow")
+        logger.info("✅ Temp table created - DuckDB now manages this data")
+        
         res = con.sql("""
             SELECT
                 TRY_CAST(pk_id AS BIGINT) as pk_id,
@@ -221,7 +227,7 @@ class WebhookTransformation:
                 
                 snapshot_date,
                 CAST(now() AS TIMESTAMP) as ingestion_timestamp
-            FROM raw_arrow
+            FROM raw_data
         """).arrow()
         
         # Return Arrow Table directly - no conversion to pylist
