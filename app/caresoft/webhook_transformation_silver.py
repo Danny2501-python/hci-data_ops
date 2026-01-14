@@ -245,8 +245,8 @@ class WebhookTransformation:
                     
                     snapshot_date,
                     CAST(now() AS TIMESTAMP) as ingestion_timestamp
-                FROM read_parquet('{temp_parquet}')
-                ORDER BY pk_id
+                FROM read_parquet('{temp_parquet}'), range(15) -- Multiply x15 to create ~3.6GB data > 2GB limit
+                ORDER BY pk_id -- Force sort & spill
             """).arrow()
             
             # Return Arrow Table directly
@@ -299,9 +299,9 @@ class WebhookTransformation:
         duckdb_config = {
             'enable_external_access': 'true',
             'temp_directory': temp_dir,
-            'memory_limit': '256MB',        # Force Spill Test
-            'threads': '1',                 # Reduce overhead
-            'preserve_insertion_order': 'false' # Optimize spilling
+            'memory_limit': '2GB',          # Restore Production Limit
+            'threads': '1',                 # Single thread for safety
+            'preserve_insertion_order': 'false' 
         }
         
         con = duckdb.connect(config=duckdb_config)
