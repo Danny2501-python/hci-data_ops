@@ -246,6 +246,7 @@ class WebhookTransformation:
                     snapshot_date,
                     CAST(now() AS TIMESTAMP) as ingestion_timestamp
                 FROM read_parquet('{temp_parquet}')
+                ORDER BY pk_id
             """).arrow()
             
             # Return Arrow Table directly
