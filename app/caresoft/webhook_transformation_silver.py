@@ -259,7 +259,14 @@ class WebhookTransformation:
         con.execute(f"SET temp_directory='{temp_dir}'")
         
         # Limit memory to enable automatic spilling to disk
-        con.execute("SET max_memory='3GB'")
+        # Set lower than pod limit to leave headroom for Python overhead
+        # TESTING: Force spilling with very low memory limit
+        con.execute("SET max_memory='256MB'")  # ← Force spilling to test
+        logger.warning("⚠️ DuckDB memory set to 256MB for SPILLING TEST - will spill to disk frequently!")
+        logger.info(f"📁 DuckDB temp directory: {temp_dir}")
+        
+        # Enable verbose logging for spilling (optional)
+        # con.execute("SET enable_progress_bar=true")
         
         accumulated_raw_data = []
         accumulated_errors = []
