@@ -20,6 +20,7 @@ import psycopg2
 import pyarrow as pa
 import duckdb
 from pyiceberg.catalog import load_catalog
+from pyiceberg.io.pyarrow import schema_to_pyarrow
 
 # Iceberg configuration
 ICEBERG_REST_URI_GOLD = os.getenv('ICEBERG_REST_URI_GOLD')
@@ -98,7 +99,9 @@ class ServingLayerRefresh:
             
             # Streaming write: Scan -> Batch -> Parquet
             # This avoids loading the whole table into RAM at once!
-            with pq.ParquetWriter(temp_parquet, scan.schema.as_arrow()) as writer:
+            # Use table schema for Parquet writer
+            arrow_schema = schema_to_pyarrow(table.schema())
+            with pq.ParquetWriter(temp_parquet, arrow_schema) as writer:
                 for batch in scan.to_arrow_batch_reader():
                     if len(batch) > 0:
                         table_batch = pa.Table.from_batches([batch])
