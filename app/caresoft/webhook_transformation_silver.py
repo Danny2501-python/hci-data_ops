@@ -260,10 +260,18 @@ class WebhookTransformation:
         
         # Limit memory to enable automatic spilling to disk
         # Set lower than pod limit to leave headroom for Python overhead
-        # TESTING: Force spilling with very low memory limit
-        con.execute("SET max_memory='256MB'")  # ← Force spilling to test
-        logger.warning("⚠️ DuckDB memory set to 256MB for SPILLING TEST - will spill to disk frequently!")
+        # TESTING: Force spilling with VERY low memory limit
+        con.execute("SET max_memory='64MB'")  # ← VERY aggressive - will definitely spill!
+        logger.warning("⚠️ DuckDB memory set to 64MB for AGGRESSIVE SPILLING TEST!")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
+        
+        # Check if temp dir exists and is writable
+        import os
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir, exist_ok=True)
+            logger.info(f"✅ Created temp directory: {temp_dir}")
+        else:
+            logger.info(f"✅ Temp directory exists: {temp_dir}")
         
         # Enable verbose logging for spilling (optional)
         # con.execute("SET enable_progress_bar=true")
@@ -367,10 +375,24 @@ class WebhookTransformation:
                     if len(accumulated_raw_data) >= BATCH_SIZE:
                         logger.info(f"Processing accumulated batch of {len(accumulated_raw_data):,} records (total scanned so far: ~{total_processed + i + 1:,})")
                         
+                        # Check temp files BEFORE processing
+                        temp_files_before = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
+                        logger.info(f"📊 Temp files BEFORE processing: {len(temp_files_before)}")
+                        
                         batch_success = None  # Arrow Table or None
                         if accumulated_raw_data:
                             try:
                                 batch_success = self._transform_with_duckdb(con, accumulated_raw_data)
+                                
+                                # Check temp files AFTER processing
+                                temp_files_after = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
+                                if temp_files_after:
+                                    logger.warning(f"🔥 SPILLING DETECTED! Temp files: {len(temp_files_after)}")
+                                    total_size = sum(os.path.getsize(os.path.join(temp_dir, f)) for f in temp_files_after) / 1024 / 1024
+                                    logger.info(f"   Total spilled: {total_size:.2f} MB")
+                                else:
+                                    logger.info(f"✅ No spilling - all in-memory")
+                                    
                             except Exception as e:
                                 logger.error(f"DuckDB Transformation Error: {e}")
                                 for row in accumulated_raw_data:
