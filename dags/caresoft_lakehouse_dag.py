@@ -75,10 +75,10 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
 }
 
-# Resource requirements
+# Resource requirements (optimized for cluster capacity)
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '3Gi'},
-    limits={'cpu': '3000m', 'memory': '5Gi'}
+    requests={'cpu': '500m', 'memory': '1Gi'},   # Reduced to fit available memory
+    limits={'cpu': '2000m', 'memory': '3Gi'}     # Sufficient for DuckDB transformations
 )
 
 # NFS Volume (for scripts)
