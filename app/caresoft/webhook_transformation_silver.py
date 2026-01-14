@@ -293,19 +293,20 @@ class WebhookTransformation:
                 return None
 
         total_processed = 0
-        con = duckdb.connect()
-        
-        # Configure temp directory for disk spilling (safe in containers)
+        # Configure DuckDB with spilling optimizations
         temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
-        con.execute(f"SET temp_directory='{temp_dir}'")
         
-        # Limit memory to enable automatic spilling to disk
-        # Set lower than pod limit to leave headroom for Python overhead
-        # TEST: 256MB limit < ~240MB data -> Forces spilling
-        con.execute("SET memory_limit='256MB'")
-        con.execute("SET threads=1") 
-        con.execute("SET preserve_insertion_order=false") # Reduce memory pressure
-        logger.warning(f"⚠️ DuckDB memory set to 256MB, Threads=1, NoOrder to FORCE SPILLING")
+        duckdb_config = {
+            'enable_external_access': 'true',
+            'temp_directory': temp_dir,
+            'memory_limit': '256MB',        # Force Spill Test
+            'threads': '1',                 # Reduce overhead
+            'preserve_insertion_order': 'false' # Optimize spilling
+        }
+        
+        con = duckdb.connect(config=duckdb_config)
+        
+        logger.info(f"🦆 DuckDB Configured: {duckdb_config}")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
         
         
