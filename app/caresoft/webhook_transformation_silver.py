@@ -161,6 +161,7 @@ class WebhookTransformation:
         import pyarrow.parquet as pq
         import gc
         import tempfile
+        import time
         
         data_size_mb = sys.getsizeof(raw_data) / 1024 / 1024
         logger.info(f"🔍 DuckDB processing: {len(raw_data):,} records, ~{data_size_mb:.2f} MB in Python memory")
