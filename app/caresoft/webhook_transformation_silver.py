@@ -265,7 +265,7 @@ class WebhookTransformation:
         Generator function that yields batches of (success_rows, error_ids)
         Uses batch streaming and DuckDB for efficient SQL-based transformation
         """
-        BATCH_SIZE = 100000
+        BATCH_SIZE = 50000
         
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
         logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
@@ -300,9 +300,9 @@ class WebhookTransformation:
         
         # Limit memory to enable automatic spilling to disk
         # Set lower than pod limit to leave headroom for Python overhead
-        # TEST: 256MB limit < 389MB data → Forces spilling!
-        con.execute("SET max_memory='256MB'")
-        logger.warning(f"⚠️ DuckDB memory set to 256MB to FORCE SPILLING (Data: ~400MB)")
+        # TEST: 64MB limit < ~200MB data (batch 50k) → Forces spilling!
+        con.execute("SET max_memory='64MB'")
+        logger.warning(f"⚠️ DuckDB memory set to 64MB to FORCE SPILLING (Batch 50k)")
         logger.info(f"📁 DuckDB temp directory: {temp_dir}")
         
         
