@@ -54,6 +54,7 @@ dag_ticket_bronze = DAG(
     schedule_interval='30 1,8 * * *',  # 01:30 and 08:35 daily
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    max_active_runs=1,
     tags=['caresoft', 'ticket', 'bronze', 'flow-2'],
 )
 
@@ -78,6 +79,7 @@ dag_ticket_silver = DAG(
     schedule_interval='*/12 * * * *',  # Every 12 minutes
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    max_active_runs=1,
     tags=['caresoft', 'ticket', 'silver', 'flow-2'],
 )
 
