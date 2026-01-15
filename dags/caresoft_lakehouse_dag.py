@@ -155,6 +155,20 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
+# DWH Sandbox Connection (for serving layer sandbox)
+dwh_sandbox_uri = ''
+try:
+    hook = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn = hook.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn.get_uri()
+    
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 # ============================================================================
 # TASK 1: ERP → BRONZE (Webhook Ingestion)
 # ============================================================================
@@ -273,7 +287,36 @@ task_refresh_serving_layer = KubernetesPodOperator(
 )
 
 # ============================================================================
+# TASK 5: GOLD → SERVING SANDBOX (Refresh PostgreSQL Sandbox Serving Layer)
+# ============================================================================
+
+task_refresh_serving_layer_sandbox = KubernetesPodOperator(
+    task_id='refresh_serving_layer_sandbox',
+    name='caresoft-refresh-serving-layer-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/deal_detail_serving_layer.py'],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_sandbox_uri,  # Use sandbox connection
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_refresh_serving_layer
+# Sequential flow: ERP → Bronze → Silver → Gold → Serving (Production) → Serving (Sandbox)
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_refresh_serving_layer >> task_refresh_serving_layer_sandbox
