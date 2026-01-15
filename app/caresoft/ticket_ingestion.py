@@ -204,13 +204,6 @@ class TicketIngestion:
                     if not tickets:
                         break
                     
-                    # Add metadata to each ticket
-                    for ticket in tickets:
-                        ticket['brand_id'] = brand_id
-                        ticket['snapshot_date'] = self.snapshot_date
-                        ticket['ingestion_timestamp'] = datetime.now()
-                        ticket['fetch_type'] = fetch_type
-                    
                     all_tickets.extend(tickets)
                     logger.info(f"Page {page}: fetched {len(tickets)} tickets (total: {len(all_tickets)})")
                     
@@ -267,6 +260,7 @@ class TicketIngestion:
             logger.warning(f"Could not delete old data (table might be empty): {e}")
         
         # Fetch tickets in 3 loops (matching old system logic)
+        # Store as list of tuples: (ticket, fetch_type)
         all_records = []
         
         # Loop 1: UPDATED tickets (yesterday → today)
@@ -276,7 +270,7 @@ class TicketIngestion:
             date_since=date_yesterday,
             date_to=date_today
         )
-        all_records.extend(tickets_updated)
+        all_records.extend([(ticket, 'updated') for ticket in tickets_updated])
         
         # Loop 2: CREATED tickets (yesterday → today)
         tickets_created = self.fetch_tickets(
@@ -285,7 +279,7 @@ class TicketIngestion:
             date_since=date_yesterday,
             date_to=date_today
         )
-        all_records.extend(tickets_created)
+        all_records.extend([(ticket, 'created') for ticket in tickets_created])
         
         # Loop 3: CREATED tickets (day before yesterday → yesterday)
         tickets_created_prev = self.fetch_tickets(
@@ -294,7 +288,7 @@ class TicketIngestion:
             date_since=date_day_before,
             date_to=date_yesterday
         )
-        all_records.extend(tickets_created_prev)
+        all_records.extend([(ticket, 'created_prev') for ticket in tickets_created_prev])
         
         # Write to Iceberg
         if all_records:
@@ -427,9 +421,19 @@ class TicketIngestion:
                     logger.warning(f"Error extracting custom fields: {e}")
                     return result
             
+            def serialize_for_json(obj):
+                """Convert date/datetime objects to ISO format strings for JSON serialization"""
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif isinstance(obj, date):
+                    return obj.isoformat()
+                return obj
+            
             # Transform records to match schema (legacy cs_ticket_api fields)
             transformed_records = []
-            for ticket in all_records:
+            ingestion_timestamp = datetime.now()  # Single timestamp for entire batch
+            
+            for ticket, fetch_type in all_records:
                 # Extract custom field values using brand config
                 extracted_custom_fields = extract_custom_fields(ticket.get("custom_fields", []), brand)
                 
@@ -459,14 +463,14 @@ class TicketIngestion:
                     "updated_at": safe_ts(ticket.get("updated_at")),
                     
                     # JSON fields (matching old table - stored as JSON strings)
-                    "custom_fields": json.dumps(ticket.get("custom_fields", []), ensure_ascii=False) if ticket.get("custom_fields") else None,
-                    "assignee": json.dumps(ticket.get("assignee", {}), ensure_ascii=False) if ticket.get("assignee") else None,
-                    "requester": json.dumps(ticket.get("requester", {}), ensure_ascii=False) if ticket.get("requester") else None,
-                    "tags": json.dumps(ticket.get("tags", []), ensure_ascii=False) if ticket.get("tags") else None,
+                    "custom_fields": json.dumps(ticket.get("custom_fields", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("custom_fields") else None,
+                    "assignee": json.dumps(ticket.get("assignee", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("assignee") else None,
+                    "requester": json.dumps(ticket.get("requester", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("requester") else None,
+                    "tags": json.dumps(ticket.get("tags", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("tags") else None,
                     
                     # Brand and metadata (matching old table)
-                    "brand_id": safe_int(ticket.get("brand_id")),
-                    "raw_data": json.dumps(ticket, ensure_ascii=False),
+                    "brand_id": safe_int(brand["erp_id"]),  # From brand config, not ticket
+                    "raw_data": json.dumps(ticket, ensure_ascii=False, default=serialize_for_json),
                     "ghi_chu": extracted_custom_fields['ghi_chu'],  # Extracted from custom_fields
                     
                     # Custom extracted fields (matching old table)
@@ -475,10 +479,10 @@ class TicketIngestion:
                     "ad_id_value": extract_ad_id(ticket.get("tags", [])),  # Extract from tags
                     "id_value_dich_vu_chi_tiet": extracted_custom_fields['id_value_dich_vu_chi_tiet'],  # Extracted from custom_fields
                     
-                    # NEW: Metadata for Lakehouse
-                    "snapshot_date": ticket.get("snapshot_date"),
-                    "ingestion_timestamp": ticket.get("ingestion_timestamp"),
-                    "fetch_type": ticket.get("fetch_type"),
+                    # NEW: Metadata for Lakehouse (added here, not in original ticket)
+                    "snapshot_date": self.snapshot_date,  # date object
+                    "ingestion_timestamp": ingestion_timestamp,  # datetime object
+                    "fetch_type": fetch_type,  # From tuple unpacking
                 }
                 transformed_records.append(record)
             
