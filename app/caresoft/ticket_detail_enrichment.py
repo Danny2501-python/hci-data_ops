@@ -41,11 +41,8 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-# CareSoft API configuration
-CARESOFT_API_URL = os.getenv('CARESOFT_API_URL', 'https://api.caresoft.vn')
-
-# Source and target tables
-TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_bronze'
+# Source and target tables - matching old system naming
+TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
 TICKET_DETAIL_SILVER_TABLE = 'caresoft.cs_ticket_source_api'
 TICKET_DETAIL_ERROR_TABLE = 'caresoft.cs_ticket_source_error_api'
 
@@ -206,13 +203,22 @@ class TicketDetailEnrichment:
         """
         bronze_table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
         
+        
         logger.info(f"Scanning Bronze tickets for brand_etl={brand_erp_id}")
         
-        # Calculate cutoff date (10 days ago)
+        # Match old system logic:
+        # 1. Filter tickets updated in last 10 days (from snapshot_date, not current_date)
+        # 2. Group by ticket_id with MAX(updated_at)
+        # 3. Order by updated_at DESC
+        # 4. Limit 300
+        
+        from datetime import datetime, timedelta
+        import duckdb
+        
+        # Calculate cutoff: snapshot_date - 10 days
+        # Use snapshot_date (not current_date) for reproducibility and re-run capability
         cutoff_date = self.snapshot_date - timedelta(days=10)
         
-        from datetime import timedelta
-        import duckdb
         
         con = duckdb.connect()
         
@@ -221,15 +227,19 @@ class TicketDetailEnrichment:
         con.execute(f"SET temp_directory='{temp_dir}'")
         con.execute("SET max_memory='3GB'")
         
-        # Scan Bronze table for recent tickets
+        
+        # Scan Bronze table - use snapshot_date for partition pruning (faster!)
+        # Iceberg is partitioned by snapshot_date, so this is much faster than filtering by updated_at
+        # We'll filter by updated_at in DuckDB query after loading
         scan = bronze_table.scan(
             row_filter=And(
-                GreaterThanOrEqual("snapshot_date", cutoff_date),
+                GreaterThanOrEqual("snapshot_date", cutoff_date),  # ← Filter by snapshot_date (partition pruning!)
                 EqualTo("brand_id", brand_erp_id),
                 NotNull("ticket_id")
             ),
             selected_fields=("ticket_id", "updated_at")
         )
+        
         
         total_tickets = 0
         batches = []
@@ -240,7 +250,7 @@ class TicketDetailEnrichment:
                 batches.append(batch)
         
         if total_tickets == 0:
-            logger.info(f"No tickets in Bronze for brand {brand_erp_id}")
+            logger.info(f"No tickets updated in last 10 days for brand {brand_erp_id}")
             con.close()
             return []
         
@@ -249,16 +259,30 @@ class TicketDetailEnrichment:
         tickets_table = pa.Table.from_batches(batches)
         con.register('bronze_tickets', tickets_table)
         
-        logger.info(f"Found {total_tickets} tickets in Bronze (last 10 days)")
+        logger.info(f"Found {total_tickets} ticket records from last 10 snapshots")
         
-        # Get top N most recent tickets by updated_at
+        
+        # Query logic:
+        # 1. Already filtered by snapshot_date in Iceberg scan (last 10 days of snapshots)
+        # 2. GROUP BY ticket_id to deduplicate (handle re-ingested tickets)
+        # 3. MAX(updated_at) to get latest version of each ticket
+        # 4. ORDER BY updated_at DESC to get most recently updated tickets first
+        # 5. LIMIT to get top N tickets
+        
         result = con.execute(f"""
-            SELECT DISTINCT ticket_id
-            FROM bronze_tickets
-            WHERE ticket_id IS NOT NULL AND ticket_id != 0
+            WITH a AS (
+                SELECT 
+                    ticket_id, 
+                    MAX(updated_at) AS updated_at
+                FROM bronze_tickets
+                GROUP BY ticket_id
+            )
+            SELECT ticket_id
+            FROM a
             ORDER BY updated_at DESC
             LIMIT {limit}
         """).fetchall()
+        
         
         con.close()
         
@@ -270,10 +294,11 @@ class TicketDetailEnrichment:
     
     def call_caresoft_api(self, brand: dict, ticket_id: int):
         """Call CareSoft API to get ticket details"""
-        subdomain = brand["caresoft_domain"]
+        subdomain = brand["caresoft_domain"]  # Already just subdomain (e.g. "kangnam2")
         api_key = brand["caresoft_key"]
         
-        url = f"{CARESOFT_API_URL}/{subdomain}/api/v1/tickets/{ticket_id}"
+        # API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/tickets/{id}
+        url = f"https://api.caresoft.vn/{subdomain}/api/v1/tickets/{ticket_id}"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"

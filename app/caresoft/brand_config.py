@@ -58,6 +58,7 @@ def ensure_brand_table_exists():
             NestedField(7, "caresoft_key", StringType(), required=False),
             NestedField(8, "created", TimestampType(), required=False),
             NestedField(9, "updated", TimestampType(), required=False),
+            NestedField(10, "custom_field_mappings", StringType(), required=False),  # JSON config for custom field IDs
         )
         
         table = gold_catalog.create_table(

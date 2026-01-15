@@ -40,11 +40,10 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 # CareSoft API configuration
-CARESOFT_API_URL = os.getenv('CARESOFT_API_URL', 'https://api.caresoft.vn')
-CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '100'))
+CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE'))
 
-# Target table (Bronze)
-TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_bronze'
+# Target table (Bronze) - matching old system naming
+TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
 
 
 class TicketIngestion:
@@ -87,61 +86,46 @@ class TicketIngestion:
             from pyiceberg.partitioning import PartitionSpec, PartitionField
             from pyiceberg.transforms import IdentityTransform
             
-            # Schema matching CareSoft tickets API response
+            # Schema matching legacy cs_ticket_api table (PostgreSQL)
+            # Field order and numbering matches PostgreSQL DDL exactly
             schema = Schema(
-                # Core IDs
-                NestedField(1, "ticket_id", LongType(), required=False),
-                NestedField(2, "account_id", IntegerType(), required=False),
-                NestedField(3, "ticket_no", IntegerType(), required=False),
-                NestedField(4, "requester_id", LongType(), required=False),
-                NestedField(5, "group_id", IntegerType(), required=False),
-                NestedField(6, "assignee_id", LongType(), required=False),
+                # 1-27: Fields from old PostgreSQL table (in DDL order)
+                NestedField(1, "incident_id", LongType(), required=False),
+                NestedField(2, "ticket_no", IntegerType(), required=False),
+                NestedField(3, "ticket_status", StringType(), required=False),
+                NestedField(4, "ticket_subject", StringType(), required=False),
+                NestedField(5, "created_at", TimestampType(), required=False),
+                NestedField(6, "updated_at", TimestampType(), required=False),
+                NestedField(7, "ticket_source_end_status", StringType(), required=False),
+                NestedField(8, "ticket_source", StringType(), required=False),
+                NestedField(9, "ticket_priority", StringType(), required=False),
+                NestedField(10, "service_id", LongType(), required=False),
+                NestedField(11, "ticket_id", LongType(), required=False),
+                NestedField(12, "requester_id", LongType(), required=False),
+                NestedField(13, "assignee", StringType(), required=False),  # JSON object as string
+                NestedField(14, "assignee_id", LongType(), required=False),
+                NestedField(15, "campaign_id", StringType(), required=False),
+                NestedField(16, "campaign", StringType(), required=False),
+                NestedField(17, "duedate", StringType(), required=False),
+                NestedField(18, "custom_fields", StringType(), required=False),  # JSON array as string
+                NestedField(19, "requester", StringType(), required=False),  # JSON object as string
+                NestedField(20, "tags", StringType(), required=False),  # JSON array as string
+                NestedField(21, "brand_id", IntegerType(), required=False),
+                NestedField(22, "raw_data", StringType(), required=False),
+                NestedField(23, "ghi_chu", StringType(), required=False),
+                NestedField(24, "id_value_phan_loai_ket_noi", StringType(), required=False),
+                NestedField(25, "id_value_muc_do_hai_long", StringType(), required=False),
+                NestedField(26, "ad_id_value", StringType(), required=False),
+                NestedField(27, "id_value_dich_vu_chi_tiet", StringType(), required=False),
                 
-                # Text fields
-                NestedField(7, "subject", StringType(), required=False),
-                NestedField(8, "description", StringType(), required=False),
-                NestedField(9, "status", StringType(), required=False),
-                NestedField(10, "priority", StringType(), required=False),
-                NestedField(11, "ticket_source", StringType(), required=False),
-                
-                # Timestamps
-                NestedField(12, "created_at", TimestampType(), required=False),
-                NestedField(13, "updated_at", TimestampType(), required=False),
-                NestedField(14, "satisfaction_at", TimestampType(), required=False),
-                
-                # Additional fields
-                NestedField(15, "sla_id", IntegerType(), required=False),
-                NestedField(16, "duedate", StringType(), required=False),
-                NestedField(17, "satisfaction", StringType(), required=False),
-                NestedField(18, "satisfaction_content", StringType(), required=False),
-                NestedField(19, "satisfaction_send", StringType(), required=False),
-                NestedField(20, "automessage_id", StringType(), required=False),
-                NestedField(21, "feedback_status", StringType(), required=False),
-                NestedField(22, "is_overdue", BooleanType(), required=False),
-                NestedField(23, "incident_id", IntegerType(), required=False),
-                NestedField(24, "service_id", LongType(), required=False),
-                NestedField(25, "qa_script_id", StringType(), required=False),
-                NestedField(26, "qa_agent", StringType(), required=False),
-                NestedField(27, "current_agent", StringType(), required=False),
-                NestedField(28, "ticket_source_detail_id", IntegerType(), required=False),
-                
-                # JSON fields (stored as text)
-                NestedField(29, "comments", StringType(), required=False),
-                NestedField(30, "ccs", StringType(), required=False),
-                NestedField(31, "follows", StringType(), required=False),
-                
-                # Brand and raw data
-                NestedField(32, "brand_id", IntegerType(), required=False),
-                NestedField(33, "raw_data", StringType(), required=False),
-                
-                # Metadata
-                NestedField(100, "snapshot_date", DateType(), required=False),
-                NestedField(101, "ingestion_timestamp", TimestampType(), required=False),
-                NestedField(102, "fetch_type", StringType(), required=False),  # 'updated', 'created', 'created_prev'
+                # 28-30: NEW metadata fields for Lakehouse (not in old system)
+                NestedField(28, "snapshot_date", DateType(), required=False),
+                NestedField(29, "ingestion_timestamp", TimestampType(), required=False),
+                NestedField(30, "fetch_type", StringType(), required=False),  # 'updated', 'created', 'created_prev'
             )
             
             partition_spec = PartitionSpec(
-                PartitionField(source_id=100, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
+                PartitionField(source_id=28, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
             )
             
             table = self.bronze_catalog.create_table(
@@ -153,8 +137,9 @@ class TicketIngestion:
             return table
     
     def get_api_url(self, subdomain: str, path: str) -> str:
-        """Construct API URL"""
-        return f"{CARESOFT_API_URL}/{subdomain}/api/v1/{path}"
+        """Construct API URL using brand's caresoft_domain"""
+        # API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/{path}
+        return f"https://api.caresoft.vn/{subdomain}/api/v1/{path}"
     
     def get_api_headers(self, api_key: str) -> dict:
         """Get API headers"""
@@ -344,56 +329,153 @@ class TicketIngestion:
                     return val
                 return str(val).lower() in ('true', '1', 'yes')
             
-            # Transform records to match schema
+            def extract_ad_id(tags):
+                """Extract ad_id value from tags array
+                
+                Tags format: [{"name": "ad_id.123456"}, {"name": "other_tag"}]
+                Returns: "123456" or empty string
+                """
+                if not tags:
+                    return '[]'  # Empty list as string (matching old system)
+                
+                try:
+                    # Parse JSON if string
+                    if isinstance(tags, str):
+                        import json
+                        tags = json.loads(tags)
+                    
+                    # Join all 'name' values
+                    all_names = ' '.join(item.get('name', '') for item in tags if isinstance(item, dict))
+                    
+                    # Extract ad_id using regex
+                    import re
+                    matches = re.findall(r"ad_id\.(\w+)", all_names)
+                    
+                    # Return string representation of list (matching old system: .astype(str))
+                    return str(matches)  # "['123456']" or "[]"
+                except Exception:
+                    return '[]'  # Empty list as string on error
+            
+            
+            def extract_custom_fields(custom_fields, brand_config):
+                """Extract specific custom field values using brand config
+                
+                Args:
+                    custom_fields: List of custom field objects or JSON string
+                    brand_config: Dict with custom_field_mappings JSON
+                
+                Returns:
+                    Dict with extracted values: {
+                        'ghi_chu': '...',
+                        'id_value_phan_loai_ket_noi': '...',
+                        'id_value_muc_do_hai_long': '...',
+                        'id_value_dich_vu_chi_tiet': '...'
+                    }
+                """
+                result = {
+                    'ghi_chu': '',  # Default to empty string (matching old system)
+                    'id_value_phan_loai_ket_noi': '',
+                    'id_value_muc_do_hai_long': '',
+                    'id_value_dich_vu_chi_tiet': '',
+                }
+                
+                if not custom_fields:
+                    return result
+                
+                try:
+                    # Parse custom_fields if string
+                    if isinstance(custom_fields, str):
+                        custom_fields = json.loads(custom_fields)
+                    
+                    # Parse brand config mappings
+                    mappings = {}
+                    if brand_config.get('custom_field_mappings'):
+                        try:
+                            mappings = json.loads(brand_config['custom_field_mappings'])
+                        except:
+                            pass
+                    
+                    # If no mappings, return empty
+                    if not mappings:
+                        return result
+                    
+                    # Extract values by matching IDs
+                    for item in custom_fields:
+                        if not isinstance(item, dict):
+                            continue
+                        
+                        item_id = item.get('id')
+                        item_value = item.get('value')
+                        
+                        # Convert None to empty string (matching old system behavior)
+                        if item_value is None:
+                            item_value = ''
+                        
+                        # Match against configured IDs
+                        if item_id == mappings.get('ghi_chu'):
+                            result['ghi_chu'] = item_value
+                        elif item_id == mappings.get('phan_loai_ket_noi'):
+                            result['id_value_phan_loai_ket_noi'] = item_value
+                        elif item_id == mappings.get('muc_do_hai_long'):
+                            result['id_value_muc_do_hai_long'] = item_value
+                        elif item_id == mappings.get('dich_vu_chi_tiet'):
+                            result['id_value_dich_vu_chi_tiet'] = item_value
+                    
+                    return result
+                    
+                except Exception as e:
+                    logger.warning(f"Error extracting custom fields: {e}")
+                    return result
+            
+            # Transform records to match schema (legacy cs_ticket_api fields)
             transformed_records = []
             for ticket in all_records:
+                # Extract custom field values using brand config
+                extracted_custom_fields = extract_custom_fields(ticket.get("custom_fields", []), brand)
+                
                 record = {
-                    # Core IDs
+                    # Core IDs (matching old table)
                     "ticket_id": ticket.get("ticket_id"),
-                    "account_id": safe_int(ticket.get("account_id")),
                     "ticket_no": safe_int(ticket.get("ticket_no")),
                     "requester_id": ticket.get("requester_id"),
-                    "group_id": safe_int(ticket.get("group_id")),
                     "assignee_id": ticket.get("assignee_id"),
-                    
-                    # Text fields
-                    "subject": safe_str(ticket.get("subject")),
-                    "description": safe_str(ticket.get("description")),
-                    "status": safe_str(ticket.get("status")),
-                    "priority": safe_str(ticket.get("priority")),
-                    "ticket_source": safe_str(ticket.get("ticket_source")),
-                    
-                    # Timestamps
-                    "created_at": safe_ts(ticket.get("created_at")),
-                    "updated_at": safe_ts(ticket.get("updated_at")),
-                    "satisfaction_at": safe_ts(ticket.get("satisfaction_at")),
-                    
-                    # Additional fields
-                    "sla_id": safe_int(ticket.get("sla_id")),
-                    "duedate": safe_str(ticket.get("duedate")),
-                    "satisfaction": safe_str(ticket.get("satisfaction")),
-                    "satisfaction_content": safe_str(ticket.get("satisfaction_content")),
-                    "satisfaction_send": safe_str(ticket.get("satisfaction_send")),
-                    "automessage_id": safe_str(ticket.get("automessage_id")),
-                    "feedback_status": safe_str(ticket.get("feedback_status")),
-                    "is_overdue": safe_bool(ticket.get("is_overdue")),
                     "incident_id": safe_int(ticket.get("incident_id")),
                     "service_id": ticket.get("service_id"),
-                    "qa_script_id": safe_str(ticket.get("qa_script_id")),
-                    "qa_agent": safe_str(ticket.get("qa_agent")),
-                    "current_agent": safe_str(ticket.get("current_agent")),
-                    "ticket_source_detail_id": safe_int(ticket.get("ticket_source_detail_id")),
+                    "campaign_id": safe_str(ticket.get("campaign_id")),
                     
-                    # JSON fields
-                    "comments": json.dumps(ticket.get("comments", []), ensure_ascii=False),
-                    "ccs": json.dumps(ticket.get("ccs", []), ensure_ascii=False),
-                    "follows": json.dumps(ticket.get("follows", []), ensure_ascii=False),
+                    # Status and classification (matching old table)
+                    "ticket_status": safe_str(ticket.get("ticket_status")),
+                    "ticket_priority": safe_str(ticket.get("ticket_priority")),
+                    "ticket_source": safe_str(ticket.get("ticket_source")),
+                    "ticket_source_end_status": safe_str(ticket.get("ticket_source_end_status")),
                     
-                    # Brand and raw data
+                    # Text fields (matching old table)
+                    "ticket_subject": safe_str(ticket.get("ticket_subject")),
+                    "campaign": safe_str(ticket.get("campaign")),
+                    "duedate": safe_str(ticket.get("duedate")),
+                    
+                    # Timestamps (matching old table)
+                    "created_at": safe_ts(ticket.get("created_at")),
+                    "updated_at": safe_ts(ticket.get("updated_at")),
+                    
+                    # JSON fields (matching old table - stored as JSON strings)
+                    "custom_fields": json.dumps(ticket.get("custom_fields", []), ensure_ascii=False) if ticket.get("custom_fields") else None,
+                    "assignee": json.dumps(ticket.get("assignee", {}), ensure_ascii=False) if ticket.get("assignee") else None,
+                    "requester": json.dumps(ticket.get("requester", {}), ensure_ascii=False) if ticket.get("requester") else None,
+                    "tags": json.dumps(ticket.get("tags", []), ensure_ascii=False) if ticket.get("tags") else None,
+                    
+                    # Brand and metadata (matching old table)
                     "brand_id": safe_int(ticket.get("brand_id")),
                     "raw_data": json.dumps(ticket, ensure_ascii=False),
+                    "ghi_chu": extracted_custom_fields['ghi_chu'],  # Extracted from custom_fields
                     
-                    # Metadata
+                    # Custom extracted fields (matching old table)
+                    "id_value_phan_loai_ket_noi": extracted_custom_fields['id_value_phan_loai_ket_noi'],  # Extracted from custom_fields
+                    "id_value_muc_do_hai_long": extracted_custom_fields['id_value_muc_do_hai_long'],  # Extracted from custom_fields
+                    "ad_id_value": extract_ad_id(ticket.get("tags", [])),  # Extract from tags
+                    "id_value_dich_vu_chi_tiet": extracted_custom_fields['id_value_dich_vu_chi_tiet'],  # Extracted from custom_fields
+                    
+                    # NEW: Metadata for Lakehouse
                     "snapshot_date": ticket.get("snapshot_date"),
                     "ingestion_timestamp": ticket.get("ingestion_timestamp"),
                     "fetch_type": ticket.get("fetch_type"),

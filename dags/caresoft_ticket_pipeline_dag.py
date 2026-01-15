@@ -101,9 +101,8 @@ common_env_vars = {
     'AWS_SECRET_ACCESS_KEY': 'password',
     'AWS_REGION': 'us-east-1',
     
-    # CareSoft API
-    'CARESOFT_API_URL': 'https://api.caresoft.vn',
-    'CARESOFT_PAGE_SIZE': '100',
+    # CareSoft API config
+    'CARESOFT_PAGE_SIZE': '500',
 }
 
 # Resource requirements
