@@ -177,6 +177,8 @@ class ServingLayerRefresh:
             ON CONFLICT ("id", "brand_id")
             DO UPDATE SET
                 {update_set}
+            WHERE {TARGET_TABLE}."updated_at" < EXCLUDED."updated_at"
+                OR {TARGET_TABLE}."updated_at" IS NULL
             """
                    
             # Execute batch upsert using execute_values
