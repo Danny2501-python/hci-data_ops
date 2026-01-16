@@ -1,17 +1,19 @@
 """
 CareSoft Ticket Pipeline DAG (Unified)
-Flow 2: API → Ticket Bronze → Ticket Silver
+Flow 2: API → Ticket Bronze → Ticket Silver → Serving
 
 Architecture:
 1. Bronze Ingestion: CareSoft API → cs_ticket_api (Bronze)
 2. Silver Enrichment: Scan IDs → API detail → cs_ticket_source_api (Silver)
+3. Serving Layer: Silver → PostgreSQL DWH (cs_ticket_api_v1, cs_ticket_source_api_v1)
 
-Schedule: Daily at 2:00 AM (same as lakehouse DAG)
-Tasks run sequentially: Bronze → Silver
+Schedule: Daily at 5:00 AM
+Tasks run sequentially: Bronze → Silver → Serving
 """
 
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 import logging
@@ -33,6 +35,24 @@ NFS_SERVER = '10.10.10.245'
 NFS_PATH = '/srv/nfs_share/app'
 
 # ============================================================================
+# LOAD AIRFLOW CONNECTIONS
+# ============================================================================
+
+# DWH Product Connection (for serving layer)
+dwh_product_uri = ''
+try:
+    hook = PostgresHook(postgres_conn_id='dwh_product')
+    conn = hook.get_connection('dwh_product')
+    dwh_product_uri = conn.get_uri()
+    
+    if '?__extra__=' in dwh_product_uri:
+        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+
+# ============================================================================
 # DAG DEFINITION
 # ============================================================================
 
@@ -49,8 +69,8 @@ default_args = {
 dag = DAG(
     'caresoft_ticket_pipeline',
     default_args=default_args,
-    description='CareSoft Ticket Pipeline: Bronze → Silver',
-    schedule_interval='0 5 * * *',  # Daily at 2:00 AM (Asia/Ho_Chi_Minh)
+    description='CareSoft Ticket Pipeline: Bronze → Silver → Serving',
+    schedule_interval='0 5 * * *',  # Daily at 5:00 AM UTC (12:00 PM Asia/Ho_Chi_Minh)
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -184,8 +204,72 @@ task_ticket_enrichment = KubernetesPodOperator(
 )
 
 # ============================================================================
+# TASK 3: SERVING - Ticket API to PostgreSQL DWH
+# ============================================================================
+
+task_ticket_api_serving = KubernetesPodOperator(
+    task_id='ticket_api_serving_layer',
+    name='caresoft-ticket-api-serving',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket_api_serving_layer.py',
+        '{{ ds }}',  # snapshot_date
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
+# TASK 4: SERVING - Ticket Source API to PostgreSQL DWH
+# ============================================================================
+
+task_ticket_source_serving = KubernetesPodOperator(
+    task_id='ticket_source_serving_layer',
+    name='caresoft-ticket-source-serving',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket_source_serving_layer.py',
+        '{{ ds }}',  # snapshot_date
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Sequential flow: Bronze → Silver
+# Sequential flow: 
+# Bronze → Silver → Serving (parallel)
 task_ticket_ingestion >> task_ticket_enrichment
+task_ticket_enrichment >> [task_ticket_api_serving, task_ticket_source_serving]
