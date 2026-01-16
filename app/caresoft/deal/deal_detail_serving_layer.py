@@ -22,6 +22,7 @@ import pyarrow as pa
 import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.io.pyarrow import schema_to_pyarrow
+from pyiceberg.expressions import EqualTo
 
 # Iceberg configuration
 ICEBERG_REST_URI_GOLD = os.getenv('ICEBERG_REST_URI_GOLD')
@@ -77,29 +78,6 @@ class ServingLayerRefresh:
         
         logger.success("✅ Connected to PostgreSQL")
         
-    def get_latest_deals(self, snapshot_date=None):
-        """
-        Read from Iceberg 'Final Snapshot' table for a specific date.
-        """
-        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
-        logger.info(f"Reading snapshot for date: {target_date} from {SOURCE_TABLE}")
-        
-        table = self.gold_catalog.load_table(SOURCE_TABLE)
-        
-        # Filter Scan by snapshot_date to read only the target daily snapshot
-        scan = table.scan(row_filter=f"snapshot_date = '{target_date}'")
-        result = scan.to_arrow()
-        
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        logger.success(f"✅ Found {len(rows)} deals for snapshot {target_date}")
-        return columns, rows
-        
     def ensure_serving_table_exists(self, columns):
         """Create serving table if not exists with proper schema and PK"""
         cursor = self.pg_conn.cursor()
@@ -142,6 +120,29 @@ class ServingLayerRefresh:
         finally:
             cursor.close()
 
+    def get_latest_deals(self, snapshot_date=None):
+        """
+        Read from Iceberg 'Final Snapshot' table for a specific date.
+        """
+        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"Reading snapshot for date: {target_date} from {SOURCE_TABLE}")
+        
+        table = self.gold_catalog.load_table(SOURCE_TABLE)
+        
+        # Filter Scan by snapshot_date to read only the target daily snapshot
+        scan = table.scan(row_filter=EqualTo("snapshot_date", target_date))
+        result = scan.to_arrow()
+        
+        # Convert to columns and rows
+        columns = result.schema.names
+        rows = []
+        for i in range(len(result)):
+            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+            rows.append(row)
+        
+        logger.success(f"✅ Found {len(rows)} deals for snapshot {target_date}")
+        return columns, rows
+    
     def upsert_serving_table(self, columns, rows):
         """
         UPSERT data into serving table (Insert or Update on Conflict)

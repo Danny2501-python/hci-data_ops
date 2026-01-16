@@ -18,6 +18,14 @@ import pyarrow as pa
 import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.io.pyarrow import schema_to_pyarrow
+from pyiceberg.schema import Schema
+from pyiceberg.types import (
+    NestedField, IntegerType, StringType, TimestampType, 
+    DateType, LongType
+)
+from pyiceberg.partitioning import PartitionSpec, PartitionField
+from pyiceberg.transforms import IdentityTransform
+from pyiceberg.expressions import EqualTo
 
 # Iceberg configuration
 ICEBERG_REST_URI_GOLD = os.getenv('ICEBERG_REST_URI_GOLD')
@@ -57,6 +65,115 @@ class DealDetailSnapshot:
         )
         
         logger.success("✅ Connected to Iceberg Gold catalog")
+
+    def ensure_final_table_exists(self):
+        """Create final snapshot table with explicit schema if not exists"""
+        try:
+            return self.gold_catalog.load_table(TARGET_TABLE)
+        except:
+            logger.info(f"Creating table {TARGET_TABLE}...")
+            
+            # Explicit Schema Definition (Matching Gold Incremental Table)
+            schema = Schema(
+                # Core fields
+                NestedField(1, "id", LongType(), required=False),
+                NestedField(2, "account_id", IntegerType(), required=False),
+                NestedField(3, "deal_no", IntegerType(), required=False),
+                NestedField(4, "requester_id", LongType(), required=False),
+                NestedField(5, "group_id", IntegerType(), required=False),
+                NestedField(6, "ticket_source_end_status", IntegerType(), required=False),
+                NestedField(7, "assignee_id", LongType(), required=False),
+                
+                # Text fields
+                NestedField(8, "ticket_source", StringType(), required=False),
+                NestedField(9, "merge_status", StringType(), required=False),
+                NestedField(10, "merge_to", StringType(), required=False),
+                NestedField(11, "clone_from", StringType(), required=False),
+                NestedField(12, "subject", StringType(), required=False),
+                
+                # Timestamps
+                NestedField(13, "created_at", TimestampType(), required=False),
+                NestedField(14, "updated_at", TimestampType(), required=False),
+                NestedField(15, "satisfaction_at", TimestampType(), required=False),
+                NestedField(16, "convert_at", TimestampType(), required=False),
+                NestedField(17, "estimated_closed_date", TimestampType(), required=False),
+                NestedField(18, "closed_at", TimestampType(), required=False),
+                
+                # More text fields
+                NestedField(19, "duedate", StringType(), required=False),
+                NestedField(20, "satisfaction", StringType(), required=False),
+                NestedField(21, "satisfaction_content", StringType(), required=False),
+                NestedField(22, "satisfaction_send", StringType(), required=False),
+                NestedField(23, "campaign_id", StringType(), required=False),
+                NestedField(24, "campaign_action_id", StringType(), required=False),
+                NestedField(25, "campaign_status", StringType(), required=False),
+                NestedField(26, "automessage_id", StringType(), required=False),
+                NestedField(27, "manualmessage_id", StringType(), required=False),
+                
+                # Integer fields
+                NestedField(28, "incident_id", IntegerType(), required=False),
+                NestedField(29, "service_id", LongType(), required=False),
+                
+                # More text fields
+                NestedField(30, "qa_script_id", StringType(), required=False),
+                NestedField(31, "qa_agent", StringType(), required=False),
+                NestedField(32, "current_agent", StringType(), required=False),
+                
+                # Integer fields
+                NestedField(33, "ticket_source_detail_id", IntegerType(), required=False),
+                NestedField(34, "convert_by", LongType(), required=False),
+                NestedField(35, "convert_type", IntegerType(), required=False),
+                
+                # Text fields
+                NestedField(36, "unqualified_reasons", StringType(), required=False),
+                
+                # Integer fields
+                NestedField(37, "last_lead_status_id", IntegerType(), required=False),
+                NestedField(38, "lead_status_id", IntegerType(), required=False),
+                
+                # Text fields
+                NestedField(39, "closed_by", StringType(), required=False),
+                NestedField(40, "closed_type", StringType(), required=False),
+                
+                # Deal-specific fields
+                NestedField(41, "pipeline_id", IntegerType(), required=False),
+                NestedField(42, "pipeline_stage_id", IntegerType(), required=False),
+                NestedField(43, "value", IntegerType(), required=False),
+                NestedField(44, "probability", IntegerType(), required=False),
+                NestedField(45, "last_deal_stage_id", IntegerType(), required=False),
+                
+                # Text fields
+                NestedField(46, "lost_reasons", StringType(), required=False),
+                NestedField(47, "comments", StringType(), required=False),
+                
+                # JSON/Array fields (stored as text)
+                NestedField(48, "custom_fields", StringType(), required=False),
+                NestedField(49, "tags", StringType(), required=False),
+                NestedField(50, "ccs", StringType(), required=False),
+                NestedField(51, "follows", StringType(), required=False),
+                NestedField(52, "labels", StringType(), required=False),
+                NestedField(53, "assignee", StringType(), required=False),
+                NestedField(54, "requester", StringType(), required=False),
+                
+                # Brand and raw data
+                NestedField(55, "brand_id", IntegerType(), required=False),
+                NestedField(56, "raw_data", StringType(), required=False),
+                
+                # Metadata
+                NestedField(100, "snapshot_date", DateType(), required=False),
+                NestedField(101, "ingestion_timestamp", TimestampType(), required=False),
+            )
+            
+            # Partition by snapshot_date (Field ID 100)
+            partition_spec = PartitionSpec(
+                PartitionField(source_id=100, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
+            )
+
+            return self.gold_catalog.create_table(
+                identifier=TARGET_TABLE, 
+                schema=schema, 
+                partition_spec=partition_spec
+            )
 
     def create_snapshot(self, snapshot_date=None):
         """
@@ -105,7 +222,15 @@ class DealDetailSnapshot:
             
             # 2. Use DuckDB to find latest state per deal (across full history)
             logger.info("Computing latest state using DuckDB...")
-            con = duckdb.connect(config={'memory_limit': '4GB', 'temp_directory': temp_dir})
+            duckdb_config = {
+                'temp_directory': temp_dir,
+                'memory_limit': '2GB',          # Safe limit for Pod 3GB
+                'preserve_insertion_order': 'false', # Save RAM
+                'threads': '1'                  # Single thread for stability on small Pods
+            }
+            
+            con = duckdb.connect(config=duckdb_config)
+            logger.info(f"🦆 DuckDB Configured: {duckdb_config}")
             
             # Logic:
             # 1. Find latest record per (id, brand_id) based on original snapshot_date
@@ -121,8 +246,9 @@ class DealDetailSnapshot:
                     FROM read_parquet('{temp_parquet}')
                 )
                 SELECT 
-                    * EXCLUDE (rn, snapshot_date),
-                    CAST('{target_date}' AS DATE) as snapshot_date
+                    * EXCLUDE (rn, snapshot_date, ingestion_timestamp),
+                    CAST('{target_date}' AS DATE) as snapshot_date,
+                    now() as ingestion_timestamp
                 FROM ranked_deals
                 WHERE rn = 1
             """
@@ -136,30 +262,18 @@ class DealDetailSnapshot:
             # 3. Overwrite Target Table Partition
             logger.info(f"Writing to target table: {TARGET_TABLE}")
             
-            # Create table if not exists
-            try:
-                target_table = self.gold_catalog.load_table(TARGET_TABLE)
-            except Exception:
-                logger.info("Creating target table...")
-                target_table = self.gold_catalog.create_table(
-                    TARGET_TABLE,
-                    schema=source_table.schema(),
-                    # Partition by snapshot_date for efficiency
-                     partition_spec=source_table.spec() 
-                )
+            # Ensure table exists with explicit schema
+            target_table = self.ensure_final_table_exists()
 
-            # Transaction: Overwrite Partition (Delete specific date -> Append)
-            txn = target_table.transaction()
+            # Overwrite Partition Strategy (Delete existing -> Append new)
             
-            # Delete data for this snapshot_date
-            delete_filter = f"snapshot_date = '{target_date}'"
-            logger.info(f"Deleting existing data for: {delete_filter}")
-            txn.delete(filter=delete_filter)
+            # 1. Delete existing data for this snapshot_date
+            logger.info(f"Deleting existing data for snapshot_date={target_date}")
+            target_table.delete(delete_filter=EqualTo("snapshot_date", target_date))
             
-            # Append new data
-            txn.append(final_table)
+            # 2. Append new data
+            target_table.append(final_table)
             
-            txn.commit_transaction()
             logger.success(f"✅ Successfully updated {TARGET_TABLE} partition {target_date} with {count} records")
 
         except Exception as e:
