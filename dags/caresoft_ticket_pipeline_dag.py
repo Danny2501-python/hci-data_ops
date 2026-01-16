@@ -1,14 +1,13 @@
 """
-CareSoft Ticket Pipeline DAG
-Flow 2: API → Ticket Source
+CareSoft Ticket Pipeline DAG (Unified)
+Flow 2: API → Ticket Bronze → Ticket Silver
 
 Architecture:
-1. Bronze Ingestion: CareSoft API → cs_ticket_bronze
-2. Silver Enrichment: Scan IDs → API detail → cs_ticket_source_api
+1. Bronze Ingestion: CareSoft API → cs_ticket_api (Bronze)
+2. Silver Enrichment: Scan IDs → API detail → cs_ticket_source_api (Silver)
 
-Schedule:
-- Bronze: Daily at 01:30 and 08:35 (2 runs/day)
-- Silver: Every 12 minutes (120 runs/day)
+Schedule: Daily at 2:00 AM (same as lakehouse DAG)
+Tasks run sequentially: Bronze → Silver
 """
 
 from airflow import DAG
@@ -34,10 +33,10 @@ NFS_SERVER = '10.10.10.245'
 NFS_PATH = '/srv/nfs_share/app'
 
 # ============================================================================
-# DAG 1: TICKET BRONZE INGESTION (Daily: 01:30, 08:35)
+# DAG DEFINITION
 # ============================================================================
 
-default_args_bronze = {
+default_args = {
     'owner': 'data-engineering',
     'depends_on_past': False,
     'email': ['data-eng@example.com'],
@@ -47,40 +46,15 @@ default_args_bronze = {
     'retry_delay': timedelta(minutes=5),
 }
 
-dag_ticket_bronze = DAG(
-    'caresoft_ticket_bronze_ingestion',
-    default_args=default_args_bronze,
-    description='CareSoft Ticket Bronze Ingestion (API → Iceberg)',
-    schedule_interval='30 1,8 * * *',  # 01:30 and 08:35 daily
+dag = DAG(
+    'caresoft_ticket_pipeline',
+    default_args=default_args,
+    description='CareSoft Ticket Pipeline: Bronze → Silver',
+    schedule_interval='0 5 * * *',  # Daily at 2:00 AM (Asia/Ho_Chi_Minh)
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['caresoft', 'ticket', 'bronze', 'flow-2'],
-)
-
-# ============================================================================
-# DAG 2: TICKET SILVER ENRICHMENT (Every 12 minutes)
-# ============================================================================
-
-default_args_silver = {
-    'owner': 'data-engineering',
-    'depends_on_past': False,
-    'email': ['data-eng@example.com'],
-    'email_on_failure': True,
-    'email_on_retry': False,
-    'retries': 1,  # Less retries for high-frequency job
-    'retry_delay': timedelta(minutes=2),
-}
-
-dag_ticket_silver = DAG(
-    'caresoft_ticket_silver_enrichment',
-    default_args=default_args_silver,
-    description='CareSoft Ticket Silver Enrichment (Scan ID → API Detail)',
-    schedule_interval='*/12 * * * *',  # Every 12 minutes
-    start_date=datetime(2026, 1, 1),
-    catchup=False,
-    max_active_runs=1,
-    tags=['caresoft', 'ticket', 'silver', 'flow-2'],
+    tags=['caresoft', 'ticket', 'pipeline', 'flow-2'],
 )
 
 # ============================================================================
@@ -97,6 +71,10 @@ common_env_vars = {
     'ICEBERG_REST_URI_SILVER': 'http://iceberg-rest-silver-zone:8181',
     'CATALOG_NAME_SILVER': 'silver',
     
+    # Gold zone (for loading core_brand table)
+    'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
+    'CATALOG_NAME_GOLD': 'gold',
+    
     # MinIO config
     'S3_ENDPOINT': 'http://10.152.183.65:9000',
     'AWS_ACCESS_KEY_ID': 'admin',
@@ -109,13 +87,13 @@ common_env_vars = {
 
 # Resource requirements
 resource_requirements_bronze = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
+    requests={'cpu': '1000m', 'memory': '1Gi'},
+    limits={'cpu': '2000m', 'memory': '2Gi'}
 )
 
 resource_requirements_silver = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '1Gi'},
-    limits={'cpu': '1000m', 'memory': '2Gi'}
+    requests={'cpu': '1000m', 'memory': '1Gi'},
+    limits={'cpu': '2000m', 'memory': '2Gi'}
 )
 
 # NFS Volume (for scripts)
@@ -149,19 +127,12 @@ duckdb_temp_volume_mount = k8s.V1VolumeMount(
 )
 
 # ============================================================================
-# BRAND CONFIGURATION
-# ============================================================================
-
-# Brands are loaded from Gold layer core_brand table by the application scripts
-# No need to specify brand IDs here - scripts will loop all active brands
-
-# ============================================================================
-# BRONZE TASK: Ticket Ingestion (All Brands)
+# TASK 1: BRONZE - Ticket Ingestion (All Brands)
 # ============================================================================
 
 task_ticket_ingestion = KubernetesPodOperator(
-    task_id='ticket_ingestion',
-    name='caresoft-ticket-ingestion',
+    task_id='ticket_ingestion_bronze',
+    name='caresoft-ticket-ingestion-bronze',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
@@ -174,26 +145,21 @@ task_ticket_ingestion = KubernetesPodOperator(
     volumes=[nfs_volume],
     volume_mounts=[nfs_volume_mount],
     
-    env_vars={
-        **common_env_vars,
-        # Gold zone (for loading core_brand table)
-        'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
-        'CATALOG_NAME_GOLD': 'gold',
-    },
+    env_vars=common_env_vars,
     
     container_resources=resource_requirements_bronze,
     is_delete_operator_pod=True,
     get_logs=True,
-    dag=dag_ticket_bronze,
+    dag=dag,
 )
 
 # ============================================================================
-# SILVER TASK: Ticket Detail Enrichment (All Brands)
+# TASK 2: SILVER - Ticket Detail Enrichment (All Brands)
 # ============================================================================
 
-task_ticket_detail_enrichment = KubernetesPodOperator(
-    task_id='ticket_detail_enrichment',
-    name='caresoft-ticket-detail-enrichment',
+task_ticket_enrichment = KubernetesPodOperator(
+    task_id='ticket_enrichment_silver',
+    name='caresoft-ticket-enrichment-silver',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
@@ -208,23 +174,18 @@ task_ticket_detail_enrichment = KubernetesPodOperator(
     
     env_vars={
         **common_env_vars,
-        # Gold zone (for loading core_brand table)
-        'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
-        'CATALOG_NAME_GOLD': 'gold',
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
     },
     
     container_resources=resource_requirements_silver,
     is_delete_operator_pod=True,
     get_logs=True,
-    dag=dag_ticket_silver,
+    dag=dag,
 )
 
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# No dependencies - each DAG has single task
-# Bronze and Silver are in separate DAGs with different schedules:
-# - Bronze: Daily at 01:30 and 08:35
-# - Silver: Every 12 minutes
+# Sequential flow: Bronze → Silver
+task_ticket_ingestion >> task_ticket_enrichment

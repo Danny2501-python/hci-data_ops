@@ -185,112 +185,106 @@ class TicketDetailEnrichment:
             logger.success(f"✅ Created table: {TICKET_DETAIL_ERROR_TABLE}")
             return table
     
-    def get_ticket_ids_to_enrich(self, brand_erp_id: int, limit: int = 300):
+    def get_ticket_ids_to_enrich(self, brand_erp_id: int):
         """
         Get ticket_ids that need enrichment from Bronze table
+        Uses Parquet spill to avoid OOM (similar to deal pipeline)
         
         Strategy:
-        - Get tickets from last 10 days in Bronze
-        - Order by updated_at DESC
-        - Limit to N most recent tickets
+        - Scan tickets from last 10 days in Bronze
+        - Write to Parquet (avoid OOM)
+        - Use DuckDB to deduplicate and order by updated_at DESC
+        - No limit - process all tickets
         
         Args:
             brand_erp_id: The erp_id from core_brand table
-            limit: Maximum number of tickets to process (default: 300)
         
         Returns:
             List of ticket_ids to enrich
         """
         bronze_table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
         
-        
         logger.info(f"Scanning Bronze tickets for brand_etl={brand_erp_id}")
         
-        # Match old system logic:
-        # 1. Filter tickets updated in last 10 days (from snapshot_date, not current_date)
-        # 2. Group by ticket_id with MAX(updated_at)
-        # 3. Order by updated_at DESC
-        # 4. Limit 300
-        
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         import duckdb
+        import pyarrow.parquet as pq
         
         # Calculate cutoff: snapshot_date - 10 days
-        # Use snapshot_date (not current_date) for reproducibility and re-run capability
         cutoff_date = self.snapshot_date - timedelta(days=10)
         
+        # Temp file for Parquet
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        tickets_parquet = os.path.join(temp_dir, f"tickets_{brand_erp_id}_{os.getpid()}.parquet")
         
-        con = duckdb.connect()
-        
-        # Configure temp directory for disk spilling
-        temp_dir = os.getenv('DUCKDB_TEMP_DIR', '/tmp')
-        con.execute(f"SET temp_directory='{temp_dir}'")
-        con.execute("SET max_memory='3GB'")
-        
-        
-        # Scan Bronze table - use snapshot_date for partition pruning (faster!)
-        # Iceberg is partitioned by snapshot_date, so this is much faster than filtering by updated_at
-        # We'll filter by updated_at in DuckDB query after loading
-        scan = bronze_table.scan(
-            row_filter=And(
-                GreaterThanOrEqual("snapshot_date", cutoff_date),  # ← Filter by snapshot_date (partition pruning!)
-                EqualTo("brand_id", brand_erp_id),
-                NotNull("ticket_id")
-            ),
-            selected_fields=("ticket_id", "updated_at")
-        )
-        
-        
-        total_tickets = 0
-        batches = []
-        
-        for batch in scan.to_arrow_batch_reader():
-            if len(batch) > 0:
-                total_tickets += len(batch)
-                batches.append(batch)
-        
-        if total_tickets == 0:
-            logger.info(f"No tickets updated in last 10 days for brand {brand_erp_id}")
-            con.close()
-            return []
-        
-        # Convert to Table and register with DuckDB
-        import pyarrow as pa
-        tickets_table = pa.Table.from_batches(batches)
-        con.register('bronze_tickets', tickets_table)
-        
-        logger.info(f"Found {total_tickets} ticket records from last 10 snapshots")
-        
-        
-        # Query logic:
-        # 1. Already filtered by snapshot_date in Iceberg scan (last 10 days of snapshots)
-        # 2. GROUP BY ticket_id to deduplicate (handle re-ingested tickets)
-        # 3. MAX(updated_at) to get latest version of each ticket
-        # 4. ORDER BY updated_at DESC to get most recently updated tickets first
-        # 5. LIMIT to get top N tickets
-        
-        result = con.execute(f"""
-            WITH a AS (
-                SELECT 
-                    ticket_id, 
-                    MAX(updated_at) AS updated_at
-                FROM bronze_tickets
-                GROUP BY ticket_id
+        try:
+            # Scan Bronze table with partition pruning
+            scan = bronze_table.scan(
+                row_filter=And(
+                    GreaterThanOrEqual("snapshot_date", cutoff_date),
+                    EqualTo("brand_id", brand_erp_id),
+                    NotNull("ticket_id")
+                ),
+                selected_fields=("ticket_id", "updated_at")
             )
-            SELECT ticket_id
-            FROM a
-            ORDER BY updated_at DESC
-            LIMIT {limit}
-        """).fetchall()
-        
-        
-        con.close()
-        
-        ticket_ids = [row[0] for row in result]
-        
-        logger.info(f"✅ Selected {len(ticket_ids)} tickets to enrich (limit: {limit})")
-        
-        return ticket_ids
+            
+            # Read batches and write to Parquet
+            batches = [b for b in scan.to_arrow_batch_reader() if len(b) > 0]
+            total_tickets = sum(len(b) for b in batches)
+            
+            if total_tickets == 0:
+                logger.info(f"No tickets found in last 10 days for brand {brand_erp_id}")
+                return []
+            
+            # Write to Parquet & Free RAM
+            tickets_table = pa.Table.from_batches(batches)
+            pq.write_table(tickets_table, tickets_parquet)
+            del batches, tickets_table
+            gc.collect()
+            
+            logger.info(f"Written {total_tickets} ticket records to {tickets_parquet}")
+            
+            # DuckDB query from Parquet
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Deduplicate and order by updated_at DESC
+            # No limit - process all tickets
+            query = f"""
+                WITH ticket_max AS (
+                    SELECT 
+                        ticket_id, 
+                        MAX(updated_at) AS updated_at
+                    FROM read_parquet('{tickets_parquet}')
+                    WHERE ticket_id IS NOT NULL AND ticket_id != 0
+                    GROUP BY ticket_id
+                )
+                SELECT ticket_id
+                FROM ticket_max
+                ORDER BY updated_at DESC
+            """
+            
+            result = con.execute(query).fetchall()
+            con.close()
+            
+            ticket_ids = [row[0] for row in result]
+            
+            logger.info(f"✅ Selected {len(ticket_ids)} tickets to enrich (no limit)")
+            
+            return ticket_ids
+            
+        finally:
+            # Cleanup temp file
+            if os.path.exists(tickets_parquet):
+                try:
+                    os.remove(tickets_parquet)
+                except:
+                    pass
     
     def call_caresoft_api(self, brand: dict, ticket_id: int):
         """Call CareSoft API to get ticket details"""
@@ -316,13 +310,12 @@ class TicketDetailEnrichment:
         except Exception as e:
             return None, str(e)
     
-    def run(self, brand: dict, limit: int = 300):
+    def run(self, brand: dict):
         """
         Execute ticket detail enrichment pipeline
         
         Args:
             brand: Brand configuration dict
-            limit: Maximum number of tickets to process per run
         """
         logger.info("=" * 80)
         logger.info(f"Starting Ticket Detail Enrichment for brand {brand['erp_id']}")
@@ -336,7 +329,7 @@ class TicketDetailEnrichment:
         logger.info(f"📊 Error table: {TICKET_DETAIL_ERROR_TABLE}")
         
         # Get ticket IDs to enrich
-        ticket_ids = self.get_ticket_ids_to_enrich(brand["erp_id"], limit=limit)
+        ticket_ids = self.get_ticket_ids_to_enrich(brand["erp_id"])
         
         if not ticket_ids:
             logger.info(f"No tickets to enrich for brand {brand['erp_id']}")
@@ -372,7 +365,7 @@ class TicketDetailEnrichment:
         total_success = 0
         total_errors = 0
         
-        BATCH_SIZE = 1000
+        BATCH_SIZE = 10000
         
         for i, ticket_id in enumerate(ticket_ids):
             # Progress logging every 10 tickets
@@ -531,7 +524,7 @@ def main():
         logger.info(f"{'='*80}")
         
         try:
-            job.run(brand=brand, limit=300)
+            job.run(brand=brand)
             total_success += 1
         except Exception as e:
             logger.error(f"Failed to process brand {brand['erp_id']}: {e}")
