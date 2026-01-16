@@ -28,7 +28,7 @@ from pyiceberg.expressions import EqualTo, And, NotNull, GreaterThanOrEqual
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from loguru import logger
 import gc
-from caresoft.brand_config import get_active_brands
+from common.brand_config import get_active_brands
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')

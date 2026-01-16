@@ -35,7 +35,7 @@ AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
-SOURCE_TABLE = 'caresoft.cs_deal_detail_api'
+SOURCE_TABLE = 'caresoft.cs_deal_detail_api_final'
 TARGET_TABLE = 'cs_deal_detail_api_v1'
 
 
@@ -78,85 +78,70 @@ class ServingLayerRefresh:
         
     def get_latest_deals(self):
         """
-        Read from Iceberg and get the latest snapshot of each deal using DuckDB
-        Optimized to use Parquet Spill (OOM Safety)
+        Read from Iceberg 'Final Snapshot' table.
+        Since the source is already deduplicated and contains only the latest state,
+        we can simply read it directly!
         """
-        import pyarrow.parquet as pq
-        import tempfile
-        import gc
-        
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}")
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
-        # Temp file setup
-        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"serving_source_{os.getpid()}.parquet")
+        # Simple Scan - No complex DuckDB logic needed anymore!
+        logger.info("Scanning table...")
+        scan = table.scan()
+        result = scan.to_arrow()
         
+        # Convert to columns and rows
+        columns = result.schema.names
+        rows = []
+        for i in range(len(result)):
+            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+            rows.append(row)
+        
+        logger.success(f"✅ Found {len(rows)} latest deals")
+        return columns, rows
+        
+    def ensure_serving_table_exists(self, columns):
+        """Create serving table if not exists with proper schema and PK"""
+        cursor = self.pg_conn.cursor()
         try:
-            logger.info("Streaming Iceberg data to temp Parquet...")
-            scan = table.scan()
+            logger.info(f"Ensuring table {TARGET_TABLE} exists...")
             
-            # Streaming write: Scan -> Batch -> Parquet
-            # This avoids loading the whole table into RAM at once!
-            # Use table schema for Parquet writer
-            arrow_schema = schema_to_pyarrow(table.schema())
-            with pq.ParquetWriter(temp_parquet, arrow_schema) as writer:
-                for batch in scan.to_arrow_batch_reader():
-                    if len(batch) > 0:
-                        table_batch = pa.Table.from_batches([batch])
-                        writer.write_table(table_batch)
-                        del batch, table_batch
-                        
-            logger.info(f"Buffered Iceberg data to {temp_parquet}")
-            gc.collect()
+            column_defs = []
+            for col in columns:
+                column_defs.append(f'"{col}" TEXT')
             
-            # DuckDB Query from Disk
-            logger.info("Finding latest snapshot per deal (DuckDB over Parquet)...")
-            
-            con = duckdb.connect(config={
-                'memory_limit': '2GB',
-                'preserve_insertion_order': 'false',
-                'temp_directory': temp_dir,
-                'threads': '1'
-            })
-            
-            # Query Logic: Join latest snapshot
-            query = f"""
-                WITH latest_snapshots AS (
-                    SELECT id, MAX(snapshot_date) as max_date
-                    FROM read_parquet('{temp_parquet}')
-                    WHERE id IS NOT NULL
-                    GROUP BY id
-                )
-                SELECT t.*
-                FROM read_parquet('{temp_parquet}') t
-                JOIN latest_snapshots l 
-                ON t.id = l.id 
-                AND t.snapshot_date = l.max_date
-                ORDER BY t.id
+            # Create Table with PK ("id", "brand_id")
+            create_sql = f"""
+            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+                {', '.join(column_defs)},
+                PRIMARY KEY ("id", "brand_id")
+            )
             """
+            cursor.execute(create_sql)
             
-            result = con.execute(query).fetch_arrow_table()
-            con.close()
-            
-            # Convert to columns and rows
-            columns = result.schema.names
-            rows = []
-            for i in range(len(result)):
-                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-                rows.append(row)
-            
-            logger.success(f"✅ Found {len(rows)} latest deals")
-            return columns, rows
-            
+            # Attempt to add PK if missing (for pre-existing tables)
+            try:
+                alter_sql = f"""
+                ALTER TABLE {TARGET_TABLE} 
+                ADD PRIMARY KEY ("id", "brand_id");
+                """
+                cursor.execute(alter_sql)
+                logger.info(f"Added PRIMARY KEY to {TARGET_TABLE}")
+            except psycopg2.errors.InvalidTableDefinition:
+                self.pg_conn.rollback() # PK check constraint failure or similar
+            except psycopg2.errors.MultiplePrimaryKeys:
+                self.pg_conn.rollback() # Table already has PK
+            except Exception as e:
+                self.pg_conn.rollback()
+                logger.warning(f"Could not add PK to Deal table: {e}")
+
+            self.pg_conn.commit()
+        except Exception as e:
+            self.pg_conn.rollback()
+            raise e
         finally:
-            if os.path.exists(temp_parquet):
-                try:
-                    os.remove(temp_parquet)
-                    logger.info("🗑️  Cleaned up temp Parquet file")
-                except: pass
-        
+            cursor.close()
+
     def refresh_serving_table(self, columns, rows):
         """
         Drop and recreate the serving table, then bulk insert data
@@ -172,20 +157,8 @@ class ServingLayerRefresh:
         cursor = self.pg_conn.cursor()
         
         try:
-            # Step 1: Create table if not exists (first run)
-            logger.info(f"Ensuring table {TARGET_TABLE} exists...")
-            
-            # Build CREATE TABLE statement
-            column_defs = []
-            for col in columns:
-                column_defs.append(f'"{col}" TEXT')
-            
-            create_sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
-                {', '.join(column_defs)}
-            )
-            """
-            cursor.execute(create_sql)
+            # Step 1: Ensure table exists with PK
+            self.ensure_serving_table_exists(columns)
             
             # Step 2: Truncate table (clear existing data)
             logger.info(f"Truncating table {TARGET_TABLE}...")

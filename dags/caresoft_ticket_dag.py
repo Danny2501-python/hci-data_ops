@@ -67,7 +67,7 @@ default_args = {
 }
 
 dag = DAG(
-    'caresoft_ticket_pipeline',
+    'caresoft_ticket_dag',
     default_args=default_args,
     description='CareSoft Ticket Pipeline: Bronze → Silver → Serving',
     schedule_interval='0 5 * * *',  # Daily at 5:00 AM UTC (12:00 PM Asia/Ho_Chi_Minh)
@@ -158,7 +158,7 @@ task_ticket_ingestion = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/caresoft/ticket_ingestion.py',
+        '/app/caresoft/ticket/ticket_ingestion.py',
         '{{ ds }}',  # snapshot_date
     ],
     
@@ -185,7 +185,7 @@ task_ticket_enrichment = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/caresoft/ticket_detail_enrichment.py',
+        '/app/caresoft/ticket/ticket_detail_enrichment.py',
         '{{ ds }}',  # snapshot_date
     ],
     
@@ -215,7 +215,7 @@ task_ticket_api_serving = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/caresoft/ticket_api_serving_layer.py',
+        '/app/caresoft/ticket/ticket_api_serving_layer.py',
         '{{ ds }}',  # snapshot_date
     ],
     
@@ -246,7 +246,7 @@ task_ticket_source_serving = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/caresoft/ticket_source_serving_layer.py',
+        '/app/caresoft/ticket/ticket_source_serving_layer.py',
         '{{ ds }}',  # snapshot_date
     ],
     
@@ -269,7 +269,9 @@ task_ticket_source_serving = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Sequential flow: 
-# Bronze → Silver → Serving (parallel)
-task_ticket_ingestion >> task_ticket_enrichment
-task_ticket_enrichment >> [task_ticket_api_serving, task_ticket_source_serving]
+# Optimized flow:
+# 1. Ingestion finished -> Run Enrichment AND API Serving (since API Serving reads from Bronze)
+task_ticket_ingestion >> [task_ticket_enrichment, task_ticket_api_serving]
+
+# 2. Enrichment finished -> Run Source Serving (since Source Serving reads from Silver)
+task_ticket_enrichment >> task_ticket_source_serving

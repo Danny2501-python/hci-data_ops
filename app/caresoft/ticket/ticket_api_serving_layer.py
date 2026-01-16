@@ -1,23 +1,25 @@
 """
-Ticket Source API Serving Layer Refresh (Incremental - Simplified)
-Architecture: Silver (Iceberg) → Serving (PostgreSQL DWH)
+Ticket API Serving Layer Refresh (Incremental)
+Architecture: Bronze (Iceberg) → Serving (PostgreSQL DWH)
 
-This script reads TODAY's snapshot from Silver Iceberg table and upserts
+This script reads TODAY's snapshot from Bronze Iceberg table and upserts
 into PostgreSQL serving table.
 
 Flow:
-1. Read from Silver Iceberg table (cs_ticket_source_api) - TODAY's snapshot only
-2. No deduplication needed - Silver already has unique tickets per snapshot
+1. Read from Bronze Iceberg table (cs_ticket_api) - TODAY's snapshot only
+2. Deduplicate by ticket_id (MAX updated_at) using DuckDB - Bronze has duplicates from 3 API calls
 3. UPSERT into PostgreSQL (INSERT ... ON CONFLICT UPDATE)
 
 Strategy: Incremental upsert (daily snapshot → upsert by ticket_id)
-Note: Silver is already unique (enrichment deduplicates Bronze before calling API)
+Note: Bronze keeps raw data with duplicates from 3 API calls (updated, created, created_prev)
 """
 
 import os
 import sys
 from datetime import datetime, date
 import pyarrow as pa
+import pyarrow.parquet as pq
+import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
@@ -25,8 +27,8 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 # Iceberg configuration
-ICEBERG_REST_URI_SILVER = os.getenv('ICEBERG_REST_URI_SILVER')
-CATALOG_NAME_SILVER = os.getenv('CATALOG_NAME_SILVER')
+ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
+CATALOG_NAME_BRONZE = os.getenv('CATALOG_NAME_BRONZE')
 
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
@@ -37,20 +39,20 @@ AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
-SOURCE_TABLE = 'caresoft.cs_ticket_source_api'  # Silver Iceberg
-TARGET_TABLE = 'cs_ticket_source_api_v1'        # PostgreSQL serving
+SOURCE_TABLE = 'caresoft.cs_ticket_api'  # Bronze Iceberg
+TARGET_TABLE = 'cs_ticket_api_v1'        # PostgreSQL serving
 
 
-class TicketSourceServingLayer:
+class TicketApiServingLayer:
     """Incremental refresh serving layer with daily upsert"""
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
-        self.silver_catalog = None
+        self.bronze_catalog = None
         self.pg_conn = None
     
     def connect_iceberg(self):
-        """Connect to Iceberg Silver catalog"""
+        """Connect to Iceberg Bronze catalog"""
         catalog_config = {
             "s3.endpoint": S3_ENDPOINT,
             "s3.access-key-id": AWS_ACCESS_KEY,
@@ -58,12 +60,12 @@ class TicketSourceServingLayer:
             "s3.region": AWS_REGION,
         }
         
-        self.silver_catalog = load_catalog(
-            CATALOG_NAME_SILVER,
-            uri=ICEBERG_REST_URI_SILVER,
+        self.bronze_catalog = load_catalog(
+            CATALOG_NAME_BRONZE,
+            uri=ICEBERG_REST_URI_BRONZE,
             **catalog_config
         )
-        logger.success(f"✅ Connected to Iceberg catalog: {CATALOG_NAME_SILVER}")
+        logger.success(f"✅ Connected to Iceberg catalog: {CATALOG_NAME_BRONZE}")
     
     def connect_postgres(self):
         """Connect to PostgreSQL"""
@@ -75,51 +77,96 @@ class TicketSourceServingLayer:
         self.pg_conn.autocommit = False
         logger.success("✅ Connected to PostgreSQL")
     
-    def get_today_ticket_details(self):
+    def get_today_tickets(self):
         """
-        Read TODAY's snapshot from Silver (already unique)
+        Read TODAY's snapshot from Bronze and deduplicate using DuckDB
         
         Logic:
         - Scan ONLY today's snapshot_date
-        - No deduplication needed - Silver already unique per ticket_id
-        - Convert directly to rows for upsert
+        - Write to Parquet (avoid OOM)
+        - Deduplicate by ticket_id (MAX updated_at) using DuckDB
+        - Return deduplicated rows
         """
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
-        table = self.silver_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(SOURCE_TABLE)
         
-        logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
+        # Temp file for Parquet
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"ticket_api_serving_{os.getpid()}.parquet")
         
-        # Scan ONLY today's snapshot
-        scan = table.scan(
-            row_filter=EqualTo("snapshot_date", self.snapshot_date),
-        )
-        
-        # Collect all batches (no deduplication needed - Silver is already unique)
-        batches = []
-        for batch in scan.to_arrow_batch_reader():
-            if len(batch) > 0:
-                batches.append(batch)
-        
-        if not batches:
-            logger.info(f"No ticket details found in today's snapshot")
-            return [], []
-        
-        # Combine batches into single table
-        result = pa.Table.from_batches(batches)
-        
-        logger.success(f"✅ Found {len(result)} ticket details from today's snapshot")
-        
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        return columns, rows
+        try:
+            logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
+            
+            # Scan ONLY today's snapshot
+            scan = table.scan(
+                row_filter=EqualTo("snapshot_date", self.snapshot_date),
+            )
+            
+            # Collect all batches and write to Parquet
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
+            
+            if not batches:
+                logger.info(f"No tickets found in today's snapshot")
+                return [], []
+            
+            # Combine and write to Parquet
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet)
+            
+            logger.info(f"Written {len(combined)} rows to Parquet, deduplicating...")
+            
+            # DuckDB deduplication
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Deduplicate: keep row with MAX updated_at per (ticket_id, brand_id)
+            # Use ROW_NUMBER() to handle exact duplicates (same updated_at) to avoid cardinality violation
+            query = f"""
+                SELECT * EXCLUDE (rn)
+                FROM (
+                    SELECT *,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY ticket_id, brand_id 
+                            ORDER BY updated_at DESC NULLS LAST
+                        ) as rn
+                    FROM read_parquet('{temp_parquet}')
+                    WHERE ticket_id IS NOT NULL
+                ) sub
+                WHERE rn = 1
+                ORDER BY brand_id, ticket_id
+            """
+            
+            result = con.execute(query).fetch_arrow_table()
+            con.close()
+            
+            logger.success(f"✅ After deduplication: {len(result)} unique tickets")
+            
+            # Convert to columns and rows
+            columns = result.schema.names
+            rows = []
+            for i in range(len(result)):
+                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+                rows.append(row)
+            
+            return columns, rows
+            
+        finally:
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                except:
+                    pass
     
     def ensure_serving_table_exists(self, columns):
-        """Create serving table if not exists with proper schema"""
+        """Create serving table if not exists with proper schema and constraints"""
         cursor = self.pg_conn.cursor()
         
         try:
@@ -138,13 +185,34 @@ class TicketSourceServingLayer:
             )
             """
             cursor.execute(create_sql)
-            self.pg_conn.commit()
             
+            # Ensure Constraint Exists (for existing tables created without PK)
+            try:
+                alter_sql = f"""
+                ALTER TABLE {TARGET_TABLE} 
+                ADD PRIMARY KEY ("ticket_id", "brand_id");
+                """
+                cursor.execute(alter_sql)
+                logger.info(f"Added PRIMARY KEY to {TARGET_TABLE}")
+            except psycopg2.errors.InvalidTableDefinition:
+                # Constraint likely already exists or conflicts
+                self.pg_conn.rollback()
+                logger.debug("PK constraint likely already exists")
+            except psycopg2.errors.MultiplePrimaryKeys:
+                # Table already has a PK
+                self.pg_conn.rollback()
+                logger.debug("Table already has a PK")
+            except Exception as e:
+                # Log other potential errors (e.g. duplicate data preventing PK)
+                self.pg_conn.rollback()
+                logger.warning(f"Could not add PK (checking duplicates...): {e}")
+
+            self.pg_conn.commit()
             logger.success(f"✅ Table {TARGET_TABLE} ready")
             
         except Exception as e:
             self.pg_conn.rollback()
-            logger.error(f"❌ Error creating table: {e}")
+            logger.error(f"❌ Error creating/altering table: {e}")
             raise
         finally:
             cursor.close()
@@ -207,7 +275,7 @@ class TicketSourceServingLayer:
     def run(self):
         """Execute the incremental serving layer refresh"""
         logger.info("=" * 80)
-        logger.info(f"Starting Ticket Source API Serving Layer Refresh (Incremental)")
+        logger.info(f"Starting Ticket API Serving Layer Refresh (Incremental)")
         logger.info(f"Snapshot Date: {self.snapshot_date}")
         logger.info("=" * 80)
         
@@ -216,14 +284,14 @@ class TicketSourceServingLayer:
             self.connect_iceberg()
             self.connect_postgres()
             
-            # Get today's ticket details from Silver (already unique)
-            columns, rows = self.get_today_ticket_details()
+            # Get today's tickets from Bronze (deduplicated)
+            columns, rows = self.get_today_tickets()
             
             # Upsert into PostgreSQL serving table
             self.upsert_serving_table(columns, rows)
             
             logger.success("=" * 80)
-            logger.success("Ticket Source API Serving Layer Refresh Completed Successfully")
+            logger.success("Ticket API Serving Layer Refresh Completed Successfully")
             logger.success("=" * 80)
             
         except Exception as e:
@@ -238,12 +306,12 @@ class TicketSourceServingLayer:
 def main():
     """
     Main entry point
-    Usage: python ticket_source_serving_layer.py <snapshot_date>
+    Usage: python ticket_api_serving_layer.py <snapshot_date>
     """
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
-    job = TicketSourceServingLayer(snapshot_date)
+    job = TicketApiServingLayer(snapshot_date)
     job.run()
 
 
