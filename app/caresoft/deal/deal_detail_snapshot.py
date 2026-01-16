@@ -44,7 +44,8 @@ TARGET_TABLE = 'caresoft.cs_deal_detail_api_final'
 class DealDetailSnapshot:
     """Creates a materialized view (snapshot) of the latest deal state"""
     
-    def __init__(self):
+    def __init__(self, snapshot_date=None):
+        self.snapshot_date = snapshot_date or date.today()
         self.gold_catalog = None
         
     def connect_iceberg(self):
@@ -175,15 +176,14 @@ class DealDetailSnapshot:
                 partition_spec=partition_spec
             )
 
-    def create_snapshot(self, snapshot_date=None):
+    def create_snapshot(self, target_date_obj: date):
         """
         Read increment/snapshot for specific date, find latest state, and overwrite into final table partition
         """
         import pyarrow.parquet as pq
         import gc
-        import argparse
         
-        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
+        target_date = target_date_obj.strftime('%Y-%m-%d')
         logger.info(f"Processing snapshot for date: {target_date}")
         
         logger.info(f"Reading from source table: {SOURCE_TABLE}")
@@ -286,32 +286,35 @@ class DealDetailSnapshot:
 
     def run(self):
         """Execute pipeline"""
-        import argparse
-        parser = argparse.ArgumentParser(description='Create Deal Snapshot')
-        parser.add_argument('snapshot_date', nargs='?', help='YYYY-MM-DD')
-        args = parser.parse_args()
-        
-        # If run from Airflow via PythonOperator/KubernetesPodOperator with extra args
-        # sometimes args are passed differently. 
-        # But sys.argv processing in argparse usually works.
-        # If snapshot_date is passed as loose argument
-        
-        s_date = args.snapshot_date
-        # Fallback to sys.argv if needed or just use None context
-        if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-             s_date = sys.argv[1]
-
         logger.info("=" * 80)
-        logger.info("Starting Deal Detail Snapshot Creation (Incremental Mode)")
+        logger.info(f"Starting Deal Detail Snapshot Creation for {self.snapshot_date}")
         logger.info("=" * 80)
         
         self.connect_iceberg()
-        self.create_snapshot(s_date)
+        self.create_snapshot(self.snapshot_date)
         
         logger.info("=" * 80)
         logger.info("Snapshot Creation Completed")
         logger.info("=" * 80)
 
 
+def main():
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    
+    if snapshot_date_str:
+        try:
+            snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            logger.error("Invalid date format. Use YYYY-MM-DD")
+            sys.exit(1)
+    else:
+        snapshot_date = date.today()
+        
+    start_time = datetime.now()
+    job = DealDetailSnapshot(snapshot_date)
+    job.run()
+    logger.info(f"Total Duration: {(datetime.now() - start_time).total_seconds()}s")
+
+
 if __name__ == "__main__":
-    DealDetailSnapshot().run()
+    main()
