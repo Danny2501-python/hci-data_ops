@@ -58,12 +58,16 @@ class DealDetailSnapshot:
         
         logger.success("✅ Connected to Iceberg Gold catalog")
 
-    def create_snapshot(self):
+    def create_snapshot(self, snapshot_date=None):
         """
-        Read all history, find latest state, truncate and write to final table
+        Read increment/snapshot for specific date, find latest state, and overwrite into final table partition
         """
         import pyarrow.parquet as pq
         import gc
+        import argparse
+        
+        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"Processing snapshot for date: {target_date}")
         
         logger.info(f"Reading from source table: {SOURCE_TABLE}")
         source_table = self.gold_catalog.load_table(SOURCE_TABLE)
@@ -74,35 +78,51 @@ class DealDetailSnapshot:
         temp_parquet = os.path.join(temp_dir, f"snapshot_source_{os.getpid()}.parquet")
         
         try:
-            # 1. Stream Source Data to Parquet (Handle Large Data)
-            logger.info("Streaming source data to temp file...")
+            # 1. Stream Source Data (Full History Scan)
+            logger.info(f"Streaming FULL source data to temp file (for snapshot {target_date})...")
+            
+            # Scan all data to find true latest state across history
+            scan = source_table.scan()
+            
             arrow_schema = schema_to_pyarrow(source_table.schema())
             
+            count_scanned = 0
             with pq.ParquetWriter(temp_parquet, arrow_schema) as writer:
-                # Scan all data (no filter)
-                scan = source_table.scan()
                 for batch in scan.to_arrow_batch_reader():
                     if len(batch) > 0:
                         batch_table = pa.Table.from_batches([batch])
                         writer.write_table(batch_table)
+                        count_scanned += len(batch)
                         del batch, batch_table
             
-            logger.info(f"Buffered data to {temp_parquet}")
+            logger.info(f"Buffered {count_scanned} rows to {temp_parquet}")
+            
+            if count_scanned == 0:
+                logger.warning(f"No source data found. Skipping write.")
+                return
+
             gc.collect()
             
-            # 2. Use DuckDB to find latest state per deal
+            # 2. Use DuckDB to find latest state per deal (across full history)
             logger.info("Computing latest state using DuckDB...")
             con = duckdb.connect(config={'memory_limit': '4GB', 'temp_directory': temp_dir})
             
-            # Query: Get record with MAX(snapshot_date) per id
+            # Logic:
+            # 1. Find latest record per (id, brand_id) based on original snapshot_date
+            # 2. Project all columns BUT replace 'snapshot_date' with current 'target_date'
             query = f"""
                 WITH ranked_deals AS (
                     SELECT 
                         *,
-                        ROW_NUMBER() OVER (PARTITION BY id ORDER BY snapshot_date DESC, ingestion_timestamp DESC) as rn
+                        ROW_NUMBER() OVER (
+                            PARTITION BY id, brand_id 
+                            ORDER BY snapshot_date DESC, ingestion_timestamp DESC
+                        ) as rn
                     FROM read_parquet('{temp_parquet}')
                 )
-                SELECT * EXCLUDE (rn)
+                SELECT 
+                    * EXCLUDE (rn, snapshot_date),
+                    CAST('{target_date}' AS DATE) as snapshot_date
                 FROM ranked_deals
                 WHERE rn = 1
             """
@@ -111,67 +131,68 @@ class DealDetailSnapshot:
             con.close()
             
             count = len(final_table)
-            logger.success(f"✅ Computed latest state: {count} unique deals")
+            logger.success(f"✅ Computed latest state: {count} unique deals for {target_date}")
             
-            if count == 0:
-                logger.warning("No data found! Skipping write.")
-                return
-
-            # 3. Overwrite Target Table
+            # 3. Overwrite Target Table Partition
             logger.info(f"Writing to target table: {TARGET_TABLE}")
             
             # Create table if not exists
             try:
                 target_table = self.gold_catalog.load_table(TARGET_TABLE)
-                logger.info("Target table exists, appending (overwrite logic handled via transaction)")
             except Exception:
                 logger.info("Creating target table...")
-                # Create with same schema as source
                 target_table = self.gold_catalog.create_table(
                     TARGET_TABLE,
                     schema=source_table.schema(),
-                    # No partitioning needed for final snapshot table usually, 
-                    # but we can partition by brand_id if needed. Keeping simple for now.
+                    # Partition by snapshot_date for efficiency
+                     partition_spec=source_table.spec() 
                 )
 
-            # Overwrite Strategy: Replace data
-            # PyIceberg doesn't support 'overwrite' directly in one command easily effectively for all cases,
-            # but we can use delete + append or overwrite transaction if available.
-            # Simple approach: Delete all -> Append (Transaction safe)
-            
-            # Note: For efficiency in Iceberg, the best 'Snapshot' pattern is usually overwrite_filter(True) 
-            # but PyIceberg support varies. We will use the standard 'overwrite' method if available or delete+append.
-            
+            # Transaction: Overwrite Partition (Delete specific date -> Append)
             txn = target_table.transaction()
             
-            # Delete all existing data
-            txn.delete(filter="id IS NOT NULL") # Effectively truncate
+            # Delete data for this snapshot_date
+            delete_filter = f"snapshot_date = '{target_date}'"
+            logger.info(f"Deleting existing data for: {delete_filter}")
+            txn.delete(filter=delete_filter)
             
             # Append new data
-            # Ensure schema matches exactly
             txn.append(final_table)
             
             txn.commit_transaction()
-            logger.success(f"✅ Successfully updated {TARGET_TABLE} with {count} records")
+            logger.success(f"✅ Successfully updated {TARGET_TABLE} partition {target_date} with {count} records")
 
         except Exception as e:
             logger.error(f"❌ Snapshot creation failed: {e}")
             raise
         finally:
-            # Cleanup
             if os.path.exists(temp_parquet):
-                try:
-                    os.remove(temp_parquet)
+                try: os.remove(temp_parquet)
                 except: pass
 
     def run(self):
         """Execute pipeline"""
+        import argparse
+        parser = argparse.ArgumentParser(description='Create Deal Snapshot')
+        parser.add_argument('snapshot_date', nargs='?', help='YYYY-MM-DD')
+        args = parser.parse_args()
+        
+        # If run from Airflow via PythonOperator/KubernetesPodOperator with extra args
+        # sometimes args are passed differently. 
+        # But sys.argv processing in argparse usually works.
+        # If snapshot_date is passed as loose argument
+        
+        s_date = args.snapshot_date
+        # Fallback to sys.argv if needed or just use None context
+        if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+             s_date = sys.argv[1]
+
         logger.info("=" * 80)
-        logger.info("Starting Deal Detail Snapshot Creation")
+        logger.info("Starting Deal Detail Snapshot Creation (Incremental Mode)")
         logger.info("=" * 80)
         
         self.connect_iceberg()
-        self.create_snapshot()
+        self.create_snapshot(s_date)
         
         logger.info("=" * 80)
         logger.info("Snapshot Creation Completed")

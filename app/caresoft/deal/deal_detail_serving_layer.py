@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, date
 from loguru import logger
 import psycopg2
+from psycopg2.extras import execute_values
 import pyarrow as pa
 import duckdb
 from pyiceberg.catalog import load_catalog
@@ -76,18 +77,17 @@ class ServingLayerRefresh:
         
         logger.success("✅ Connected to PostgreSQL")
         
-    def get_latest_deals(self):
+    def get_latest_deals(self, snapshot_date=None):
         """
-        Read from Iceberg 'Final Snapshot' table.
-        Since the source is already deduplicated and contains only the latest state,
-        we can simply read it directly!
+        Read from Iceberg 'Final Snapshot' table for a specific date.
         """
-        logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}")
+        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"Reading snapshot for date: {target_date} from {SOURCE_TABLE}")
+        
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
-        # Simple Scan - No complex DuckDB logic needed anymore!
-        logger.info("Scanning table...")
-        scan = table.scan()
+        # Filter Scan by snapshot_date to read only the target daily snapshot
+        scan = table.scan(row_filter=f"snapshot_date = '{target_date}'")
         result = scan.to_arrow()
         
         # Convert to columns and rows
@@ -97,7 +97,7 @@ class ServingLayerRefresh:
             row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
             rows.append(row)
         
-        logger.success(f"✅ Found {len(rows)} latest deals")
+        logger.success(f"✅ Found {len(rows)} deals for snapshot {target_date}")
         return columns, rows
         
     def ensure_serving_table_exists(self, columns):
@@ -142,16 +142,17 @@ class ServingLayerRefresh:
         finally:
             cursor.close()
 
-    def refresh_serving_table(self, columns, rows):
+    def upsert_serving_table(self, columns, rows):
         """
-        Drop and recreate the serving table, then bulk insert data
+        UPSERT data into serving table (Insert or Update on Conflict)
+        Similar to Ticket Pipeline logic.
         
         Args:
             columns: List of column names
             rows: List of tuples containing data
         """
         if not rows:
-            logger.warning("No data to insert")
+            logger.warning("No data to upsert")
             return
             
         cursor = self.pg_conn.cursor()
@@ -160,47 +161,54 @@ class ServingLayerRefresh:
             # Step 1: Ensure table exists with PK
             self.ensure_serving_table_exists(columns)
             
-            # Step 2: Truncate table (clear existing data)
-            logger.info(f"Truncating table {TARGET_TABLE}...")
-            cursor.execute(f"TRUNCATE TABLE {TARGET_TABLE}")
-            logger.success(f"✅ Table {TARGET_TABLE} ready for data")
+            logger.info(f"Upserting {len(rows)} rows into {TARGET_TABLE}...")
             
-            # Step 3: Bulk insert data in batches
-            BATCH_SIZE = 10000
-            total_inserted = 0
-            
-            logger.info(f"Inserting {len(rows)} rows in batches of {BATCH_SIZE}...")
-            
-            # Build INSERT statement
-            placeholders = ', '.join(['%s'] * len(columns))
+            # Build UPSERT statement (PostgreSQL INSERT ... ON CONFLICT)
             column_names = ', '.join([f'"{col}"' for col in columns])
-            insert_sql = f"""
-            INSERT INTO {TARGET_TABLE} ({column_names})
-            VALUES ({placeholders})
-            """
             
-            # Execute batch insert
-            for i in range(0, len(rows), BATCH_SIZE):
-                batch = rows[i:i + BATCH_SIZE]
-                cursor.executemany(insert_sql, batch)
-                total_inserted += len(batch)
-                logger.info(f"  Inserted {total_inserted}/{len(rows)} rows ({total_inserted/len(rows)*100:.1f}%)")
+            # Update all columns except PK on conflict
+            # PK is (id, brand_id)
+            update_cols = [col for col in columns if col not in ('id', 'brand_id')]
+            update_set = ', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+            
+            upsert_sql = f"""
+            INSERT INTO {TARGET_TABLE} ({column_names})
+            VALUES %s
+            ON CONFLICT ("id", "brand_id")
+            DO UPDATE SET
+                {update_set}
+            """
+                   
+            # Execute batch upsert using execute_values
+            # Page size 1000 for balance between speed and memory
+            execute_values(cursor, upsert_sql, rows, page_size=1000)
             
             # Commit transaction
             self.pg_conn.commit()
-            logger.success(f"✅ Inserted {total_inserted} rows into {TARGET_TABLE}")
+            logger.success(f"✅ Upserted {len(rows)} rows into {TARGET_TABLE}")
             
         except Exception as e:
             self.pg_conn.rollback()
-            logger.error(f"❌ Error refreshing serving table: {e}")
+            logger.error(f"❌ Error upserting data: {e}")
             raise
         finally:
             cursor.close()
             
     def run(self):
         """Execute the serving layer refresh"""
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('snapshot_date', nargs='?')
+        args = parser.parse_args()
+        
+        s_date = args.snapshot_date
+        # Fallback to sys.argv if needed (common in some Airflow setups)
+        if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+             s_date = sys.argv[1]
+
         logger.info("=" * 80)
         logger.info("Starting Serving Layer Refresh (Iceberg → PostgreSQL)")
+        logger.info("Strategy: UPSERT (Latest Incremental Snapshot)")
         logger.info("=" * 80)
         
         try:
@@ -208,11 +216,11 @@ class ServingLayerRefresh:
             self.connect_iceberg()
             self.connect_postgres()
             
-            # Get latest deals from Gold layer
-            columns, rows = self.get_latest_deals()
+            # Get latest deals from Gold layer (Specific Snapshot Date)
+            columns, rows = self.get_latest_deals(s_date)
             
-            # Refresh serving table
-            self.refresh_serving_table(columns, rows)
+            # Upsert serving table
+            self.upsert_serving_table(columns, rows)
             
             logger.success("=" * 80)
             logger.success("Serving Layer Refresh Completed Successfully")
