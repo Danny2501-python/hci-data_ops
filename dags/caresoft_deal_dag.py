@@ -47,7 +47,7 @@ dag = DAG(
     schedule_interval='0 2 * * *',  # Daily at 2:00 AM UTC+7
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    tags=['caresoft', 'lakehouse', 'etl', 'iceberg'],
+    tags=['caresoft', 'deal', 'etl', 'iceberg'],
 )
 
 # ============================================================================

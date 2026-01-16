@@ -74,7 +74,7 @@ dag = DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['caresoft', 'ticket', 'pipeline', 'flow-2'],
+    tags=['caresoft', 'ticket', 'etl', 'iceberg'],
 )
 
 # ============================================================================
