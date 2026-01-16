@@ -241,14 +241,14 @@ class DealDetailSnapshot:
                         *,
                         ROW_NUMBER() OVER (
                             PARTITION BY id, brand_id 
-                            ORDER BY snapshot_date DESC, ingestion_timestamp DESC
+                            ORDER BY snapshot_date DESC
                         ) as rn
                     FROM read_parquet('{temp_parquet}')
                 )
                 SELECT 
                     * EXCLUDE (rn, snapshot_date, ingestion_timestamp),
                     CAST('{target_date}' AS DATE) as snapshot_date,
-                    now() as ingestion_timestamp
+                    CAST(now() AS TIMESTAMP) as ingestion_timestamp
                 FROM ranked_deals
                 WHERE rn = 1
             """
