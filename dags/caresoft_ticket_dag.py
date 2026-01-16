@@ -67,7 +67,7 @@ default_args = {
 }
 
 dag = DAG(
-    'caresoft_ticket_dag',
+    'caresoft_ticket_etl',
     default_args=default_args,
     description='CareSoft Ticket Pipeline: Bronze → Silver → Serving',
     schedule_interval='0 5 * * *',  # Daily at 5:00 AM UTC (12:00 PM Asia/Ho_Chi_Minh)
