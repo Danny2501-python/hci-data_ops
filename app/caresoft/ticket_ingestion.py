@@ -401,18 +401,26 @@ class TicketIngestion:
                         item_id = item.get('id')
                         item_value = item.get('value')
                         
+                        # Skip if no ID
+                        if item_id is None:
+                            continue
+                        
                         # Convert None to empty string (matching old system behavior)
                         if item_value is None:
                             item_value = ''
                         
-                        # Match against configured IDs
-                        if item_id == mappings.get('ghi_chu'):
+                        # Convert both to string for comparison
+                        # This handles: int vs int, int vs str, str vs str, any number including 0
+                        item_id_str = str(item_id)
+                        
+                        # Match against configured IDs (convert mapping values to str too)
+                        if mappings.get('ghi_chu') is not None and item_id_str == str(mappings.get('ghi_chu')):
                             result['ghi_chu'] = item_value
-                        elif item_id == mappings.get('phan_loai_ket_noi'):
+                        elif mappings.get('phan_loai_ket_noi') is not None and item_id_str == str(mappings.get('phan_loai_ket_noi')):
                             result['id_value_phan_loai_ket_noi'] = item_value
-                        elif item_id == mappings.get('muc_do_hai_long'):
+                        elif mappings.get('muc_do_hai_long') is not None and item_id_str == str(mappings.get('muc_do_hai_long')):
                             result['id_value_muc_do_hai_long'] = item_value
-                        elif item_id == mappings.get('dich_vu_chi_tiet'):
+                        elif mappings.get('dich_vu_chi_tiet') is not None and item_id_str == str(mappings.get('dich_vu_chi_tiet')):
                             result['id_value_dich_vu_chi_tiet'] = item_value
                     
                     return result
