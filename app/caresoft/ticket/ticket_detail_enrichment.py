@@ -416,7 +416,7 @@ class TicketDetailEnrichment:
                 total_errors += 1
             
             # Rate limiting
-            time.sleep(0.5)
+            time.sleep(0.05)
             
             # Flush batch
             if len(batch_records) >= BATCH_SIZE:
