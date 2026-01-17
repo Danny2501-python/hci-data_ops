@@ -1,8 +1,3 @@
-"""
-CareSoft Lakehouse ETL DAG
-Architecture: ERP → Bronze → Silver → Gold → Serving
-"""
-
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from airflow.hooks.postgres_hook import PostgresHook

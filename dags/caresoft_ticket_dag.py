@@ -1,16 +1,3 @@
-"""
-CareSoft Ticket Pipeline DAG (Unified)
-Flow 2: API → Ticket Bronze → Ticket Silver → Serving
-
-Architecture:
-1. Bronze Ingestion: CareSoft API → cs_ticket_api (Bronze)
-2. Silver Enrichment: Scan IDs → API detail → cs_ticket_source_api (Silver)
-3. Serving Layer: Silver → PostgreSQL DWH (cs_ticket_api_v1, cs_ticket_source_api_v1)
-
-Schedule: Daily at 5:00 AM
-Tasks run sequentially: Bronze → Silver → Serving
-"""
-
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -71,7 +58,7 @@ dag = DAG(
     'caresoft_ticket_etl',
     default_args=default_args,
     description='CareSoft Ticket Pipeline: Bronze → Silver → Serving',
-    schedule_interval='0 5 * * *',  # Daily at 5:00 AM UTC (12:00 PM Asia/Ho_Chi_Minh)
+    schedule_interval='0 4 * * *',
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
