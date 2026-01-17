@@ -2,14 +2,12 @@
 Deal Detail Serving Layer Refresh
 Architecture: Gold (Iceberg) → Serving (PostgreSQL DWH)
 
-This script reads the latest snapshot of each deal from the Gold Iceberg table
-and writes it to a PostgreSQL serving table for consumption by downstream applications.
+SIMPLIFIED APPROACH:
+- Read ONLY today's partition from cs_deal_detail_api (incremental)
+- UPSERT into PostgreSQL (ON CONFLICT UPDATE)
+- PostgreSQL automatically maintains latest state per deal
 
-Strategy:
-1. Read from Gold Iceberg table using PyIceberg
-2. Use DuckDB to find latest snapshot per deal_id
-3. Drop and recreate the serving table in PostgreSQL
-4. Bulk insert the data
+NO NEED for intermediate snapshot table!
 """
 
 import os
@@ -19,9 +17,7 @@ from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values
 import pyarrow as pa
-import duckdb
 from pyiceberg.catalog import load_catalog
-from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.expressions import EqualTo
 
 # Iceberg configuration
@@ -37,14 +33,15 @@ AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
-SOURCE_TABLE = 'caresoft.cs_deal_detail_api_final'
+SOURCE_TABLE = 'caresoft.cs_deal_detail_api'  # Read directly from incremental table
 TARGET_TABLE = 'cs_deal_detail_api_v1'
 
 
 class ServingLayerRefresh:
     """Refresh serving layer table with latest deal details"""
     
-    def __init__(self):
+    def __init__(self, snapshot_date: date = None):
+        self.snapshot_date = snapshot_date or date.today()
         self.gold_catalog = None
         self.pg_conn = None
         
@@ -106,9 +103,9 @@ class ServingLayerRefresh:
                 cursor.execute(alter_sql)
                 logger.info(f"Added PRIMARY KEY to {TARGET_TABLE}")
             except psycopg2.errors.InvalidTableDefinition:
-                self.pg_conn.rollback() # PK check constraint failure or similar
+                self.pg_conn.rollback()
             except psycopg2.errors.MultiplePrimaryKeys:
-                self.pg_conn.rollback() # Table already has PK
+                self.pg_conn.rollback()
             except Exception as e:
                 self.pg_conn.rollback()
                 logger.warning(f"Could not add PK to Deal table: {e}")
@@ -120,17 +117,18 @@ class ServingLayerRefresh:
         finally:
             cursor.close()
 
-    def get_latest_deals(self, snapshot_date=None):
+    def get_deals_for_date(self, snapshot_date: date):
         """
-        Read from Iceberg 'Final Snapshot' table for a specific date.
+        Read deals from Iceberg for a specific snapshot_date (INCREMENTAL).
+        Only reads ONE partition - today's deals.
         """
-        target_date = snapshot_date or datetime.now().strftime('%Y-%m-%d')
-        logger.info(f"Reading snapshot for date: {target_date} from {SOURCE_TABLE}")
+        snapshot_date_str = snapshot_date.strftime('%Y-%m-%d')
+        logger.info(f"Reading deals for snapshot_date={snapshot_date_str} from {SOURCE_TABLE}")
         
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
-        # Filter Scan by snapshot_date to read only the target daily snapshot
-        scan = table.scan(row_filter=EqualTo("snapshot_date", target_date))
+        # Scan ONLY the partition for this snapshot_date (incremental read)
+        scan = table.scan(row_filter=EqualTo("snapshot_date", snapshot_date_str))
         result = scan.to_arrow()
         
         # Convert to columns and rows
@@ -140,13 +138,17 @@ class ServingLayerRefresh:
             row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
             rows.append(row)
         
-        logger.success(f"✅ Found {len(rows)} deals for snapshot {target_date}")
+        logger.success(f"✅ Found {len(rows)} deals for snapshot {snapshot_date_str}")
         return columns, rows
     
     def upsert_serving_table(self, columns, rows):
         """
         UPSERT data into serving table (Insert or Update on Conflict)
-        Similar to Ticket Pipeline logic.
+        
+        Strategy:
+        - New deals → INSERT
+        - Existing deals with newer updated_at → UPDATE
+        - Existing deals with older updated_at → SKIP (keep existing)
         
         Args:
             columns: List of column names
@@ -199,19 +201,9 @@ class ServingLayerRefresh:
             
     def run(self):
         """Execute the serving layer refresh"""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument('snapshot_date', nargs='?')
-        args = parser.parse_args()
-        
-        s_date = args.snapshot_date
-        # Fallback to sys.argv if needed (common in some Airflow setups)
-        if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-             s_date = sys.argv[1]
-
         logger.info("=" * 80)
-        logger.info("Starting Serving Layer Refresh (Iceberg → PostgreSQL)")
-        logger.info("Strategy: UPSERT (Latest Incremental Snapshot)")
+        logger.info(f"Starting Serving Layer Refresh for {self.snapshot_date}")
+        logger.info("Strategy: INCREMENTAL UPSERT (read today's partition only)")
         logger.info("=" * 80)
         
         try:
@@ -219,8 +211,8 @@ class ServingLayerRefresh:
             self.connect_iceberg()
             self.connect_postgres()
             
-            # Get latest deals from Gold layer (Specific Snapshot Date)
-            columns, rows = self.get_latest_deals(s_date)
+            # Get deals for this snapshot_date (incremental)
+            columns, rows = self.get_deals_for_date(self.snapshot_date)
             
             # Upsert serving table
             self.upsert_serving_table(columns, rows)
@@ -239,7 +231,19 @@ class ServingLayerRefresh:
 
 
 def main():
-    job = ServingLayerRefresh()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('snapshot_date', nargs='?')
+    args = parser.parse_args()
+    
+    s_date = args.snapshot_date
+    # Fallback to sys.argv if needed (common in some Airflow setups)
+    if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
+         s_date = sys.argv[1]
+    
+    snapshot_date = datetime.strptime(s_date, "%Y-%m-%d").date() if s_date else date.today()
+    
+    job = ServingLayerRefresh(snapshot_date)
     job.run()
 
 

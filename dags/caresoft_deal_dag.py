@@ -276,37 +276,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
 )
 
 # ============================================================================
-# TASK 4: GOLD SNAPSHOT (Create Final Lookup Table)
-# ============================================================================
-
-task_deal_snapshot_gold = KubernetesPodOperator(
-    task_id='deal_snapshot_gold',
-    name='caresoft-deal-snapshot-gold',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/deal/deal_detail_snapshot.py',
-        '{{ params.snapshot_date }}'
-    ],
-    
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    
-    env_vars={
-        **common_env_vars,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-    },
-    
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# ============================================================================
-# TASK 5: GOLD → SERVING (Refresh PostgreSQL Serving Layer)
+# TASK 4: GOLD → SERVING (Refresh PostgreSQL Serving Layer)
 # ============================================================================
 
 task_refresh_serving_layer = KubernetesPodOperator(
@@ -337,7 +307,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
 )
 
 # ============================================================================
-# TASK 6: GOLD → SERVING SANDBOX (Refresh PostgreSQL Sandbox Serving Layer)
+# TASK 5: GOLD → SERVING SANDBOX (Refresh PostgreSQL Sandbox Serving Layer)
 # ============================================================================
 
 task_refresh_serving_layer_sandbox = KubernetesPodOperator(
@@ -371,5 +341,6 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Sequential flow: ERP → Bronze → Silver → Gold Enrichment → Gold Snapshot → Serving (Production & Sandbox)
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_deal_snapshot_gold >> [task_refresh_serving_layer, task_refresh_serving_layer_sandbox]
+# SIMPLIFIED FLOW: ERP → Bronze → Silver → Gold Enrichment → Serving (Production & Sandbox)
+# Removed intermediate snapshot step - serving layer now reads directly from cs_deal_detail_api
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer, task_refresh_serving_layer_sandbox]
