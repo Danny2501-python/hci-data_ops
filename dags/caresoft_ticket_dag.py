@@ -124,6 +124,12 @@ resource_requirements_silver = k8s.V1ResourceRequirements(
     limits={'cpu': '2000m', 'memory': '2Gi'}
 )
 
+# Serving layer needs less resources (only UPSERT to PostgreSQL)
+resource_requirements_serving = k8s.V1ResourceRequirements(
+    requests={'cpu': '500m', 'memory': '512Mi'},
+    limits={'cpu': '1000m', 'memory': '1Gi'}
+)
+
 # NFS Volume (for scripts)
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
@@ -236,7 +242,7 @@ task_ticket_api_serving = KubernetesPodOperator(
         'POSTGRES_URI': dwh_product_uri,
     },
     
-    container_resources=resource_requirements_silver,
+    container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
@@ -267,7 +273,7 @@ task_ticket_source_serving = KubernetesPodOperator(
         'POSTGRES_URI': dwh_product_uri,
     },
     
-    container_resources=resource_requirements_silver,
+    container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
@@ -324,7 +330,7 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
         'POSTGRES_URI': dwh_product_uri,
     },
     
-    container_resources=resource_requirements_silver,
+    container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
