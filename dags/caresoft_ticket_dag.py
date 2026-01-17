@@ -274,12 +274,73 @@ task_ticket_source_serving = KubernetesPodOperator(
 )
 
 # ============================================================================
+# TASK 5: BRONZE - Ticket Source Metadata (All Brands)
+# ============================================================================
+
+task_ticket_source_metadata = KubernetesPodOperator(
+    task_id='ticket_source_metadata_bronze',
+    name='caresoft-ticket-source-metadata-bronze',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_source_metadata.py',
+        '{{ params.snapshot_date }}'
+    ],
+    
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_volume_mount],
+    
+    env_vars=common_env_vars,
+    
+    container_resources=resource_requirements_bronze,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
+# TASK 6: SERVING - Ticket Source Metadata to PostgreSQL DWH
+# ============================================================================
+
+task_ticket_source_metadata_serving = KubernetesPodOperator(
+    task_id='ticket_source_metadata_serving_layer',
+    name='caresoft-ticket-source-metadata-serving',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_source_metadata_serving_layer.py',
+        '{{ params.snapshot_date }}'
+    ],
+    
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Optimized flow:
-# 1. Ingestion finished -> Run Enrichment AND API Serving (since API Serving reads from Bronze)
+# Main Ticket Pipeline:
+# 1. Ingestion finished -> Run Enrichment AND API Serving (parallel)
 task_ticket_ingestion >> [task_ticket_enrichment, task_ticket_api_serving]
 
-# 2. Enrichment finished -> Run Source Serving (since Source Serving reads from Silver)
+# 2. Enrichment finished -> Run Source Serving
 task_ticket_enrichment >> task_ticket_source_serving
+
+# Metadata Pipeline (runs in parallel with main pipeline):
+# 3. Metadata ingestion -> Metadata serving
+task_ticket_source_metadata >> task_ticket_source_metadata_serving
