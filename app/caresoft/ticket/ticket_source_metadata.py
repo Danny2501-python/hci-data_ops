@@ -296,12 +296,29 @@ class TicketSourceMetadata:
             }
             transformed_records.append(record)
         
-        # Write to Iceberg
+        # Write to Iceberg in batches to avoid OOM
+        BATCH_SIZE = 50000
+        total_records = len(transformed_records)
         pyarrow_schema = schema_to_pyarrow(metadata_table.schema())
-        df = pa.Table.from_pylist(transformed_records, schema=pyarrow_schema)
-        metadata_table.append(df)
         
-        logger.success(f"✅ Wrote {len(transformed_records)} ticket sources to {TICKET_SOURCE_METADATA_TABLE}")
+        logger.info(f"Writing {total_records} records in batches of {BATCH_SIZE}...")
+        
+        for i in range(0, total_records, BATCH_SIZE):
+            batch = transformed_records[i:i + BATCH_SIZE]
+            batch_num = (i // BATCH_SIZE) + 1
+            total_batches = (total_records + BATCH_SIZE - 1) // BATCH_SIZE
+            
+            logger.info(f"Writing batch {batch_num}/{total_batches} ({len(batch)} records)...")
+            
+            df = pa.Table.from_pylist(batch, schema=pyarrow_schema)
+            metadata_table.append(df)
+            
+            # Free memory
+            del df
+            del batch
+            gc.collect()
+        
+        logger.success(f"✅ Wrote {total_records} ticket sources to {TICKET_SOURCE_METADATA_TABLE}")
         gc.collect()
 
 

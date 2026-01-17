@@ -201,6 +201,14 @@ class TicketSourceMetadataServingLayer:
             
         logger.info(f"Upserting {len(rows)} records to {TARGET_TABLE}...")
         
+        # Debug: Check unique keys
+        id_idx = columns.index('id')
+        brand_id_idx = columns.index('brand_id')
+        unique_keys = set((row[id_idx], row[brand_id_idx]) for row in rows)
+        logger.info(f"Unique (id, brand_id) keys: {len(unique_keys)}")
+        if len(unique_keys) != len(rows):
+            logger.warning(f"⚠️  Found {len(rows) - len(unique_keys)} duplicate keys in data!")
+        
         cursor = self.pg_conn.cursor()
         try:
             # Build column list (quoted for reserved words like "index")
