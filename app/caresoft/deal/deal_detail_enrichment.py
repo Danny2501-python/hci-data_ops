@@ -29,6 +29,7 @@ from pyiceberg.io.pyarrow import schema_to_pyarrow
 from loguru import logger
 import gc
 from common.brand_config import get_active_brands
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI_SILVER = os.getenv('ICEBERG_REST_URI_SILVER')
@@ -582,7 +583,7 @@ class DealDetailEnrichment:
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {}), ensure_ascii=False),
                         "raw_data": json.dumps(deal_data, ensure_ascii=False),
                         "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": datetime.now(),
+                        "ingestion_timestamp": get_current_timestamp_naive(),
                     }
                     batch_records.append(record)
                 
@@ -592,7 +593,7 @@ class DealDetailEnrichment:
                         "brand_id": brand["erp_id"],
                         "error_message": str(error)[:1000],  # Truncate to avoid huge logs
                         "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": datetime.now(),
+                        "ingestion_timestamp": get_current_timestamp_naive(),
                     }
                     batch_error_records.append(error_record)
                     total_errors += 1

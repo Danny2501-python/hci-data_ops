@@ -29,6 +29,7 @@ from pyiceberg.io.pyarrow import schema_to_pyarrow
 from loguru import logger
 import gc
 from common.brand_config import get_active_brands
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -439,7 +440,7 @@ class TicketIngestion:
             
             # Transform records to match schema (legacy cs_ticket_api fields)
             transformed_records = []
-            ingestion_timestamp = datetime.now()  # Single timestamp for entire batch
+            ingestion_timestamp = get_current_timestamp_naive()  # Single timestamp for entire batch (UTC+7)
             
             for ticket, fetch_type in all_records:
                 # Extract custom field values using brand config

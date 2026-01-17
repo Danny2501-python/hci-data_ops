@@ -12,6 +12,7 @@ from pyiceberg.catalog import load_catalog
 from sqlalchemy import create_engine
 from loguru import logger
 import hashlib
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -233,7 +234,7 @@ class ERPDirectIngestion:
                     # Constant arrays
                     brand_etl_arr = pa.array([brand_etl] * batch_size, type=pa.int32())
                     snapshot_date_arr = pa.array([self.snapshot_date] * batch_size, type=pa.date32())
-                    ingest_time_arr = pa.array([datetime.now()] * batch_size, type=pa.timestamp('us'))
+                    ingest_time_arr = pa.array([get_current_timestamp_naive()] * batch_size, type=pa.timestamp('us'))
                     
                     # Construct Table directly from Arrays
                     # Be careful to match target_schema order EXACTLY

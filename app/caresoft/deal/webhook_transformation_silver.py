@@ -18,6 +18,7 @@ from pyiceberg.expressions import EqualTo
 from loguru import logger
 import gc
 import duckdb
+from common.utils import get_current_timestamp_naive
 
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_SILVER')
 CATALOG_NAME = os.getenv('CATALOG_NAME_SILVER')
@@ -484,7 +485,7 @@ class WebhookTransformation:
             
             if error_batch:
                 error_records = [
-                    {"pk_id": pk, "id": row_id, "brand_etl": brand_etl, "snapshot_date": self.snapshot_date, "ingestion_timestamp": datetime.now()} 
+                    {"pk_id": pk, "id": row_id, "brand_etl": brand_etl, "snapshot_date": self.snapshot_date, "ingestion_timestamp": get_current_timestamp_naive()} 
                     for (pk, row_id, brand_etl) in error_batch
                 ]
                 try:
