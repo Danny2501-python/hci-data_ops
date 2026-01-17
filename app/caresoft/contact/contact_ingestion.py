@@ -4,8 +4,10 @@ import json
 import time
 import requests
 import gc
+import pyarrow as pa
 from datetime import date, datetime, timedelta
 from loguru import logger
+from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And
 from pyiceberg.schema import Schema
@@ -280,7 +282,15 @@ class ContactIngestion:
         
         # Write to Iceberg Bronze table
         logger.info(f"Writing {len(records)} contact records to {CONTACT_BRONZE_TABLE}")
-        table.append(records)
+        
+        # Convert to PyArrow Table
+        try:
+            pa_schema = schema_to_pyarrow(table.schema())
+            df = pa.Table.from_pylist(records, schema=pa_schema)
+            table.append(df)
+        except Exception as e:
+            logger.error(f"Failed to convert/append records: {e}")
+            raise e
         
         logger.success(f"Successfully wrote {len(records)} contacts for brand {brand_name}")
         

@@ -13,6 +13,7 @@ from pyiceberg.types import (
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import DayTransform
+from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.expressions import EqualTo, And
 import duckdb
 import pyarrow as pa
@@ -443,20 +444,26 @@ class ContactDetailEnrichment:
             if len(success_records) >= 1000:
                 logger.info(f"Writing batch of {len(success_records)} contact details to Silver")
                 silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-                silver_table.append(success_records)
+                pa_schema = schema_to_pyarrow(silver_table.schema())
+                df = pa.Table.from_pylist(success_records, schema=pa_schema)
+                silver_table.append(df)
                 success_records = []
         
         # Write remaining records
         if success_records:
             logger.info(f"Writing final batch of {len(success_records)} contact details to Silver")
             silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-            silver_table.append(success_records)
+            pa_schema = schema_to_pyarrow(silver_table.schema())
+            df = pa.Table.from_pylist(success_records, schema=pa_schema)
+            silver_table.append(df)
         
         # Write errors
         if error_records:
             logger.warning(f"Writing {len(error_records)} errors to error table")
             error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
-            error_table.append(error_records)
+            pa_schema = schema_to_pyarrow(error_table.schema())
+            df = pa.Table.from_pylist(error_records, schema=pa_schema)
+            error_table.append(df)
         
         logger.success(f"Completed enrichment for brand {brand_name}: {len(contact_ids) - len(error_records)} success, {len(error_records)} errors")
         
