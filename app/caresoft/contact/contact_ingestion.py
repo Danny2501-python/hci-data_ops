@@ -12,10 +12,10 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    NestedField, StringType, IntegerType, TimestampType, BooleanType
+    NestedField, StringType, IntegerType, TimestampType, BooleanType, DateType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
-from pyiceberg.transforms import DayTransform
+from pyiceberg.transforms import IdentityTransform
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -84,7 +84,7 @@ class ContactIngestion:
                 NestedField(8, "raw_data", StringType(), required=False),
                 
                 # Metadata fields
-                NestedField(9, "snapshot_date", StringType(), required=True),
+                NestedField(9, "snapshot_date", DateType(), required=True),
                 NestedField(10, "ingestion_timestamp", TimestampType(), required=True),
             )
             
@@ -93,8 +93,8 @@ class ContactIngestion:
                 PartitionField(
                     source_id=9,
                     field_id=1000,
-                    transform=DayTransform(),
-                    name="snapshot_date_day"
+                    transform=IdentityTransform(),
+                    name="snapshot_date"
                 )
             )
             
@@ -209,7 +209,6 @@ class ContactIngestion:
             return
         
         # Transform to Iceberg records
-        snapshot_date_str = self.snapshot_date.isoformat()
         ingestion_timestamp = datetime.now()
         
         # Helper functions for safe type conversion
@@ -257,7 +256,7 @@ class ContactIngestion:
                 "email": safe_str(contact.get("email")),
                 "brand_id": brand_erp_id,
                 "raw_data": json.dumps(contact, ensure_ascii=False),
-                "snapshot_date": snapshot_date_str,
+                "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp,
             }
             
@@ -272,7 +271,7 @@ class ContactIngestion:
             logger.info(f"🗑️  Deleting old data for brand {brand_name}, snapshot {self.snapshot_date}...")
             table.delete(
                 And(
-                    EqualTo("snapshot_date", snapshot_date_str),
+                    EqualTo("snapshot_date", self.snapshot_date),
                     EqualTo("brand_id", brand_erp_id)
                 )
             )

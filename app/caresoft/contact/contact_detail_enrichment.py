@@ -9,10 +9,10 @@ from loguru import logger
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    NestedField, StringType, IntegerType, TimestampType, BooleanType
+    NestedField, StringType, IntegerType, TimestampType, BooleanType, DateType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
-from pyiceberg.transforms import DayTransform
+from pyiceberg.transforms import IdentityTransform
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.expressions import EqualTo, And
 import duckdb
@@ -119,7 +119,7 @@ class ContactDetailEnrichment:
                 NestedField(26, "raw_data", StringType(), required=False),
                 
                 # Metadata fields
-                NestedField(27, "snapshot_date", StringType(), required=True),
+                NestedField(27, "snapshot_date", DateType(), required=True),
                 NestedField(28, "ingestion_timestamp", TimestampType(), required=True),
             )
             
@@ -128,8 +128,8 @@ class ContactDetailEnrichment:
                 PartitionField(
                     source_id=27,
                     field_id=1000,
-                    transform=DayTransform(),
-                    name="snapshot_date_day"
+                    transform=IdentityTransform(),
+                    name="snapshot_date"
                 )
             )
             
@@ -156,7 +156,7 @@ class ContactDetailEnrichment:
                 NestedField(3, "trangthai", IntegerType(), required=False),
                 
                 # Metadata fields for lakehouse
-                NestedField(4, "snapshot_date", StringType(), required=True),
+                NestedField(4, "snapshot_date", DateType(), required=True),
                 NestedField(5, "error_timestamp", TimestampType(), required=True),
             )
             
@@ -164,8 +164,8 @@ class ContactDetailEnrichment:
                 PartitionField(
                     source_id=4,
                     field_id=1000,
-                    transform=DayTransform(),
-                    name="snapshot_date_day"
+                    transform=IdentityTransform(),
+                    name="snapshot_date"
                 )
             )
             
@@ -208,7 +208,7 @@ class ContactDetailEnrichment:
             # Scan today's partition AND brand_id (optimization)
             scan = bronze_table.scan(
                 row_filter=And(
-                    EqualTo("snapshot_date", snapshot_date_str),
+                    EqualTo("snapshot_date", self.snapshot_date),
                     EqualTo("brand_id", brand_erp_id)
                 )
             )
@@ -320,7 +320,7 @@ class ContactDetailEnrichment:
             silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
             silver_table.delete(
                 And(
-                    EqualTo("snapshot_date", snapshot_date_str),
+                    EqualTo("snapshot_date", self.snapshot_date),
                     EqualTo("brand_id", brand_erp_id)
                 )
             )
@@ -329,7 +329,7 @@ class ContactDetailEnrichment:
             error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
             error_table.delete(
                 And(
-                    EqualTo("snapshot_date", snapshot_date_str),
+                    EqualTo("snapshot_date", self.snapshot_date),
                     EqualTo("brand_id", brand_erp_id)
                 )
             )
@@ -419,7 +419,7 @@ class ContactDetailEnrichment:
                     "psid": json.dumps(contact_data.get("psid", []), ensure_ascii=False),
                     "brand_id": brand_erp_id,
                     "raw_data": json.dumps(contact_data, ensure_ascii=False),
-                    "snapshot_date": snapshot_date_str,
+                    "snapshot_date": self.snapshot_date,
                     "ingestion_timestamp": ingestion_timestamp,
                 }
                 
@@ -431,7 +431,7 @@ class ContactDetailEnrichment:
                     "id": contact_id,
                     "brand_id": brand_erp_id,
                     "trangthai": 1,  # 1 = error status
-                    "snapshot_date": snapshot_date_str,
+                    "snapshot_date": self.snapshot_date,
                     "error_timestamp": ingestion_timestamp,
                 }
                 error_records.append(error_record)
