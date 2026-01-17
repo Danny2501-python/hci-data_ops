@@ -180,7 +180,10 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/erp_webhook_ingestion.py', '{{ ds }}'],
+    arguments=[
+        '/app/caresoft/deal/erp_webhook_ingestion.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume],
     volume_mounts=[nfs_volume_mount],
@@ -208,7 +211,10 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/webhook_transformation_silver.py', '{{ ds }}'],
+    arguments=[
+        '/app/caresoft/deal/webhook_transformation_silver.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
@@ -238,7 +244,10 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/deal_detail_enrichment.py', '{{ ds }}'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_enrichment.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
@@ -269,7 +278,10 @@ task_deal_snapshot_gold = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/deal_detail_snapshot.py'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_snapshot.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
@@ -296,7 +308,10 @@ task_refresh_serving_layer = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/deal_detail_serving_layer.py'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
@@ -324,7 +339,10 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/deal/deal_detail_serving_layer.py'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+    ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
