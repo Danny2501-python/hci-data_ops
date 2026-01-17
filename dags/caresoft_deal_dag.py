@@ -8,6 +8,7 @@ from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperato
 from airflow.hooks.postgres_hook import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
+from airflow.models.param import Param
 import logging
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,13 @@ dag = DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=['caresoft', 'deal', 'etl', 'iceberg'],
+    params={
+        'snapshot_date': Param(
+            default=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'),
+            type='string',
+            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
+        )
+    },
 )
 
 # ============================================================================
@@ -182,7 +190,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/erp_webhook_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume],
@@ -213,7 +221,7 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/webhook_transformation_silver.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -246,7 +254,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_enrichment.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -280,7 +288,7 @@ task_deal_snapshot_gold = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_snapshot.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -310,7 +318,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -341,7 +349,7 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

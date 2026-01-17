@@ -16,6 +16,7 @@ from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperato
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
+from airflow.models.param import Param
 import logging
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,13 @@ dag = DAG(
     catchup=False,
     max_active_runs=1,
     tags=['caresoft', 'ticket', 'etl', 'iceberg'],
+    params={
+        'snapshot_date': Param(
+            default=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'),
+            type='string',
+            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
+        )
+    },
 )
 
 # ============================================================================
@@ -159,7 +167,7 @@ task_ticket_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume],
@@ -186,7 +194,7 @@ task_ticket_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_detail_enrichment.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -216,7 +224,7 @@ task_ticket_api_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_api_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -247,7 +255,7 @@ task_ticket_source_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_source_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") if dag_run and dag_run.conf else (execution_date - macros.timedelta(days=1)).strftime("%Y-%m-%d") }}'
+        '{{ params.snapshot_date }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
