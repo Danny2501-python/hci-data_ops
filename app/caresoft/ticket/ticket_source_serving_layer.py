@@ -18,6 +18,8 @@ import os
 import sys
 from datetime import datetime, date
 import pyarrow as pa
+import pyarrow.parquet as pq
+import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
@@ -81,42 +83,75 @@ class TicketSourceServingLayer:
         
         Logic:
         - Scan ONLY today's snapshot_date
-        - No deduplication needed - Silver already unique per ticket_id
-        - Convert directly to rows for upsert
+        - Write to Parquet (avoid OOM)
+        - Read from Parquet using DuckDB
+        - Return rows (Silver is already unique)
         """
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
         table = self.silver_catalog.load_table(SOURCE_TABLE)
         
-        logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
+        # Temp file for Parquet
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"ticket_source_serving_{os.getpid()}.parquet")
         
-        # Scan ONLY today's snapshot
-        scan = table.scan(
-            row_filter=EqualTo("snapshot_date", self.snapshot_date),
-        )
-        
-        # Collect all batches (no deduplication needed - Silver is already unique)
-        batches = []
-        for batch in scan.to_arrow_batch_reader():
-            if len(batch) > 0:
-                batches.append(batch)
-        
-        if not batches:
-            logger.info(f"No ticket details found in today's snapshot")
-            return [], []
-        
-        # Combine batches into single table
-        result = pa.Table.from_batches(batches)
-        
-        logger.success(f"✅ Found {len(result)} ticket details from today's snapshot")
-        
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        return columns, rows
+        try:
+            logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
+            
+            # Scan ONLY today's snapshot
+            scan = table.scan(
+                row_filter=EqualTo("snapshot_date", self.snapshot_date),
+            )
+            
+            # Collect all batches
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
+            
+            if not batches:
+                logger.info(f"No ticket details found in today's snapshot")
+                return [], []
+            
+            # Combine and write to Parquet
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet)
+            
+            logger.info(f"Written {len(combined)} rows to Parquet, loading...")
+            
+            # DuckDB (No Deduplication needed - Silver is unique)
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            query = f"""
+                SELECT * 
+                FROM read_parquet('{temp_parquet}')
+            """
+            
+            result = con.execute(query).fetch_arrow_table()
+            con.close()
+            
+            logger.success(f"✅ Loaded {len(result)} tickets from Silver")
+            
+            # Convert to columns and rows
+            columns = result.schema.names
+            rows = []
+            for i in range(len(result)):
+                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+                rows.append(row)
+            
+            return columns, rows
+            
+        finally:
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                except:
+                    pass
     
     def ensure_serving_table_exists(self, columns):
         """Create serving table if not exists with proper schema and constraints"""

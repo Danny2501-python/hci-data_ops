@@ -116,8 +116,9 @@ class ContactDetailServingLayer:
         Logic:
         - Scan ONLY today's snapshot_date
         - Write to Parquet (avoid OOM)
-        - Deduplicate by (id, brand_id) - composite key (MAX updated_at) using DuckDB
-        - Return deduplicated rows
+        - Write to Parquet (avoid OOM)
+        - Read from Parquet using DuckDB
+        - Return rows
         """
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
         table = self.silver_catalog.load_table(SOURCE_TABLE)
@@ -159,27 +160,17 @@ class ContactDetailServingLayer:
                 'threads': '1'
             })
             
-            # Deduplicate: keep row with MAX updated_at per (id, brand_id)
-            # Use ROW_NUMBER() to handle exact duplicates (same updated_at) to avoid cardinality violation
+            # Silver data is already unique by (id, brand_id) per snapshot
+            # So simple SELECT is enough
             query = f"""
-                SELECT * EXCLUDE (rn)
-                FROM (
-                    SELECT *,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY id, brand_id 
-                            ORDER BY updated_at DESC NULLS LAST
-                        ) as rn
-                    FROM read_parquet('{temp_parquet}')
-                    WHERE id IS NOT NULL
-                ) sub
-                WHERE rn = 1
-                ORDER BY brand_id, id
+                SELECT * 
+                FROM read_parquet('{temp_parquet}')
             """
             
             result = con.execute(query).fetch_arrow_table()
             con.close()
             
-            logger.success(f"✅ After deduplication: {len(result)} unique contacts")
+            logger.success(f"✅ Loaded {len(result)} contacts from Silver")
             
             # Convert to columns and rows
             columns = result.schema.names
