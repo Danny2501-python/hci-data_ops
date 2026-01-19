@@ -207,36 +207,42 @@ class CallIngestion:
                      return datetime.fromtimestamp(val_ms / 1000.0)
             return None
 
+        def safe_str(val):
+            """Convert to string, handling None and empty string"""
+            if val is None or val == "":
+                return None
+            return str(val)
+        
         for call in calls:
             record = {
                 "id": call.get("id"),
                 "customer_id": call.get("customer_id"),
-                "call_id": call.get("call_id"),
-                "caller": call.get("caller"),
-                "called": call.get("called"),
-                "user_id": call.get("user_id"),
-                "agent_id": call.get("agent_id"),
+                "call_id": safe_str(call.get("call_id")),
+                "caller": safe_str(call.get("caller")),
+                "called": safe_str(call.get("called")),
+                "user_id": safe_str(call.get("user_id")),
+                "agent_id": safe_str(call.get("agent_id")),
                 "group_id": call.get("group_id"),
                 "call_type": call.get("call_type"),
                 "start_time": safe_ts(call.get("start_time")),
-                "call_status": call.get("call_status"),
+                "call_status": safe_str(call.get("call_status")),
                 "end_time": safe_ts(call.get("end_time")),
-                "wait_time": str(call.get("wait_time")) if call.get("wait_time") is not None else None,
-                "hold_time": str(call.get("hold_time")) if call.get("hold_time") is not None else None,
-                "talk_time": str(call.get("talk_time")) if call.get("talk_time") is not None else None,
-                "end_status": call.get("end_status"),
+                "wait_time": safe_str(call.get("wait_time")),
+                "hold_time": safe_str(call.get("hold_time")),
+                "talk_time": safe_str(call.get("talk_time")),
+                "end_status": safe_str(call.get("end_status")),
                 "ticket_id": call.get("ticket_id"),
-                "last_agent_id": call.get("last_agent_id"),
-                "last_user_id": call.get("last_user_id"),
-                "call_survey": call.get("call_survey"),
+                "last_agent_id": safe_str(call.get("last_agent_id")),
+                "last_user_id": safe_str(call.get("last_user_id")),
+                "call_survey": safe_str(call.get("call_survey")),
                 "call_survey_result": call.get("call_survey_result"),
-                "service_id": call.get("service_id"),
-                "missed_reason": call.get("missed_reason"),
-                "path": call.get("path"),
-                "path_download": call.get("path_download"),
+                "service_id": safe_str(call.get("service_id")),
+                "missed_reason": safe_str(call.get("missed_reason")),
+                "path": safe_str(call.get("path")),
+                "path_download": safe_str(call.get("path_download")),
                 "raw_data": json.dumps(call, ensure_ascii=False),
                 "brand_id": brand_erp_id,
-                "dtmf": call.get("dtmf"),
+                "dtmf": safe_str(call.get("dtmf")),
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp
             }
