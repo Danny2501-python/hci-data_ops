@@ -41,8 +41,6 @@ CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
 CONTACT_DETAIL_SILVER_TABLE = 'caresoft.cs_contact_api'
 CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
 
-# Batch size for writing records to Iceberg
-BATCH_SIZE = 10000
 
 
 class ContactDetailEnrichment:
@@ -345,6 +343,9 @@ class ContactDetailEnrichment:
             logger.warning(f"Could not clean up old data (tables might be new/empty): {e}")
 
         logger.info(f"Enriching {len(contact_ids)} contacts for brand {brand_name}")
+        
+        # Batch size for writing records
+        BATCH_SIZE = 10000
         
         # Helper functions for safe type conversion
         def safe_int(val):
