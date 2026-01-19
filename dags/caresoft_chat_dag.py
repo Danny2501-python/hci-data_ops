@@ -55,9 +55,9 @@ dag = DAG(
         'snapshot_date': Param(
             default='{{ ds }}',
             type='string',
-            description='Snapshot date (YYYY-MM-DD)'
+            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
         )
-    }
+    },
 )
 
 # ============================================================================
@@ -117,6 +117,7 @@ task_chat_ingestion = KubernetesPodOperator(
     name='caresoft-chat-ingestion-bronze',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=['/app/caresoft/chat/chat_ingestion.py', '{{ params.snapshot_date }}'],
     volumes=[nfs_volume, duckdb_volume],
@@ -133,6 +134,7 @@ task_chat_serving = KubernetesPodOperator(
     name='caresoft-chat-serving-layer',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=['/app/caresoft/chat/chat_serving_layer.py', '{{ params.snapshot_date }}'],
     volumes=[nfs_volume, duckdb_volume],
