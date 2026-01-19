@@ -46,7 +46,7 @@ dag = DAG(
     tags=['caresoft', 'deal', 'etl', 'iceberg'],
     params={
         'snapshot_date': Param(
-            default=(datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d'),
+            default='{{ macros.ds_add(ds, -1) }}',
             type='string',
             description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
         )
