@@ -65,7 +65,7 @@ dag = DAG(
     tags=['caresoft', 'contact', 'etl', 'iceberg'],
     params={
         'snapshot_date': Param(
-            default='{{ macros.ds_add(ds, -1) }}',
+            default='{{ ds }}',
             type='string',
             description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
         )
