@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.brand_config import get_active_brands
 from common.utils import get_current_timestamp_naive
+from common.caresoft_api import call_caresoft_api
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -267,28 +268,9 @@ class ContactDetailEnrichment:
                 except:
                     pass
     
-    def call_caresoft_api(self, brand: dict, contact_id: int) -> tuple:
-        """Call CareSoft API to get contact details"""
-        subdomain = brand["caresoft_domain"]
-        api_key = brand["caresoft_key"]
-        
-        url = f"https://api.caresoft.vn/{subdomain}/api/v1/contacts/{contact_id}"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("contact"), None
-            else:
-                return None, f"HTTP {response.status_code}: {response.text[:500]}"
-                
-        except Exception as e:
-            return None, str(e)
+    # Note: call_caresoft_api is now imported from common.caresoft_api
+    # Usage: call_caresoft_api(brand, 'contacts', contact_id, response_key='contact')
+    
     
     def run(self, brand: dict):
         """
@@ -390,7 +372,7 @@ class ContactDetailEnrichment:
             if i % 50 == 0:
                 logger.info(f"Progress: {i}/{len(contact_ids)} contacts processed")
             
-            contact_data, error = self.call_caresoft_api(brand, contact_id)
+            contact_data, error = call_caresoft_api(brand, 'contacts', contact_id, response_key='contact')
             
             if contact_data:
                 # Transform contact data (matching DDL: most fields are text)

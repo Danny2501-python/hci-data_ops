@@ -30,6 +30,7 @@ from loguru import logger
 import gc
 from common.brand_config import get_active_brands
 from common.utils import get_current_timestamp_naive
+from common.caresoft_api import get_api_url, get_api_headers
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -137,17 +138,8 @@ class TicketIngestion:
             logger.success(f"✅ Created table: {TICKET_BRONZE_TABLE}")
             return table
     
-    def get_api_url(self, subdomain: str, path: str) -> str:
-        """Construct API URL using brand's caresoft_domain"""
-        # API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/{path}
-        return f"https://api.caresoft.vn/{subdomain}/api/v1/{path}"
+    # Note: get_api_url and get_api_headers are now imported from common.caresoft_api
     
-    def get_api_headers(self, api_key: str) -> dict:
-        """Get API headers"""
-        return {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
     
     def fetch_tickets(self, brand: dict, fetch_type: str, date_since: str, date_to: str):
         """
@@ -192,9 +184,9 @@ class TicketIngestion:
             
             try:
                 response = requests.get(
-                    self.get_api_url(subdomain, "tickets"),
+                    get_api_url(subdomain, "tickets"),
                     params=params,
-                    headers=self.get_api_headers(api_key),
+                    headers=get_api_headers(api_key),
                     timeout=30
                 )
                 

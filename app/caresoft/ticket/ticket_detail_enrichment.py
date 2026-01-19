@@ -30,6 +30,7 @@ from loguru import logger
 import gc
 from common.brand_config import get_active_brands
 from common.utils import get_current_timestamp_naive
+from common.caresoft_api import call_caresoft_api
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -245,29 +246,9 @@ class TicketDetailEnrichment:
         
         return ticket_ids
     
-    def call_caresoft_api(self, brand: dict, ticket_id: int):
-        """Call CareSoft API to get ticket details"""
-        subdomain = brand["caresoft_domain"]  # Already just subdomain (e.g. "kangnam2")
-        api_key = brand["caresoft_key"]
-        
-        # API URL pattern: https://api.caresoft.vn/{subdomain}/api/v1/tickets/{id}
-        url = f"https://api.caresoft.vn/{subdomain}/api/v1/tickets/{ticket_id}"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                return response.json().get("ticket"), None
-            else:
-                logger.warning(f"API Error {response.status_code} for {url}: {response.text[:200]}")
-                return None, f"HTTP {response.status_code}: {response.text[:500]}"
-                
-        except Exception as e:
-            return None, str(e)
+    # Note: call_caresoft_api is now imported from common.caresoft_api
+    # Usage: call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')
+    
     
     def run(self, brand: dict):
         """
@@ -332,7 +313,7 @@ class TicketDetailEnrichment:
                 logger.info(f"Progress: {i + 1}/{len(ticket_ids)} tickets ({(i+1)/len(ticket_ids)*100:.1f}%)")
             
             # Call API
-            ticket_data, error = self.call_caresoft_api(brand, ticket_id)
+            ticket_data, error = call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')
             
             if ticket_data:
                 # Success - prepare record
