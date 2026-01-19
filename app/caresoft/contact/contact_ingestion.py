@@ -122,8 +122,6 @@ class ContactIngestion:
         Returns:
             List of contact records
         """
-        subdomain = brand["caresoft_domain"]
-        api_key = brand["caresoft_key"]
         
         # Calculate date range based on snapshot_date (not current time)
         # This allows backfilling historical data
@@ -151,8 +149,8 @@ class ContactIngestion:
             }
             
             try:
-                url = get_api_url(subdomain, "contacts")
-                headers = get_api_headers(api_key)
+                url = get_api_url(brand, "contacts")
+                headers = get_api_headers(brand)
                 
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 

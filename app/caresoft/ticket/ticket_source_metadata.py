@@ -136,8 +136,6 @@ class TicketSourceMetadata:
         Returns:
             List of ticket source records
         """
-        subdomain = brand["caresoft_domain"]
-        api_key = brand["caresoft_key"]
         brand_id = brand["erp_id"]
         
         params = {
@@ -156,9 +154,9 @@ class TicketSourceMetadata:
             
             try:
                 response = requests.get(
-                    get_api_url(subdomain, "tickets/source/details"),
+                    get_api_url(brand, "tickets/source/details"),
                     params=params,
-                    headers=get_api_headers(api_key),
+                    headers=get_api_headers(brand),
                     timeout=30
                 )
                 

@@ -154,8 +154,6 @@ class TicketIngestion:
         Returns:
             List of ticket records
         """
-        subdomain = brand["caresoft_domain"]
-        api_key = brand["caresoft_key"]
         brand_id = brand["erp_id"]
         
         # Prepare params based on fetch type
@@ -184,9 +182,9 @@ class TicketIngestion:
             
             try:
                 response = requests.get(
-                    get_api_url(subdomain, "tickets"),
+                    get_api_url(brand, "tickets"),
                     params=params,
-                    headers=get_api_headers(api_key),
+                    headers=get_api_headers(brand),
                     timeout=30
                 )
                 
