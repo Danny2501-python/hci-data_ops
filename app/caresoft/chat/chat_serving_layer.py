@@ -192,6 +192,8 @@ class ChatServingLayer:
             update_cols = [c for c in columns if c not in ('conversation_id', 'brand_id')]
             update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             
+            logger.debug(f"Update columns: {update_cols}")
+            
             sql = f"""
             INSERT INTO {TARGET_TABLE} ({cols_str})
             VALUES %s
@@ -199,6 +201,8 @@ class ChatServingLayer:
             DO UPDATE SET
                 {update_set}
             """
+            
+            logger.debug(f"SQL: {sql}")
             
             execute_values(cursor, sql, rows, page_size=1000)
             self.pg_conn.commit()
