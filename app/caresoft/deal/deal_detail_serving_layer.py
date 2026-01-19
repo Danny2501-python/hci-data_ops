@@ -1,15 +1,3 @@
-"""
-Deal Detail Serving Layer Refresh
-Architecture: Gold (Iceberg) → Serving (PostgreSQL DWH)
-
-SIMPLIFIED APPROACH:
-- Read ONLY today's partition from cs_deal_detail_api (incremental)
-- UPSERT into PostgreSQL (ON CONFLICT UPDATE)
-- PostgreSQL automatically maintains latest state per deal
-
-NO NEED for intermediate snapshot table!
-"""
-
 import os
 import sys
 from datetime import datetime, date
@@ -17,6 +5,8 @@ from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values
 import pyarrow as pa
+import pyarrow.parquet as pq
+import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 
@@ -120,26 +110,71 @@ class ServingLayerRefresh:
     def get_deals_for_date(self, snapshot_date: date):
         """
         Read deals from Iceberg for a specific snapshot_date (INCREMENTAL).
-        Only reads ONE partition - today's deals.
+        Uses DuckDB + Parquet for memory efficiency.
         """
         snapshot_date_str = snapshot_date.strftime('%Y-%m-%d')
         logger.info(f"Reading deals for snapshot_date={snapshot_date_str} from {SOURCE_TABLE}")
         
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
-        # Scan ONLY the partition for this snapshot_date (incremental read)
-        scan = table.scan(row_filter=EqualTo("snapshot_date", snapshot_date_str))
-        result = scan.to_arrow()
+        # Temp directory configuration
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"deal_serving_{os.getpid()}.parquet")
         
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        logger.success(f"✅ Found {len(rows)} deals for snapshot {snapshot_date_str}")
-        return columns, rows
+        try:
+            # Scan ONLY the partition for this snapshot_date (incremental read)
+            scan = table.scan(row_filter=EqualTo("snapshot_date", snapshot_date_str))
+            
+            # Stream to Parquet
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
+            
+            if not batches:
+                logger.info(f"No deals found for snapshot {snapshot_date_str}")
+                return [], []
+            
+            # Write to Parquet
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet, compression='snappy')
+            
+            # Free memory
+            del batches
+            del combined
+            
+            logger.info(f"Written deals to temp Parquet: {temp_parquet}")
+            
+            # Use DuckDB to read back (no dedup needed as Gold is already unique)
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            query = f"SELECT * FROM read_parquet('{temp_parquet}')"
+            result = con.execute(query).fetch_arrow_table()
+            con.close()
+            
+            # Convert to columns and rows
+            columns = result.schema.names
+            rows = []
+            for i in range(len(result)):
+                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
+                rows.append(row)
+            
+            logger.success(f"✅ Loaded {len(rows)} deals from Gold")
+            return columns, rows
+            
+        finally:
+            # Cleanup
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                except:
+                    pass
     
     def upsert_serving_table(self, columns, rows):
         """
@@ -179,7 +214,7 @@ class ServingLayerRefresh:
             VALUES %s
             ON CONFLICT ("id", "brand_id")
             DO UPDATE SET
-                {update_set}
+            {update_set}
             WHERE {TARGET_TABLE}."updated_at" < EXCLUDED."updated_at"
                 OR {TARGET_TABLE}."updated_at" IS NULL
             """
@@ -231,17 +266,8 @@ class ServingLayerRefresh:
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('snapshot_date', nargs='?')
-    args = parser.parse_args()
-    
-    s_date = args.snapshot_date
-    # Fallback to sys.argv if needed (common in some Airflow setups)
-    if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-         s_date = sys.argv[1]
-    
-    snapshot_date = datetime.strptime(s_date, "%Y-%m-%d").date() if s_date else date.today()
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
     job = ServingLayerRefresh(snapshot_date)
     job.run()

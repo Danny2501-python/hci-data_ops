@@ -347,7 +347,6 @@ def main():
     """Main execution function"""
     # Parse command line arguments
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
     logger.info(f"Starting ERP Direct Ingestion for {snapshot_date}")

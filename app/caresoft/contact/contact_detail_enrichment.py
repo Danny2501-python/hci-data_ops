@@ -469,13 +469,8 @@ def main():
     Usage: python contact_detail_enrichment.py <snapshot_date>
     """
     # Parse snapshot_date from command line or use today
-    snapshot_date = date.today()
-    if len(sys.argv) > 1:
-        try:
-            snapshot_date = datetime.strptime(sys.argv[1], '%Y-%m-%d').date()
-        except ValueError:
-            logger.error(f"Invalid date format: {sys.argv[1]}. Expected YYYY-MM-DD")
-            sys.exit(1)
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
     logger.info(f"Starting Contact Detail Enrichment for snapshot_date={snapshot_date}")
     

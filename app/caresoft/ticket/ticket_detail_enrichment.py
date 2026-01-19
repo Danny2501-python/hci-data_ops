@@ -190,11 +190,12 @@ class TicketDetailEnrichment:
     def get_ticket_ids_to_enrich(self, brand_erp_id: int):
         """
         Get ticket_ids from Bronze table (today's snapshot only)
+        Uses DuckDB + Parquet for memory-optimized deduplication.
         
         Strategy:
-        - Scan tickets from TODAY's Bronze snapshot only
-        - Deduplicate by ticket_id (MAX updated_at) - Bronze has duplicates from 3 API calls
-        - Return deduplicated ticket_ids
+        - Stream filtered Bronze data to temp Parquet
+        - Use DuckDB to deduplicate (MAX updated_at per ticket_id)
+        - Return sorted list of ticket_ids
         
         Args:
             brand_erp_id: The erp_id from core_brand table
@@ -202,49 +203,83 @@ class TicketDetailEnrichment:
         Returns:
             List of ticket_ids to enrich
         """
-        bronze_table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
+        import duckdb
+        import pyarrow.parquet as pq
+        import tempfile
+        import pyarrow as pa
         
         logger.info(f"Scanning Bronze tickets for brand_etl={brand_erp_id}, snapshot={self.snapshot_date}")
         
-        # Scan Bronze table - ONLY today's snapshot
-        # No need for Parquet spill or DuckDB since we just need ticket_ids
-        scan = bronze_table.scan(
-            row_filter=And(
-                EqualTo("snapshot_date", self.snapshot_date),
-                EqualTo("brand_id", brand_erp_id),
-                NotNull("ticket_id")
-            ),
-            selected_fields=("ticket_id", "updated_at")
-        )
+        bronze_table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
         
-        # Collect tickets and deduplicate in-memory
-        # Bronze may have duplicates from 3 API calls (updated, created, created_prev)
-        ticket_map = {}  # {ticket_id: updated_at}
+        # Temp configuration
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"ticket_enrichment_{brand_erp_id}_{os.getpid()}.parquet")
         
-        for batch in scan.to_arrow_batch_reader():
-            if len(batch) > 0:
-                ticket_ids_batch = batch.column("ticket_id").to_pylist()
-                updated_ats = batch.column("updated_at").to_pylist()
-                
-                for tid, updated_at in zip(ticket_ids_batch, updated_ats):
-                    if tid is None or tid == 0:
-                        continue
-                    
-                    # Keep ticket with latest updated_at
-                    if tid not in ticket_map or (updated_at and updated_at > ticket_map[tid]):
-                        ticket_map[tid] = updated_at
-        
-        if not ticket_map:
-            logger.info(f"No tickets found in today's snapshot for brand {brand_erp_id}")
-            return []
-        
-        # Sort by updated_at DESC (most recent first)
-        sorted_tickets = sorted(ticket_map.items(), key=lambda x: x[1] or datetime.min, reverse=True)
-        ticket_ids = [tid for tid, _ in sorted_tickets]
-        
-        logger.info(f"✅ Selected {len(ticket_ids)} unique tickets to enrich from today's snapshot")
-        
-        return ticket_ids
+        try:
+            # Scan Bronze table - ONLY today's snapshot & specific brand
+            scan = bronze_table.scan(
+                row_filter=And(
+                    EqualTo("snapshot_date", self.snapshot_date),
+                    EqualTo("brand_id", brand_erp_id),
+                    NotNull("ticket_id")
+                ),
+                selected_fields=("ticket_id", "updated_at")
+            )
+            
+            # Stream to Parquet
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
+            
+            if not batches:
+                logger.info(f"No tickets found in today's snapshot for brand {brand_erp_id}")
+                return []
+            
+            # Write to disk to free RAM
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet, compression='snappy')
+            
+            # Free Arrow memory immediately
+            del batches
+            del combined
+            
+            # DuckDB Deduplication
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Deduplicate logic: Group by ticket_id, keep MAX updated_at
+            # Order by updated_at DESC to process newest tickets first
+            query = f"""
+            SELECT ticket_id
+            FROM read_parquet('{temp_parquet}')
+            WHERE ticket_id IS NOT NULL
+            GROUP BY ticket_id
+            ORDER BY max(updated_at) DESC NULLS LAST
+            """
+            
+            # Fetch result column
+            result_arrow = con.execute(query).fetch_arrow_table()
+            ticket_ids = result_arrow.column('ticket_id').to_pylist()
+            
+            con.close()
+            
+            logger.info(f"✅ Selected {len(ticket_ids)} unique tickets to enrich from today's snapshot")
+            return ticket_ids
+            
+        finally:
+            # Robust cleanup
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                except:
+                    pass
     
     # Note: call_caresoft_api is now imported from common.caresoft_api
     # Usage: call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')

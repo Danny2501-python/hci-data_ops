@@ -122,7 +122,12 @@ class TicketSourceMetadataServingLayer:
     def get_ticket_sources_for_date(self, snapshot_date: date):
         """
         Read ticket source metadata from Iceberg for a specific snapshot_date.
-        Reads ALL brands in this partition.
+        Uses DuckDB + Parquet for memory-efficient deduplication.
+        
+        Strategy:
+        1. Iceberg scan → Parquet (streaming, no full load)
+        2. DuckDB reads Parquet → SQL deduplication (vectorized)
+        3. Return only deduplicated results
         
         Args:
             snapshot_date: Date to read
@@ -130,57 +135,90 @@ class TicketSourceMetadataServingLayer:
         Returns:
             Tuple of (columns, rows)
         """
+        import duckdb
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        import os
+        
         snapshot_date_str = snapshot_date.strftime('%Y-%m-%d')
         logger.info(f"Reading ticket sources for snapshot_date={snapshot_date_str} from {SOURCE_TABLE}")
         
         table = self.bronze_catalog.load_table(SOURCE_TABLE)
         
-        # Scan ONLY the partition for this snapshot_date (all brands)
-        scan = table.scan(row_filter=EqualTo("snapshot_date", snapshot_date_str))
-        result = scan.to_arrow()
+        # Get temp directory from environment or use default
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"ticket_source_metadata_{os.getpid()}.parquet")
         
-        if len(result) == 0:
-            logger.warning(f"No ticket sources found for snapshot {snapshot_date_str}")
-            return [], []
-        
-        # Convert to columns and rows
-        columns = result.schema.names
-        rows = []
-        for i in range(len(result)):
-            row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-            rows.append(row)
-        
-        # Deduplicate: Keep only latest record (MAX updated_at) per (id, brand_id)
-        # This is important because if same (id, brand_id) appears multiple times,
-        # PostgreSQL UPSERT will keep the LAST one in batch, not the newest by updated_at
-        if rows:
-            # Find column indexes
-            id_idx = columns.index('id')
-            brand_id_idx = columns.index('brand_id')
-            updated_at_idx = columns.index('updated_at')
+        try:
+            logger.info(f"Scanning snapshot: {snapshot_date_str}")
             
-            # Group by (id, brand_id) and keep MAX(updated_at)
-            from collections import defaultdict
-            grouped = defaultdict(list)
-            for row in rows:
-                key = (row[id_idx], row[brand_id_idx])
-                grouped[key].append(row)
+            # Scan ONLY the partition for this snapshot_date (all brands)
+            scan = table.scan(row_filter=EqualTo("snapshot_date", snapshot_date_str))
             
-            # Keep only the row with MAX(updated_at) for each key
-            deduped_rows = []
-            for key, group in grouped.items():
-                # Sort by updated_at descending, take first (newest)
-                sorted_group = sorted(group, key=lambda r: r[updated_at_idx] or '', reverse=True)
-                deduped_rows.append(sorted_group[0])
+            # Collect all batches and write to Parquet (streaming)
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
             
-            original_count = len(rows)
-            rows = deduped_rows
+            if not batches:
+                logger.warning(f"No ticket sources found for snapshot {snapshot_date_str}")
+                return [], []
             
-            if original_count != len(rows):
-                logger.info(f"Deduplicated {original_count} → {len(rows)} records (removed {original_count - len(rows)} duplicates)")
-        
-        logger.success(f"✅ Found {len(rows)} ticket sources for snapshot {snapshot_date_str}")
-        return columns, rows
+            # Combine and write to Parquet
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet, compression='snappy')
+            
+            logger.info(f"Written {len(combined)} rows to Parquet, deduplicating...")
+            
+            # DuckDB: Read Parquet and deduplicate with SQL
+            # Config optimized for containerized environments
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Deduplication query: Keep latest record per (id, brand_id)
+            # ROW_NUMBER() is more efficient than GROUP BY for this case
+            dedup_query = f"""
+            SELECT * EXCLUDE(rn)
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY id, brand_id 
+                           ORDER BY updated_at DESC NULLS LAST
+                       ) as rn
+                FROM read_parquet('{temp_parquet}')
+                WHERE id IS NOT NULL
+            ) WHERE rn = 1
+            ORDER BY brand_id, id
+            """
+            
+            # Execute and get deduplicated result
+            deduped_result = con.execute(dedup_query).fetch_arrow_table()
+            con.close()
+            
+            logger.success(f"✅ After deduplication: {len(deduped_result)} unique sources")
+            
+            # Convert to columns and rows (only deduplicated data)
+            columns = deduped_result.schema.names
+            rows = []
+            for i in range(len(deduped_result)):
+                row = tuple(deduped_result.column(j)[i].as_py() for j in range(len(columns)))
+                rows.append(row)
+            
+            return columns, rows
+            
+        finally:
+            # Clean up temp Parquet file
+            if os.path.exists(temp_parquet):
+                try:
+                    os.remove(temp_parquet)
+                except:
+                    pass
     
     def upsert_serving_table(self, columns, rows):
         """
@@ -280,17 +318,8 @@ def main():
     Main entry point
     Usage: python ticket_source_metadata_serving_layer.py <snapshot_date>
     """
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('snapshot_date', nargs='?')
-    args = parser.parse_args()
-    
-    s_date = args.snapshot_date
-    # Fallback to sys.argv if needed (common in some Airflow setups)
-    if not s_date and len(sys.argv) > 1 and not sys.argv[1].startswith('-'):
-         s_date = sys.argv[1]
-    
-    snapshot_date = datetime.strptime(s_date, "%Y-%m-%d").date() if s_date else date.today()
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
     
     job = TicketSourceMetadataServingLayer(snapshot_date)
     job.run()

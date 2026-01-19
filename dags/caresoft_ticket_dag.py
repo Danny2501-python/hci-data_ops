@@ -309,11 +309,12 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
         '{{ params.snapshot_date }}'
     ],
     
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_volume_mount],
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
     
     env_vars={
         **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_product_uri,
     },
     
