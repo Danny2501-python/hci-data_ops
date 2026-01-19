@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.brand_config import get_active_brands
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -39,6 +40,9 @@ AWS_REGION = os.getenv('AWS_REGION')
 CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
 CONTACT_DETAIL_SILVER_TABLE = 'caresoft.cs_contact_api'
 CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
+
+# Batch size for writing records to Iceberg
+BATCH_SIZE = 10000
 
 
 class ContactDetailEnrichment:
@@ -310,6 +314,7 @@ class ContactDetailEnrichment:
             return
         
         snapshot_date_str = self.snapshot_date.isoformat()
+        ingestion_timestamp = get_current_timestamp_naive()
         
         # DELETE old partition data (Snapshot Overwrite Pattern)
         # This prevents duplicates if re-running for the same day
@@ -340,10 +345,6 @@ class ContactDetailEnrichment:
             logger.warning(f"Could not clean up old data (tables might be new/empty): {e}")
 
         logger.info(f"Enriching {len(contact_ids)} contacts for brand {brand_name}")
-        
-        # Fetch details for each contact
-        snapshot_date_str = self.snapshot_date.isoformat()
-        ingestion_timestamp = datetime.now()
         
         # Helper functions for safe type conversion
         def safe_int(val):
@@ -440,14 +441,23 @@ class ContactDetailEnrichment:
             # Rate limiting
             time.sleep(0.05)
             
-            # Batch write every 1000 records
-            if len(success_records) >= 1000:
+            # Batch write every BATCH_SIZE records
+            if len(success_records) >= BATCH_SIZE:
                 logger.info(f"Writing batch of {len(success_records)} contact details to Silver")
                 silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
                 pa_schema = schema_to_pyarrow(silver_table.schema())
                 df = pa.Table.from_pylist(success_records, schema=pa_schema)
                 silver_table.append(df)
                 success_records = []
+            
+            # Batch write errors every BATCH_SIZE records
+            if len(error_records) >= BATCH_SIZE:
+                logger.warning(f"Writing batch of {len(error_records)} errors to error table")
+                error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
+                pa_schema = schema_to_pyarrow(error_table.schema())
+                df = pa.Table.from_pylist(error_records, schema=pa_schema)
+                error_table.append(df)
+                error_records = []
         
         # Write remaining records
         if success_records:

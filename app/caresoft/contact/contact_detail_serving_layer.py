@@ -161,7 +161,7 @@ class ContactDetailServingLayer:
             })
             
             # Silver data is already unique by (id, brand_id) per snapshot
-            # So simple SELECT is enough
+            # Due to delete-before-append pattern in enrichment step
             query = f"""
                 SELECT * 
                 FROM read_parquet('{temp_parquet}')

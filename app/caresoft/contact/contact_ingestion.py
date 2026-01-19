@@ -20,6 +20,7 @@ from pyiceberg.transforms import IdentityTransform
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.brand_config import get_active_brands
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -209,7 +210,7 @@ class ContactIngestion:
             return
         
         # Transform to Iceberg records
-        ingestion_timestamp = datetime.now()
+        ingestion_timestamp = get_current_timestamp_naive()
         
         # Helper functions for safe type conversion
         def safe_int(val):
