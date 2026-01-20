@@ -1,4 +1,8 @@
-from .service_ingestion import ServiceIngestion
-from .service_serving_layer import ServiceServingLayer
+"""
+CareSoft Service Data Pipeline
 
-__all__ = ['ServiceIngestion', 'ServiceServingLayer']
+Bronze Layer: service_ingestion.py
+Serving Layer: service_serving_layer.py
+"""
+
+__all__ = ['service_ingestion', 'service_serving_layer']
