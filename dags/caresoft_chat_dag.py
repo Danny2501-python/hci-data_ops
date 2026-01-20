@@ -53,9 +53,9 @@ dag = DAG(
     tags=['caresoft', 'chat', 'etl', 'iceberg'],
     params={
         'snapshot_date': Param(
-            default='{{ ds }}',
-            type='string',
-            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
+            default=None,
+            type=['null', 'string'],
+            description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
 )
@@ -119,7 +119,7 @@ task_chat_ingestion = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/chat/chat_ingestion.py', '{{ params.snapshot_date }}'],
+    arguments=['/app/caresoft/chat/chat_ingestion.py', '{{ params.snapshot_date if params.snapshot_date else ds }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount], # Added duckdb mount just in case useful later
     env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb'},
@@ -136,7 +136,7 @@ task_chat_serving = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/chat/chat_serving_layer.py', '{{ params.snapshot_date }}'],
+    arguments=['/app/caresoft/chat/chat_serving_layer.py', '{{ params.snapshot_date if params.snapshot_date else ds }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={

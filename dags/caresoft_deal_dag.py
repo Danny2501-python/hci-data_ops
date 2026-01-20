@@ -46,9 +46,9 @@ dag = DAG(
     tags=['caresoft', 'deal', 'etl', 'iceberg'],
     params={
         'snapshot_date': Param(
-            default='{{ ds }}',
-            type='string',
-            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
+            default=None,
+            type=['null', 'string'],
+            description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
 )
@@ -185,7 +185,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/erp_webhook_ingestion.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume],
@@ -216,7 +216,7 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/webhook_transformation_silver.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -249,7 +249,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_enrichment.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -283,7 +283,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -314,7 +314,7 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

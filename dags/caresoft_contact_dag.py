@@ -65,9 +65,9 @@ dag = DAG(
     tags=['caresoft', 'contact', 'etl', 'iceberg'],
     params={
         'snapshot_date': Param(
-            default='{{ ds }}',
-            type='string',
-            description='Snapshot date to process (YYYY-MM-DD). Default: T-1 (yesterday)',
+            default=None,
+            type=['null', 'string'],
+            description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
 )
@@ -160,7 +160,7 @@ task_contact_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_ingestion.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume],
@@ -187,7 +187,7 @@ task_contact_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_detail_enrichment.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -217,7 +217,7 @@ task_contact_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_detail_serving_layer.py',
-        '{{ params.snapshot_date }}'
+        '{{ params.snapshot_date if params.snapshot_date else ds }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
