@@ -24,16 +24,16 @@ NFS_PATH = '/srv/nfs_share/app'
 # DWH Connection (for serving layer)
 dwh_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh')
-    conn = hook.get_connection('dwh')
+    hook = PostgresHook(postgres_conn_id='dwh_product')
+    conn = hook.get_connection('dwh_product')
     dwh_uri = conn.get_uri()
     
     if '?__extra__=' in dwh_uri:
         dwh_uri = dwh_uri.split('?__extra__=')[0]
     
-    logger.info("✅ Loaded connection URI for dwh")
+    logger.info("✅ Loaded connection URI for dwh_product")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
