@@ -54,14 +54,21 @@ duckdb_mount = k8s.V1VolumeMount(
 )
 
 # Environment Variables
+# Environment Variables
 common_env_vars = {
-    'ICEBERG_REST_URI_BRONZE': Variable.get("ICEBERG_REST_URI_BRONZE"),
-    'CATALOG_NAME_BRONZE': Variable.get("CATALOG_NAME_BRONZE"),
-    'S3_ENDPOINT': Variable.get("S3_ENDPOINT"),
-    'AWS_ACCESS_KEY_ID': Variable.get("AWS_ACCESS_KEY_ID"),
-    'AWS_SECRET_ACCESS_KEY': Variable.get("AWS_SECRET_ACCESS_KEY"),
-    'AWS_REGION': Variable.get("AWS_REGION"),
-    'PYTHONPATH': '/app'
+    # Bronze zone
+    'ICEBERG_REST_URI_BRONZE': 'http://iceberg-rest-bronze-zone:8181',
+    'CATALOG_NAME_BRONZE': 'bronze',
+    
+    # Gold zone (for brand loading)
+    'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
+    'CATALOG_NAME_GOLD': 'gold',
+    
+    # MinIO config
+    'S3_ENDPOINT': 'http://10.152.183.65:9000',
+    'AWS_ACCESS_KEY_ID': 'admin',
+    'AWS_SECRET_ACCESS_KEY': 'password',
+    'AWS_REGION': 'us-east-1',
 }
 
 # DWH Connection
