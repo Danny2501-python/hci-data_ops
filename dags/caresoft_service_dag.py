@@ -28,29 +28,22 @@ resource_requirements_serving = k8s.V1ResourceRequirements(
     limits={"cpu": "1000m", "memory": "1Gi"}
 )
 
-# Volume Configuration
+# NFS Volume (for scripts)
 nfs_volume = k8s.V1Volume(
-    name='nfs-volume',
-    nfs=k8s.V1NFSVolumeSource(
-        server='10.1.20.20',
-        path='/volume1/projects'
-    )
+    name='nfs-scripts',
+    nfs=k8s.V1NFSVolumeSource(server='10.10.10.245', path='/srv/nfs_share/app')
 )
-
 nfs_mount = k8s.V1VolumeMount(
-    name='nfs-volume',
-    mount_path='/app',
-    sub_path='data-ops/app'
+    name='nfs-scripts', mount_path='/app', read_only=True
 )
 
+# DuckDB Temp Volume
 duckdb_volume = k8s.V1Volume(
-    name='duckdb-scratch',
-    empty_dir=k8s.V1EmptyDirVolumeSource()
+    name='duckdb-temp',
+    empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='2Gi')
 )
-
 duckdb_mount = k8s.V1VolumeMount(
-    name='duckdb-scratch',
-    mount_path='/tmp/duckdb'
+    name='duckdb-temp', mount_path='/tmp/duckdb', read_only=False
 )
 
 # Environment Variables
@@ -102,7 +95,7 @@ dag = DAG(
     'caresoft_service_etl',
     default_args=default_args,
     description='CareSoft Services Pipeline: Bronze → Serving',
-    schedule_interval='10 04 * * *',  # 04:10 daily (matches old cron)
+    schedule_interval='15 01 * * *',  # 04:10 daily (matches old cron)
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
