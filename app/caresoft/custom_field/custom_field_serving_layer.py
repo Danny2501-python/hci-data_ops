@@ -140,7 +140,7 @@ class CustomFieldServingLayer:
             
             # Define columns to select based on field_type (matching Postgres DDL)
             if self.field_type == 'contact':
-                # cs_custom_fields_kh: No parent_value_id
+                # cs_custom_fields_kh: No parent_value_id, but add snapshot_date and ingestion_timestamp
                 cols_select = """
                     custom_field_id,
                     custom_field_lable,
@@ -148,10 +148,12 @@ class CustomFieldServingLayer:
                     value_id,
                     value_lable,
                     brand_id,
-                    raw_data
+                    raw_data,
+                    snapshot_date,
+                    ingestion_timestamp
                 """
             else:
-                # cs_custom_fields: Has parent_value_id
+                # cs_custom_fields: Has parent_value_id, plus snapshot_date and ingestion_timestamp
                 cols_select = """
                     custom_field_id,
                     custom_field_lable,
@@ -160,7 +162,9 @@ class CustomFieldServingLayer:
                     value_lable,
                     parent_value_id,
                     brand_id,
-                    raw_data
+                    raw_data,
+                    snapshot_date,
+                    ingestion_timestamp
                 """
             
             query = f"""
