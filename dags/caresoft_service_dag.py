@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 # Common configuration
-NAMESPACE = 'airflow-jobs'
-PYTHON_ETL_IMAGE = '10.1.20.120:5000/python-etl-base:1.1.0'
+PYTHON_ETL_IMAGE = '111050/python-etl-base:1.0.0'
+NAMESPACE = 'default'
+NFS_SERVER = '10.10.10.245'
+NFS_PATH = '/srv/nfs_share/app'
 
 # Resource Limits
 resource_requirements_ingestion = k8s.V1ResourceRequirements(
@@ -31,7 +33,7 @@ resource_requirements_serving = k8s.V1ResourceRequirements(
 # NFS Volume (for scripts)
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
-    nfs=k8s.V1NFSVolumeSource(server='10.10.10.245', path='/srv/nfs_share/app')
+    nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH)
 )
 nfs_mount = k8s.V1VolumeMount(
     name='nfs-scripts', mount_path='/app', read_only=True
@@ -62,6 +64,9 @@ common_env_vars = {
     'AWS_ACCESS_KEY_ID': 'admin',
     'AWS_SECRET_ACCESS_KEY': 'password',
     'AWS_REGION': 'us-east-1',
+
+    # CareSoft API config
+    'CARESOFT_PAGE_SIZE': '500',
 }
 
 # DWH Connection

@@ -18,7 +18,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    NestedField, StringType, IntegerType, TimestampType, DateType
+    NestedField, StringType, IntegerType, TimestampType, DateType, LongType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
@@ -41,6 +41,7 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 SERVICE_BRONZE_TABLE = 'caresoft.cs_services_api'
+CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
 
 
 class ServiceIngestion:
@@ -76,27 +77,26 @@ class ServiceIngestion:
         except Exception:
             logger.info(f"Creating table {SERVICE_BRONZE_TABLE}")
             
-            # Schema definition for services
+            # Schema definition for services (aligned with DDL & Response)
             schema = Schema(
-                NestedField(1, "service_id", IntegerType(), required=False),
+                NestedField(1, "service_id", LongType(), required=False),
                 NestedField(2, "service_name", StringType(), required=False),
-                NestedField(3, "type", StringType(), required=False),
-                NestedField(4, "created_at", StringType(), required=False),
-                NestedField(5, "updated_at", StringType(), required=False),
-                NestedField(6, "status", StringType(), required=False),
-                NestedField(7, "description", StringType(), required=False),
-                NestedField(8, "brand_id", IntegerType(), required=False),
-                NestedField(9, "raw_data", StringType(), required=False),
+                NestedField(3, "service_type", StringType(), required=False),
+                NestedField(4, "type", IntegerType(), required=False),
+                NestedField(5, "status", IntegerType(), required=False),
+                NestedField(6, "detail", StringType(), required=False),
+                NestedField(7, "brand_id", IntegerType(), required=False),
+                NestedField(8, "raw_data", StringType(), required=False),
                 
                 # Metadata fields
-                NestedField(10, "snapshot_date", DateType(), required=True),
-                NestedField(11, "ingestion_timestamp", TimestampType(), required=True),
+                NestedField(9, "snapshot_date", DateType(), required=True),
+                NestedField(10, "ingestion_timestamp", TimestampType(), required=True),
             )
             
             # Partition by snapshot_date
             partition_spec = PartitionSpec(
                 PartitionField(
-                    source_id=10,
+                    source_id=9,
                     field_id=1000,
                     transform=IdentityTransform(),
                     name="snapshot_date"
@@ -123,7 +123,10 @@ class ServiceIngestion:
         
         # Only fetch page 1 (matching cs_extract.py logic)
         while page == 1:
-            params = {'page': page}
+            params = {
+                'page': page,
+                'count': CARESOFT_PAGE_SIZE
+            }
             
             try:
                 url = get_api_url(brand, "services")
@@ -172,14 +175,17 @@ class ServiceIngestion:
             return str(val)
         
         for service in services_data:
+            # Handle detail field (convert dict to json string)
+            detail_obj = service.get("detail")
+            detail_str = json.dumps(detail_obj, ensure_ascii=False) if detail_obj else None
+
             record = {
-                "service_id": service.get("id"),
-                "service_name": safe_str(service.get("name")),
-                "type": safe_str(service.get("type")),
-                "created_at": safe_str(service.get("created_at")),
-                "updated_at": safe_str(service.get("updated_at")),
-                "status": safe_str(service.get("status")),
-                "description": safe_str(service.get("description")),
+                "service_id": service.get("service_id"),  # Note: API uses 'service_id' not 'id'
+                "service_name": safe_str(service.get("service_name")),
+                "service_type": safe_str(service.get("service_type")),
+                "type": service.get("type"), # Keep as int
+                "status": service.get("status"), # Keep as int
+                "detail": detail_str,
                 "brand_id": brand_erp_id,
                 "raw_data": json.dumps(service, ensure_ascii=False),
                 "snapshot_date": self.snapshot_date,

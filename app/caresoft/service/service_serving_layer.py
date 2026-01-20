@@ -12,7 +12,10 @@ from datetime import date, datetime
 from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pyiceberg.catalog import load_catalog
+from pyiceberg.expressions import EqualTo
 
 # Configuration
 ICEBERG_REST_URI = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -25,7 +28,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_services_api'
-TARGET_TABLE = 'cs_services_api'
+TARGET_TABLE = 'cs_services_api_v1'
 
 class ServiceServingLayer:
     """Refresh Service serving layer from Bronze"""
@@ -35,7 +38,7 @@ class ServiceServingLayer:
         self.bronze_catalog = None
         self.pg_conn = None
         
-        # Connect to Iceberg
+    def connect_iceberg(self):
         self.bronze_catalog = load_catalog(
             CATALOG_NAME,
             **{
@@ -46,9 +49,14 @@ class ServiceServingLayer:
                 "s3.region": AWS_REGION,
             }
         )
-        
-        # Connect to Postgres
+        logger.info("Connected to Bronze Iceberg")
+
+    def connect_postgres(self):
+        if not POSTGRES_URI:
+            raise ValueError("POSTGRES_URI not set")
         self.pg_conn = psycopg2.connect(POSTGRES_URI)
+        self.pg_conn.autocommit = False
+        logger.info("Connected to PostgreSQL")
 
     def ensure_serving_table_exists(self, columns):
         """Create serving table with PK (service_id, brand_id)"""
@@ -69,7 +77,7 @@ class ServiceServingLayer:
             try:
                 cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("service_id", "brand_id");')
                 self.pg_conn.commit()
-            except:
+            except Exception:
                 self.pg_conn.rollback()
                 
         except Exception as e:
@@ -78,63 +86,83 @@ class ServiceServingLayer:
         finally:
             cursor.close()
 
-    def get_latest_data(self):
-        """
-        Read from Bronze Iceberg
-        Deduplicate using DuckDB
-        Return: (columns, rows)
-        """
+    def get_services_for_date(self):
+        """Read from Bronze Iceberg, dedup with DuckDB"""
+        logger.info(f"Reading services for {self.snapshot_date}")
         table = self.bronze_catalog.load_table(SOURCE_TABLE)
         
-        # Scan Iceberg table
-        arrow_table = table.scan().to_arrow()
+        # Temp dir
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_parquet = os.path.join(temp_dir, f"services_serving_{os.getpid()}.parquet")
         
-        if len(arrow_table) == 0:
-            return [], []
+        try:
+            # Scan Bronze for snapshot_date
+            scan = table.scan(
+                row_filter=EqualTo("snapshot_date", self.snapshot_date.isoformat())
+            )
             
-        # Use DuckDB for efficient deduplication
-        con = duckdb.connect(database=':memory:')
-        con.register('arrow_table', arrow_table)
-        
-        # Write to temp parquet to handle large datasets if needed
-        # But for services (small dataset), arrow is fine. 
-        # Keeping usage consistent with other modules.
-        temp_parquet = f"{os.getenv('DUCKDB_TEMP_DIR', '/tmp')}/services_temp.parquet"
-        con.execute(f"COPY (SELECT * FROM arrow_table) TO '{temp_parquet}' (FORMAT PARQUET)")
-        
-        # Deduplicate by (service_id, brand_id)
-        # Take latest by ingestion_timestamp
-        query = f"""
-        SELECT 
-            service_id,
-            service_name,
-            type,
-            created_at,
-            updated_at,
-            status,
-            description,
-            brand_id,
-            raw_data
-        FROM (
-            SELECT *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY service_id, brand_id 
-                    ORDER BY ingestion_timestamp DESC
-                ) as rn
-            FROM read_parquet('{temp_parquet}')
-            WHERE service_id IS NOT NULL
-        ) WHERE rn=1
-        """
-        
-        result = con.execute(query).fetchall()
-        columns = [desc[0] for desc in con.description]
-        
-        con.close()
-        # Clean up
-        if os.path.exists(temp_parquet):
-            os.remove(temp_parquet)
+            # Stream to Parquet
+            batches = []
+            for batch in scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    batches.append(batch)
             
-        return columns, result
+            if not batches:
+                return [], []
+                
+            combined = pa.Table.from_batches(batches)
+            pq.write_table(combined, temp_parquet)
+            del batches, combined
+            
+            # Use DuckDB for efficient deduplication
+            con = duckdb.connect(config={
+                'memory_limit': '2GB',
+                'preserve_insertion_order': 'false',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            
+            # Deduplicate by (service_id, brand_id)
+            # Take latest by ingestion_timestamp
+            query = f"""
+            SELECT 
+                service_id,
+                service_name,
+                service_type,
+                type,
+                status,
+                detail,
+                brand_id,
+                raw_data,
+                snapshot_date,
+                ingestion_timestamp
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY service_id, brand_id 
+                        ORDER BY ingestion_timestamp DESC
+                    ) as rn
+                FROM read_parquet('{temp_parquet}')
+                WHERE service_id IS NOT NULL
+            ) WHERE rn=1
+            """
+            
+            result = con.execute(query).fetch_arrow_table()
+            con.close()
+            
+            columns = result.schema.names
+            rows = []
+            for i in range(len(result)):
+                rows.append(tuple(result.column(j)[i].as_py() for j in range(len(columns))))
+                
+            logger.success(f"Loaded {len(rows)} unique service records")
+            return columns, rows
+            
+        finally:
+            if os.path.exists(temp_parquet):
+                try: os.remove(temp_parquet)
+                except: pass
 
     def upsert_serving(self, columns, rows):
         if not rows: return
@@ -149,6 +177,8 @@ class ServiceServingLayer:
             update_cols = [c for c in columns if c not in ('service_id', 'brand_id')]
             update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             
+            logger.debug(f"Update columns: {update_cols}")
+            
             sql = f"""
             INSERT INTO {TARGET_TABLE} ({cols_str})
             VALUES %s
@@ -156,6 +186,8 @@ class ServiceServingLayer:
             DO UPDATE SET
                 {update_set}
             """
+            
+            logger.debug(f"SQL: {sql}")
             
             execute_values(cursor, sql, rows, page_size=1000)
             self.pg_conn.commit()
@@ -168,23 +200,15 @@ class ServiceServingLayer:
             cursor.close()
 
     def run(self):
-        logger.info(f"Starting Service Serving Layer update for {self.snapshot_date}")
-        
         try:
-            columns, rows = self.get_latest_data()
+            self.connect_iceberg()
+            self.connect_postgres()
             
-            if not rows:
-                logger.info("No data found in Bronze")
-                return
-
+            columns, rows = self.get_services_for_date()
             self.upsert_serving(columns, rows)
             
-        except Exception as e:
-            logger.error(f"Serving layer failed: {e}")
-            raise e
         finally:
-            if self.pg_conn:
-                self.pg_conn.close()
+            if self.pg_conn: self.pg_conn.close()
 
 def main():
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
