@@ -40,7 +40,7 @@ dag = DAG(
     'caresoft_deal_etl',
     default_args=default_args,
     description='CareSoft ETL: ERP → Bronze → Silver → Gold → Serving',
-    schedule_interval='0 2 * * *',  # Daily at 2:00 AM UTC+7
+    schedule_interval='30 1 * * *',  # Daily at 1:30 AM UTC+7
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=['caresoft', 'deal', 'etl', 'iceberg'],

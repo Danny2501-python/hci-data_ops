@@ -46,7 +46,7 @@ dag = DAG(
     'caresoft_chat_etl',
     default_args=default_args,
     description='CareSoft Chat Pipeline: Bronze → Serving',
-    schedule_interval='0 3 * * *', # 3 AM
+    schedule_interval='0 2 * * *',
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,

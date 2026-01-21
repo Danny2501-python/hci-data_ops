@@ -58,7 +58,7 @@ dag = DAG(
     'caresoft_ticket_etl',
     default_args=default_args,
     description='CareSoft Ticket Pipeline: Bronze → Silver → Serving',
-    schedule_interval='0 4 * * *',
+    schedule_interval='15 2 * * *',
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
