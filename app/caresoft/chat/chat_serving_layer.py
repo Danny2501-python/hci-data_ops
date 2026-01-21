@@ -159,7 +159,7 @@ class ChatServingLayer:
                 SELECT *,
                     ROW_NUMBER() OVER (PARTITION BY conversation_id, brand_id ORDER BY end_time DESC NULLS LAST, ticket_id DESC NULLS LAST, ingestion_timestamp DESC) as rn
                 FROM read_parquet('{temp_parquet}')
-                WHERE conversation_id IS NOT NULL
+                WHERE conversation_id IS NOT NULL AND ticket_id IS NOT NULL
             ) WHERE rn=1
             """
             
