@@ -88,7 +88,7 @@ except Exception as e:
 # ============================================================================
 
 default_args = {
-    'owner': 'data-ops',
+    'owner': 'data-engineering',
     'depends_on_past': False,
     'email_on_failure': False,
     'email_on_retry': False,
