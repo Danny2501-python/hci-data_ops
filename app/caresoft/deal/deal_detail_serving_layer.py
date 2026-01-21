@@ -24,7 +24,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_deal_detail_api'  # Read directly from incremental table
-TARGET_TABLE = 'cs_deal_detail_api_v1'
+TARGET_TABLE = os.getenv('SERVING_TABLE_NAME')
 
 
 class ServingLayerRefresh:

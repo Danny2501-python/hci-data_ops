@@ -158,19 +158,7 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
-# DWH Sandbox Connection (for serving layer sandbox)
-dwh_sandbox_uri = ''
-try:
-    hook = PostgresHook(postgres_conn_id='dwh_sandbox')
-    conn = hook.get_connection('dwh_sandbox')
-    dwh_sandbox_uri = conn.get_uri()
-    
-    if '?__extra__=' in dwh_sandbox_uri:
-        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
-    
-    logger.info("✅ Loaded connection URI for dwh_sandbox")
-except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 
 # ============================================================================
 # TASK 1: ERP → BRONZE (Webhook Ingestion)
@@ -293,6 +281,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
         **common_env_vars,
         'POSTGRES_URI': dwh_product_uri,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'SERVING_TABLE_NAME': 'cs_deal_detail_api_v1',
     },
     
     container_resources=resource_requirements,
@@ -301,13 +290,9 @@ task_refresh_serving_layer = KubernetesPodOperator(
     dag=dag,
 )
 
-# ============================================================================
-# TASK 5: GOLD → SERVING SANDBOX (Refresh PostgreSQL Sandbox Serving Layer)
-# ============================================================================
-
-task_refresh_serving_layer_sandbox = KubernetesPodOperator(
-    task_id='refresh_serving_layer_sandbox',
-    name='caresoft-refresh-serving-layer-sandbox',
+task_refresh_serving_layer_v2 = KubernetesPodOperator(
+    task_id='refresh_serving_layer_v2',
+    name='caresoft-refresh-serving-layer-v2',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
@@ -322,8 +307,9 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
     
     env_vars={
         **common_env_vars,
-        'POSTGRES_URI': dwh_sandbox_uri,  # Use sandbox connection
+        'POSTGRES_URI': dwh_product_uri,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'SERVING_TABLE_NAME': 'cs_deal_detail_api_v2',
     },
     
     container_resources=resource_requirements,
@@ -332,10 +318,12 @@ task_refresh_serving_layer_sandbox = KubernetesPodOperator(
     dag=dag,
 )
 
+
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# SIMPLIFIED FLOW: ERP → Bronze → Silver → Gold Enrichment → Serving (Production & Sandbox)
-# Removed intermediate snapshot step - serving layer now reads directly from cs_deal_detail_api
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer, task_refresh_serving_layer_sandbox]
+# SIMPLIFIED FLOW: ERP → Bronze → Silver → Gold Enrichment → Serving (Production V1 & Production V2)
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
+task_deal_detail_enrichment >> [task_refresh_serving_layer, task_refresh_serving_layer_v2]
