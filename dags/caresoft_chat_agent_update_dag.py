@@ -46,7 +46,7 @@ dag = DAG(
     'caresoft_chat_agent_update_etl',
     default_args=default_args,
     description='CareSoft Flow 10: Hourly Agent Update for Chat',
-    schedule_interval='45 * * * *', # Hourly at minute 45
+    schedule_interval='45 5 * * *', # Hourly at 5:45 AM
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
