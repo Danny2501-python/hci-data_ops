@@ -43,7 +43,12 @@ class ChatAgentUpdate:
         self.bronze_catalog = None
         
         logger.info(f"Initializing ChatAgentUpdate for snapshot_date={self.snapshot_date}")
+        logger.info(f"ICEBERG_REST_URI_BRONZE: {ICEBERG_REST_URI_BRONZE}")
+        logger.info(f"CATALOG_NAME_BRONZE: {CATALOG_NAME_BRONZE}")
         
+        if not ICEBERG_REST_URI_BRONZE:
+            raise ValueError("ICEBERG_REST_URI_BRONZE environment variable is not set")
+            
         # Connect to Bronze catalog
         self.bronze_catalog = load_catalog(
             CATALOG_NAME_BRONZE,

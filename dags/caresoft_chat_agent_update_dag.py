@@ -65,12 +65,21 @@ dag = DAG(
 # ============================================================================
 
 common_env_vars = {
+    # Bronze zone
     'ICEBERG_REST_URI_BRONZE': 'http://iceberg-rest-bronze-zone:8181',
     'CATALOG_NAME_BRONZE': 'bronze',
+    
+    # Gold zone (likely needed for brand config)
+    'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
+    'CATALOG_NAME_GOLD': 'gold',
+    
+    # MinIO config
     'S3_ENDPOINT': 'http://10.152.183.65:9000',
     'AWS_ACCESS_KEY_ID': 'admin',
     'AWS_SECRET_ACCESS_KEY': 'password',
     'AWS_REGION': 'us-east-1',
+    
+    # CareSoft API config
     'CARESOFT_PAGE_SIZE': '500',
 }
 
