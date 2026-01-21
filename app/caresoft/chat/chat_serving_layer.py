@@ -157,7 +157,7 @@ class ChatServingLayer:
                 ingestion_timestamp
             FROM (
                 SELECT *,
-                    ROW_NUMBER() OVER (PARTITION BY conversation_id, brand_id ORDER BY start_time DESC NULLS LAST, ticket_id DESC NULLS LAST, ingestion_timestamp DESC) as rn
+                    ROW_NUMBER() OVER (PARTITION BY conversation_id, brand_id, ticket_id ORDER BY start_time DESC NULLS LAST, ingestion_timestamp DESC) as rn
                 FROM read_parquet('{temp_parquet}')
                 WHERE conversation_id IS NOT NULL AND ticket_id IS NOT NULL
             ) WHERE rn=1
