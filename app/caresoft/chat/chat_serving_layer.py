@@ -63,15 +63,15 @@ class ChatServingLayer:
             sql = f"""
             CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
                 {', '.join(column_defs)},
-                PRIMARY KEY ("conversation_id", "brand_id")
+                PRIMARY KEY ("conversation_id", "brand_id", "ticket_id")
             )
             """
             cursor.execute(sql)
             self.pg_conn.commit()
             
-            # Ensure PK if table existed without it
+            # Ensure PK if table existed without it (Note: This simple logic is brittle for changing PKs)
             try:
-                cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("conversation_id", "brand_id");')
+                cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("conversation_id", "brand_id", "ticket_id");')
                 self.pg_conn.commit()
             except:
                 self.pg_conn.rollback()
@@ -189,7 +189,8 @@ class ChatServingLayer:
             cols_str = ', '.join([f'"{c}"' for c in columns])
             
             # UPDATE on conflict
-            update_cols = [c for c in columns if c not in ('conversation_id', 'brand_id')]
+            # Now ticket_id is part of PK, so we don't update it.
+            update_cols = [c for c in columns if c not in ('conversation_id', 'brand_id', 'ticket_id')]
             update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
             
             logger.debug(f"Update columns: {update_cols}")
@@ -197,7 +198,7 @@ class ChatServingLayer:
             sql = f"""
             INSERT INTO {TARGET_TABLE} ({cols_str})
             VALUES %s
-            ON CONFLICT ("conversation_id", "brand_id")
+            ON CONFLICT ("conversation_id", "brand_id", "ticket_id")
             DO UPDATE SET
                 {update_set}
             """
