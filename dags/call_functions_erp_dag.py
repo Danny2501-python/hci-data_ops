@@ -38,7 +38,7 @@ dag = DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'staging_sci', 'bronze', 'iceberg'],
+    tags=['etl', 'call_functions', 'bronze', 'iceberg'],
     params={
         'snapshot_date': Param(
             default=None,
