@@ -154,23 +154,35 @@ class DealCommentsServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            # Build IN clause
-            ticket_ids_str = ','.join([str(int(tid)) for tid in ticket_ids if pd.notna(tid)])
+            # Convert ticket_ids to numeric and filter valid ones
+            valid_ids = []
+            for tid in ticket_ids:
+                if pd.notna(tid):
+                    try:
+                        # Convert to float first to handle scientific notation
+                        numeric_val = float(tid)
+                        # Check if it's in valid range for NUMERIC(20)
+                        if -1e20 < numeric_val < 1e20:
+                            valid_ids.append(int(numeric_val))
+                    except (ValueError, TypeError, OverflowError):
+                        logger.warning(f"Skipping invalid ticket_id: {tid}")
             
-            if not ticket_ids_str:
+            if not valid_ids:
                 logger.info("No valid ticket_ids to delete")
                 return
             
+            # Build IN clause with parameterized query to avoid SQL injection
+            placeholders = ','.join(['%s'] * len(valid_ids))
             delete_sql = f"""
             DELETE FROM {TARGET_TABLE}
-            WHERE ticket_id IN ({ticket_ids_str})
+            WHERE ticket_id IN ({placeholders})
             """
             
-            cursor.execute(delete_sql)
+            cursor.execute(delete_sql, valid_ids)
             deleted_count = cursor.rowcount
             self.pg_conn.commit()
             
-            logger.info(f"Deleted {deleted_count} existing comments for {len(set(ticket_ids))} ticket_ids")
+            logger.info(f"Deleted {deleted_count} existing comments for {len(set(valid_ids))} unique ticket_ids")
             
         except Exception as e:
             self.pg_conn.rollback()
@@ -202,10 +214,14 @@ class DealCommentsServingLayer:
             ]
             
             # Numeric columns that need integer conversion
-            numeric_columns = [
-                'ticket_comments_id', 'ticket_id', 'commentator_id',
-                'is_public', 'facebook_comment_state', 'role_id'
-            ]
+            numeric_columns = {
+                'ticket_comments_id': (-1e20, 1e20),
+                'ticket_id': (-1e20, 1e20),
+                'commentator_id': (-1e20, 1e20),
+                'is_public': (-128, 127),
+                'facebook_comment_state': (-32768, 32767),
+                'role_id': (-32768, 32767)
+            }
             
             # Ensure all columns exist
             for col in columns:
@@ -216,14 +232,27 @@ class DealCommentsServingLayer:
             df = df[columns].copy()
             
             # Clean numeric columns - convert to int, handle NaN/NULL
-            for col in numeric_columns:
+            for col in numeric_columns.keys():
                 if col in df.columns:
-                    # Convert to numeric, coercing errors to NaN
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Convert NaN to None
-                    df[col] = df[col].where(pd.notna(df[col]), None)
-                    # Convert to int where not None
-                    df[col] = df[col].apply(lambda x: int(x) if pd.notna(x) else None)
+                    min_val, max_val = numeric_columns[col]
+                    
+                    def safe_convert(x):
+                        if pd.isna(x):
+                            return None
+                        try:
+                            # Convert to float first to handle scientific notation
+                            num_val = float(x)
+                            # Check range
+                            if min_val <= num_val <= max_val:
+                                return int(num_val)
+                            else:
+                                logger.warning(f"Value {x} out of range for column {col}, setting to NULL")
+                                return None
+                        except (ValueError, TypeError, OverflowError):
+                            logger.warning(f"Cannot convert {x} to int for column {col}, setting to NULL")
+                            return None
+                    
+                    df[col] = df[col].apply(safe_convert)
             
             logger.info(f"Processing {len(df)} comments for insertion")
             
@@ -246,14 +275,6 @@ class DealCommentsServingLayer:
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Failed to insert comments: {e}")
-            # Log problematic rows for debugging
-            try:
-                for idx, row in df.iterrows():
-                    for col in numeric_columns:
-                        if col in df.columns and pd.notna(row[col]):
-                            logger.debug(f"Row {idx}, Column {col}: {row[col]} (type: {type(row[col])})")
-            except:
-                pass
             raise
         finally:
             cursor.close()
