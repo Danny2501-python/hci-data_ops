@@ -3,9 +3,9 @@ Deal Comments Serving Layer
 Sync comments from Iceberg Gold to PostgreSQL DWH
 
 Flow:
-1. Read from gold.caresoft.cs_deal_api_trans_comments
-2. Deduplicate with DuckDB (by ticket_comments_id)
-3. Upsert to PostgreSQL serving layer
+1. Read all comments from gold.caresoft.cs_deal_api_trans_comments
+2. Delete existing records by ticket_id
+3. Insert new records
 """
 
 import os
@@ -14,9 +14,6 @@ from datetime import datetime, date, timedelta
 from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values
-import pyarrow as pa
-import pyarrow.parquet as pq
-import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 
@@ -38,7 +35,7 @@ TARGET_TABLE = os.getenv('SERVING_TABLE_NAME')
 
 
 class DealCommentsServingLayer:
-    """Sync deal comments from Iceberg Gold to PostgreSQL with DuckDB deduplication"""
+    """Sync deal comments from Iceberg Gold to PostgreSQL"""
 
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or (date.today() - timedelta(days=1))
@@ -90,14 +87,9 @@ class DealCommentsServingLayer:
             cursor.close()
 
     def get_comments_for_date(self):
-        """Read Gold comments for snapshot_date, deduplicate with DuckDB"""
+        """Read all Gold comments for snapshot_date"""
         logger.info(f"Reading comments for {self.snapshot_date}")
         table = self.gold_catalog.load_table(SOURCE_TABLE)
-        
-        # Temp dir
-        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"deal_comments_serving_{os.getpid()}.parquet")
         
         try:
             # Scan Gold for snapshot_date
@@ -105,84 +97,20 @@ class DealCommentsServingLayer:
                 row_filter=EqualTo("snapshot_date", self.snapshot_date.isoformat())
             )
             
-            # Stream to Parquet
-            batches = []
-            for batch in scan.to_arrow_batch_reader():
-                if len(batch) > 0:
-                    batches.append(batch)
+            # Convert to Arrow and then to tuples
+            arrow_table = scan.to_arrow()
+            columns = arrow_table.schema.names
             
-            if not batches:
-                return [], []
-                
-            combined = pa.Table.from_batches(batches)
-            pq.write_table(combined, temp_parquet)
-            del batches, combined
-            
-            # DuckDB connection
-            con = duckdb.connect(config={
-                'memory_limit': '2GB',
-                'preserve_insertion_order': 'false',
-                'temp_directory': temp_dir,
-                'threads': '1'
-            })
-            
-            # Deduplicate by ticket_comments_id
-            # Take latest by ingestion_timestamp
-            query = f"""
-            SELECT 
-                ticket_comments_id,
-                ticket_id,
-                "comment",
-                commentator_id,
-                username,
-                facebook,
-                facebook_name,
-                comment_source,
-                created_at,
-                attack_file_id,
-                file_name,
-                file_id,
-                download_connection_string,
-                call_id,
-                email_receive_id,
-                addition_details,
-                is_public,
-                can_hide,
-                can_remove,
-                can_reply_privately,
-                facebook_comment_state,
-                role_id,
-                avatar,
-                "path",
-                file_path,
-                snapshot_date,
-                ingestion_timestamp
-            FROM (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY ticket_comments_id 
-                        ORDER BY ingestion_timestamp DESC
-                    ) as rn
-                FROM read_parquet('{temp_parquet}')
-                WHERE ticket_comments_id IS NOT NULL
-            ) WHERE rn=1
-            """
-            
-            result = con.execute(query).fetch_arrow_table()
-            con.close()
-            
-            columns = result.schema.names
             rows = []
-            for i in range(len(result)):
-                rows.append(tuple(result.column(j)[i].as_py() for j in range(len(columns))))
-                
-            logger.success(f"Loaded {len(rows)} unique comments")
+            for i in range(len(arrow_table)):
+                rows.append(tuple(arrow_table.column(j)[i].as_py() for j in range(len(columns))))
+            
+            logger.success(f"Loaded {len(rows)} comments from gold")
             return columns, rows
             
-        finally:
-            if os.path.exists(temp_parquet):
-                try: os.remove(temp_parquet)
-                except: pass
+        except Exception as e:
+            logger.error(f"Error reading from gold: {e}")
+            raise
 
     def delete_existing_comments(self, ticket_ids: list):
         """Delete existing comments by ticket_id"""
@@ -218,7 +146,7 @@ class DealCommentsServingLayer:
             cursor.close()
 
     def insert_comments(self, columns, rows):
-        """Insert deduplicated comments"""
+        """Insert comments"""
         if not rows:
             return
 
