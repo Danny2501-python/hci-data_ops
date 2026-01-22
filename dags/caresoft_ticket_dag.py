@@ -160,7 +160,7 @@ task_ticket_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_ingestion.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume],
@@ -187,7 +187,7 @@ task_ticket_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_detail_enrichment.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -217,7 +217,7 @@ task_ticket_api_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_api_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -248,7 +248,7 @@ task_ticket_source_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_source_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -279,7 +279,7 @@ task_ticket_source_metadata = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_source_metadata.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume],
@@ -306,7 +306,7 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/ticket/ticket_source_metadata_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

@@ -160,7 +160,7 @@ task_contact_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_ingestion.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume],
@@ -187,7 +187,7 @@ task_contact_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_detail_enrichment.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -217,7 +217,7 @@ task_contact_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/contact/contact_detail_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

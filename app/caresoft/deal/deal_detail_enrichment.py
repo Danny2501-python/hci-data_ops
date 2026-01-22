@@ -635,7 +635,7 @@ class DealDetailEnrichment:
 
 
 def main():
-    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
     
     job = DealDetailEnrichment(snapshot_date)

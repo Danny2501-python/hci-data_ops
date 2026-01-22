@@ -173,7 +173,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/erp_webhook_ingestion.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume],
@@ -204,7 +204,7 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/webhook_transformation_silver.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -237,7 +237,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_enrichment.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -271,7 +271,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -299,7 +299,7 @@ task_refresh_serving_layer_v2 = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ (dag_run.conf or {}).get("snapshot_date") or ds }}'
+        '{{ dag_run.conf.get("snapshot_date", "") }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

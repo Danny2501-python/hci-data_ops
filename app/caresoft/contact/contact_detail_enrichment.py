@@ -469,7 +469,7 @@ def main():
     Usage: python contact_detail_enrichment.py <snapshot_date>
     """
     # Parse snapshot_date from command line or use today
-    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
     
     logger.info(f"Starting Contact Detail Enrichment for snapshot_date={snapshot_date}")
