@@ -577,6 +577,8 @@ class DealDetailEnrichment:
                     }
                     batch_error_records.append(error_record)
                     total_errors += 1
+                    if total_errors <= 5:  # Log first 5 errors for debugging
+                        logger.warning(f"⚠️ Error for deal_id {deal_id}: {str(error)[:200]}")
                 
                 # Rate limiting
                 time.sleep(0.05)  # Faster sleep since we batch writes
@@ -624,10 +626,19 @@ class DealDetailEnrichment:
             
             # Flush remaining errors
             if batch_error_records:
+                logger.info(f"🔍 DEBUG: Flushing {len(batch_error_records)} remaining error records...")
                 pyarrow_schema_err = schema_to_pyarrow(error_table.schema())
                 df_err = pa.Table.from_pylist(batch_error_records, schema=pyarrow_schema_err)
                 error_table.append(df_err)
-                logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records.")
+                
+                # Verify write with snapshot ID
+                try:
+                    snapshot_id = error_table.current_snapshot().snapshot_id
+                    logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records. Snapshot ID: {snapshot_id}")
+                except:
+                    logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records.")
+            else:
+                logger.info(f"🔍 DEBUG: No error records to flush for brand {brand['name']}")
             
             gc.collect()
         
