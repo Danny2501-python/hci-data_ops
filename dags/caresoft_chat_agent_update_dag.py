@@ -120,7 +120,7 @@ task_agent_update = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     # Use dag_run.conf to avoid params caching issues
-    arguments=['/app/caresoft/chat/chat_agent_update.py', '{{ dag_run.conf.get("snapshot_date", "") }}'],
+    arguments=['/app/caresoft/chat/chat_agent_update.py', '{{ dag_run.conf.get("snapshot_date") | default("", true) }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb'},
@@ -140,7 +140,7 @@ task_refresh_serving = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     # Use dag_run.conf to avoid params caching issues
-    arguments=['/app/caresoft/chat/chat_serving_layer.py', '{{ dag_run.conf.get("snapshot_date", "") }}'],
+    arguments=['/app/caresoft/chat/chat_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") | default("", true) }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={
