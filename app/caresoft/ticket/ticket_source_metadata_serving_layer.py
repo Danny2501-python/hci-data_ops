@@ -13,7 +13,7 @@ UPSERT Strategy:
 
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values

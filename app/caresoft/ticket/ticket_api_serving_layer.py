@@ -16,7 +16,7 @@ Note: Bronze keeps raw data with duplicates from 3 API calls (updated, created, 
 
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pyarrow as pa
 import pyarrow.parquet as pq
 import duckdb

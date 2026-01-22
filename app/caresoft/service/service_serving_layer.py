@@ -8,7 +8,7 @@ Flow:
 import os
 import sys
 import duckdb
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from loguru import logger
 import psycopg2
 from psycopg2.extras import execute_values

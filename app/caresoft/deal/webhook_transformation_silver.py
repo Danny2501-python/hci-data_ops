@@ -11,7 +11,7 @@ import os
 import sys
 import json
 import ast
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo

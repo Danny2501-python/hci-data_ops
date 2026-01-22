@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from loguru import logger
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo

@@ -19,7 +19,7 @@ NEW LAKEHOUSE APPROACH:
 
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import requests
 import time
 import pyarrow as pa

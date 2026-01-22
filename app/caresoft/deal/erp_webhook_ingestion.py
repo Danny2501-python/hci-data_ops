@@ -6,7 +6,7 @@ Simplified version: Always full load, drop partition if exists, then append
 
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pandas as pd
 from pyiceberg.catalog import load_catalog
 from sqlalchemy import create_engine
