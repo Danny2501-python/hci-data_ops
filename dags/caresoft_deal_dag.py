@@ -319,11 +319,82 @@ task_refresh_serving_layer_v2 = KubernetesPodOperator(
 )
 
 
+# ============================================================================
+# TASK 5: Transform Deal Comments (JSON → Flat Table)
+# ============================================================================
+
+task_deal_comments_transformation = KubernetesPodOperator(
+    task_id='deal_comments_transformation',
+    name='caresoft-deal-comments-transformation',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_comments_transformation.py',
+        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+
+# ============================================================================
+# TASK 6: Deal Comments Serving Layer (Iceberg → PostgreSQL)
+# ============================================================================
+
+task_deal_comments_serving_layer = KubernetesPodOperator(
+    task_id='deal_comments_serving_layer',
+    name='caresoft-deal-comments-serving',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_comments_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_product_uri,
+        'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments_v1',
+    },
+    
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+
 
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# SIMPLIFIED FLOW: ERP → Bronze → Silver → Gold Enrichment → Serving (Production V1 & Production V2)
+# FLOW: 
+# 1. ERP → Bronze
+# 2. Bronze → Silver
+# 3. Silver → Gold (Enrichment)
+# 4. Gold → Comments (Flatten JSON)
+# 5. Comments → Serving (PostgreSQL)
+# 6. Gold → Serving (V1 & V2)
+
 task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
+task_deal_detail_enrichment >> task_deal_comments_transformation >> task_deal_comments_serving_layer
 task_deal_detail_enrichment >> [task_refresh_serving_layer, task_refresh_serving_layer_v2]
