@@ -201,13 +201,31 @@ class DealCommentsServingLayer:
                 'avatar', 'path', 'file_path', 'snapshot_date', 'ingestion_timestamp'
             ]
             
+            # Numeric columns that need integer conversion
+            numeric_columns = [
+                'ticket_comments_id', 'ticket_id', 'commentator_id',
+                'is_public', 'facebook_comment_state', 'role_id'
+            ]
+            
             # Ensure all columns exist
             for col in columns:
                 if col not in df.columns:
                     df[col] = None
             
             # Select columns in order
-            df = df[columns]
+            df = df[columns].copy()
+            
+            # Clean numeric columns - convert to int, handle NaN/NULL
+            for col in numeric_columns:
+                if col in df.columns:
+                    # Convert to numeric, coercing errors to NaN
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    # Convert NaN to None
+                    df[col] = df[col].where(pd.notna(df[col]), None)
+                    # Convert to int where not None
+                    df[col] = df[col].apply(lambda x: int(x) if pd.notna(x) else None)
+            
+            logger.info(f"Processing {len(df)} comments for insertion")
             
             # Convert to list of tuples
             records = [tuple(row) for row in df.values]
@@ -228,6 +246,14 @@ class DealCommentsServingLayer:
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Failed to insert comments: {e}")
+            # Log problematic rows for debugging
+            try:
+                for idx, row in df.iterrows():
+                    for col in numeric_columns:
+                        if col in df.columns and pd.notna(row[col]):
+                            logger.debug(f"Row {idx}, Column {col}: {row[col]} (type: {type(row[col])})")
+            except:
+                pass
             raise
         finally:
             cursor.close()
