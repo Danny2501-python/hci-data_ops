@@ -375,7 +375,7 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
         'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments_v1',
     },
     
-    container_resources=resource_requirements_serving,
+    container_resources=resource_requirements,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
