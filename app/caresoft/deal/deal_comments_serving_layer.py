@@ -214,13 +214,14 @@ class DealCommentsServingLayer:
             ]
             
             # Numeric columns that need integer conversion
+            # INTEGER range in PostgreSQL: -2147483648 to 2147483647
             numeric_columns = {
-                'ticket_comments_id': (-1e20, 1e20),
-                'ticket_id': (-1e20, 1e20),
-                'commentator_id': (-1e20, 1e20),
-                'is_public': (-128, 127),
-                'facebook_comment_state': (-32768, 32767),
-                'role_id': (-32768, 32767)
+                'ticket_comments_id': None,  # NUMERIC(20) - no strict range
+                'ticket_id': None,           # NUMERIC(20) - no strict range
+                'commentator_id': None,      # NUMERIC(20) - no strict range
+                'is_public': (-2147483648, 2147483647),           # INTEGER
+                'facebook_comment_state': (-2147483648, 2147483647),  # INTEGER
+                'role_id': (-2147483648, 2147483647)              # INTEGER
             }
             
             # Ensure all columns exist
@@ -232,29 +233,41 @@ class DealCommentsServingLayer:
             df = df[columns].copy()
             
             # Clean numeric columns - convert to int, handle NaN/NULL
-            for col in numeric_columns.keys():
+            for col, range_limits in numeric_columns.items():
                 if col in df.columns:
-                    min_val, max_val = numeric_columns[col]
-                    
-                    def safe_convert(x):
+                    def safe_convert(x, col_name=col, limits=range_limits):
                         if pd.isna(x):
                             return None
                         try:
                             # Convert to float first to handle scientific notation
                             num_val = float(x)
-                            # Check range
-                            if min_val <= num_val <= max_val:
-                                return int(num_val)
-                            else:
-                                logger.warning(f"Value {x} out of range for column {col}, setting to NULL")
-                                return None
-                        except (ValueError, TypeError, OverflowError):
-                            logger.warning(f"Cannot convert {x} to int for column {col}, setting to NULL")
+                            
+                            # Check range if limits specified
+                            if limits is not None:
+                                min_val, max_val = limits
+                                if not (min_val <= num_val <= max_val):
+                                    logger.warning(f"[{col_name}] Value {num_val} out of range [{min_val}, {max_val}], setting to NULL")
+                                    return None
+                            
+                            return int(num_val)
+                        except (ValueError, TypeError, OverflowError) as e:
+                            logger.warning(f"[{col_name}] Cannot convert '{x}' to int: {e}, setting to NULL")
                             return None
+                    
+                    # Log column info before conversion
+                    non_null_count = df[col].notna().sum()
+                    if non_null_count > 0:
+                        logger.debug(f"Converting column '{col}' with {non_null_count} non-null values")
                     
                     df[col] = df[col].apply(safe_convert)
             
             logger.info(f"Processing {len(df)} comments for insertion")
+            
+            # Validate data before insert
+            for col in numeric_columns.keys():
+                if col in df.columns:
+                    non_null = df[col].notna().sum()
+                    logger.debug(f"Column '{col}': {non_null} non-null values after conversion")
             
             # Convert to list of tuples
             records = [tuple(row) for row in df.values]
@@ -275,6 +288,16 @@ class DealCommentsServingLayer:
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"Failed to insert comments: {e}")
+            
+            # Debug: log first few problematic rows
+            try:
+                logger.error(f"DataFrame shape: {df.shape}")
+                for col in numeric_columns.keys():
+                    if col in df.columns:
+                        logger.error(f"Column '{col}' dtypes: {df[col].dtype}, null count: {df[col].isna().sum()}")
+            except Exception as debug_err:
+                logger.error(f"Error during debugging: {debug_err}")
+            
             raise
         finally:
             cursor.close()
