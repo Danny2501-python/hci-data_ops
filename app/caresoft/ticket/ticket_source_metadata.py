@@ -319,7 +319,7 @@ def main():
     Usage: python ticket_source_metadata.py <snapshot_date>
     """
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
-    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
+    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
     
     # Load all active brands
     brands = get_active_brands()

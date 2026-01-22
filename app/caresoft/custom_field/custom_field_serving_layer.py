@@ -247,7 +247,7 @@ def main():
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
     field_type = sys.argv[2] if len(sys.argv) > 2 else 'ticket'
     
-    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else date.today()
+    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
     
     job = CustomFieldServingLayer(snapshot_date, field_type=field_type)
     job.run()
