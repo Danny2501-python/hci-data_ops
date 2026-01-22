@@ -26,6 +26,7 @@ from pyiceberg.types import (
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
 from loguru import logger
+from common.utils import get_current_timestamp_naive
 import gc
 
 # Iceberg configuration
@@ -188,7 +189,7 @@ class DealCommentsTransformation:
                     if isinstance(comment, dict):
                         # Add metadata
                         comment['snapshot_date'] = self.snapshot_date
-                        comment['ingestion_timestamp'] = datetime.now()
+                        comment['ingestion_timestamp'] = get_current_timestamp_naive()
                         all_comments.append(comment)
                 
             except Exception as e:
