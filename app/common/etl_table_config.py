@@ -23,7 +23,7 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-TABLE_CONFIG_TABLE = 'etl_metadata.table_config'
+TABLE_CONFIG_TABLE = 'call_functions.table_config'
 
 
 def ensure_table_config_table_exists():
@@ -52,34 +52,23 @@ def ensure_table_config_table_exists():
         
         # Schema matching declare_table_etl from PostgreSQL
         schema = Schema(
-            # Primary key
             NestedField(1, "id", IntegerType(), required=False),
-            
-            # Table configuration
             NestedField(2, "table_name", StringType(), required=False),
             NestedField(3, "table_name_source", StringType(), required=False),
-            NestedField(4, "source", StringType(), required=False),  # ERP, GiaoViec, etc.
-            NestedField(5, "server", StringType(), required=False),  # IP address
-            
-            # Timestamps
+            NestedField(4, "source", StringType(), required=False),
+            NestedField(5, "server", StringType(), required=False),
             NestedField(6, "created_date", TimestampType(), required=False),
             NestedField(7, "updated_date", TimestampType(), required=False),
-            NestedField(8, "update_time", TimestampType(), required=False),
-            
-            # Flags
-            NestedField(9, "active", BooleanType(), required=False),
-            NestedField(10, "is_transform", BooleanType(), required=False),
-            NestedField(11, "truncate", BooleanType(), required=False),
-            
-            # ETL configuration
-            NestedField(12, "keyword", StringType(), required=False),  # Date column for incremental
-            NestedField(13, "primary_keyword", StringType(), required=False),  # Primary keys
-            NestedField(14, "rename_column", StringType(), required=False),  # JSON mapping
-            NestedField(15, "consider", StringType(), required=False),  # Additional WHERE clause
-            
-            # Execution tracking
-            NestedField(16, "result", StringType(), required=False),  # Last run result
-            NestedField(17, "ghi_chu", StringType(), required=False),  # Notes
+            NestedField(8, "active", BooleanType(), required=False),
+            NestedField(9, "keyword", StringType(), required=False),
+            NestedField(10, "rename_column", StringType(), required=False),
+            NestedField(11, "ghi_chu", StringType(), required=False),
+            NestedField(12, "result", StringType(), required=False),
+            NestedField(13, "update_time", TimestampType(), required=False),
+            NestedField(14, "primary_keyword", StringType(), required=False),
+            NestedField(15, "is_transfrom", BooleanType(), required=False),
+            NestedField(16, "consider", StringType(), required=False),
+            NestedField(17, "truncate", BooleanType(), required=False),
         )
         
         table = gold_catalog.create_table(
@@ -104,7 +93,10 @@ def get_active_table_configs(table_id: Optional[int] = None) -> List[Dict]:
     config_table = ensure_table_config_table_exists()
     
     # Build filter
-    filters = [EqualTo("active", True)]
+    filters = [
+        EqualTo("active", True),
+        EqualTo("is_transfrom", True)
+    ]
     if table_id:
         filters.append(EqualTo("id", table_id))
     
@@ -122,15 +114,18 @@ def get_active_table_configs(table_id: Optional[int] = None) -> List[Dict]:
                 "table_name_source": batch["table_name_source"][i].as_py(),
                 "source": batch["source"][i].as_py(),
                 "server": batch["server"][i].as_py(),
+                "created_date": batch["created_date"][i].as_py(),
+                "updated_date": batch["updated_date"][i].as_py(),
                 "active": batch["active"][i].as_py(),
-                "is_transform": batch["is_transform"][i].as_py(),
-                "truncate": batch["truncate"][i].as_py(),
                 "keyword": batch["keyword"][i].as_py(),
-                "primary_keyword": batch["primary_keyword"][i].as_py(),
                 "rename_column": batch["rename_column"][i].as_py(),
-                "consider": batch["consider"][i].as_py(),
-                "result": batch["result"][i].as_py(),
                 "ghi_chu": batch["ghi_chu"][i].as_py(),
+                "result": batch["result"][i].as_py(),
+                "update_time": batch["update_time"][i].as_py(),
+                "primary_keyword": batch["primary_keyword"][i].as_py(),
+                "is_transfrom": batch["is_transfrom"][i].as_py(),
+                "consider": batch["consider"][i].as_py(),
+                "truncate": batch["truncate"][i].as_py(),
             }
             configs.append(config)
     
@@ -169,6 +164,7 @@ def get_table_configs_by_source(source: str) -> List[Dict]:
     scan = config_table.scan(
         row_filter=And(
             EqualTo("active", True),
+            EqualTo("is_transfrom", True),
             EqualTo("source", source)
         )
     )
@@ -182,15 +178,18 @@ def get_table_configs_by_source(source: str) -> List[Dict]:
                 "table_name_source": batch["table_name_source"][i].as_py(),
                 "source": batch["source"][i].as_py(),
                 "server": batch["server"][i].as_py(),
+                "created_date": batch["created_date"][i].as_py(),
+                "updated_date": batch["updated_date"][i].as_py(),
                 "active": batch["active"][i].as_py(),
-                "is_transform": batch["is_transform"][i].as_py(),
-                "truncate": batch["truncate"][i].as_py(),
                 "keyword": batch["keyword"][i].as_py(),
-                "primary_keyword": batch["primary_keyword"][i].as_py(),
                 "rename_column": batch["rename_column"][i].as_py(),
-                "consider": batch["consider"][i].as_py(),
-                "result": batch["result"][i].as_py(),
                 "ghi_chu": batch["ghi_chu"][i].as_py(),
+                "result": batch["result"][i].as_py(),
+                "update_time": batch["update_time"][i].as_py(),
+                "primary_keyword": batch["primary_keyword"][i].as_py(),
+                "is_transfrom": batch["is_transfrom"][i].as_py(),
+                "consider": batch["consider"][i].as_py(),
+                "truncate": batch["truncate"][i].as_py(),
             }
             configs.append(config)
     
