@@ -215,7 +215,7 @@ class BronzeIngestion:
             if keyword and keyword.strip() and keyword.lower() != 'none':
                 cutoff_date = self.snapshot_date - timedelta(days=days_ago)
                 cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
-                where_clause = f"date({keyword}) + interval '7 hours' >= '{cutoff_date_str}' AND {consider}"
+                where_clause = f"({keyword} + interval '7 hour')::date >= '{cutoff_date_str}' AND {consider}"
             else:
                 where_clause = consider
         else:
