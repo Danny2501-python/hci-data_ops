@@ -207,15 +207,15 @@ class BronzeIngestion:
         Memory efficient processing for large datasets.
         """
         table_source = config['table_name_source']
-        keyword = config['keyword']
-        consider = config['consider'] or '1=1'
+        consider = config.get('consider') or '1=1'
         
         # Build WHERE clause (reused logic)
+        keyword = config.get('keyword')
         if load_type == 'incremental':
-            if keyword and keyword.strip() and keyword.lower() != 'none':
+            if keyword and str(keyword).strip() and str(keyword).lower() != 'none':
                 cutoff_date = self.snapshot_date - timedelta(days=days_ago)
                 cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
-                where_clause = f"({keyword} + interval '7 hour')::date >= '{cutoff_date_str}' AND {consider}"
+                where_clause = f"({keyword} AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= '{cutoff_date_str}' AND {consider}"
             else:
                 where_clause = consider
         else:
