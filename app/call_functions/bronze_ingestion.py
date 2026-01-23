@@ -34,6 +34,7 @@ import gc
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from common.etl_table_config import get_active_table_configs
+from common.utils import get_current_timestamp_naive
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -193,120 +194,150 @@ class BronzeIngestion:
             logger.success(f"✅ Created table {bronze_table_name}")
             return table
     
-    def fetch_data_from_source(
+    def stream_and_ingest(
         self, 
         engine, 
+        table,
         config: Dict,
         days_ago: int = 10,
         load_type: str = 'incremental'
-    ) -> pd.DataFrame:
+    ) -> int:
         """
-        Fetch data from source database
-        Supports incremental and full load
+        Stream data from SQL -> PyArrow -> Iceberg (Bypassing Pandas)
+        Memory efficient processing for large datasets.
         """
         table_source = config['table_name_source']
         keyword = config['keyword']
         consider = config['consider'] or '1=1'
         
-        # Build WHERE clause
-        if load_type == 'incremental' and keyword and keyword.strip():
-            # Incremental load
-            cutoff_date = self.snapshot_date - timedelta(days=days_ago)
-            cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
-            
-            where_clause = f"""
-                date({keyword}) + interval '7 hours' >= '{cutoff_date_str}'
-                AND {consider}
-            """
+        # Build WHERE clause (reused logic)
+        if load_type == 'incremental':
+            if keyword and keyword.strip() and keyword.lower() != 'none':
+                cutoff_date = self.snapshot_date - timedelta(days=days_ago)
+                cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
+                where_clause = f"date({keyword}) + interval '7 hours' >= '{cutoff_date_str}' AND {consider}"
+            else:
+                where_clause = consider
         else:
-            # Full load
             where_clause = consider
-        
+            
         # Build query
-        query = text(f"""
-            SELECT * 
-            FROM {table_source}
-            WHERE {where_clause}
-            ORDER BY {config['primary_keyword'] or 'id'}
-        """)
+        query = text(f"SELECT * FROM {table_source} WHERE {where_clause}")
         
-        logger.info(f"Fetching data from {table_source}...")
+        BATCH_SIZE = 50000
+        total_ingested = 0
+        
+        logger.info(f"Starting STREAM ingestion for {config['table_name']}")
         
         try:
-            df = pd.read_sql(query, engine)
-            logger.info(f"Fetched {len(df)} records")
-            return df
+             # Get columns first to handle mapping and types
+            with engine.connect() as conn:
+                # Get one row to determine schema and columns
+                limit_query = text(f"SELECT * FROM {table_source} WHERE {where_clause} LIMIT 0")
+                result_proxy = conn.execute(limit_query)
+                source_columns = result_proxy.keys()
+                
+            # Prepare column mapping
+            rename_map = {}
+            if config['rename_column']:
+                try:
+                    rename_map = json.loads(config['rename_column'])
+                except Exception as e:
+                    logger.warning(f"Failed to parse rename_column: {e}")
+
+            # Define target schema based on Iceberg table
+            target_schema = schema_to_pyarrow(table.schema())
+            
+            with engine.connect().execution_options(stream_results=True) as conn:
+                result = conn.execute(query)
+                
+                while True:
+                    rows = result.fetchmany(BATCH_SIZE)
+                    if not rows:
+                        break
+                        
+                    batch_size = len(rows)
+                    logger.info(f"Processing batch of {batch_size} records...")
+                    
+                    # Convert to PyArrow Table directly from rows
+                    # We create a dictionary of arrays
+                    columns_data = list(zip(*rows))
+                    arrow_arrays = []
+                    
+                    # Iterate through target schema fields to build arrays
+                    # This logic aligns source columns with target schema
+                    
+                    # Create a map of source col name -> data index
+                    col_to_idx = {name: i for i, name in enumerate(source_columns)}
+                    
+                    for field in target_schema:
+                        field_name = field.name
+                        
+                        # Handle metadata columns
+                        if field_name == 'snapshot_date':
+                            arrow_arrays.append(pa.array([self.snapshot_date] * batch_size, type=pa.date32()))
+                            continue
+                        if field_name == 'ingestion_timestamp':
+                            arrow_arrays.append(pa.array([get_current_timestamp_naive()] * batch_size, type=pa.timestamp('us')))
+                            continue
+                        if field_name == 'source_server':
+                            arrow_arrays.append(pa.array([config['server']] * batch_size, type=pa.string()))
+                            continue
+                            
+                        # Find source column name (reverse default mapping)
+                        # We need to find which source column maps to this target field
+                        # If renamed: target = rename_map[source] -> source?
+                        # Inefficient to search every time, but ok for now. 
+                        # Better: compute source_field_name for each target field once outside loop
+                        
+                        source_field_name = None
+                        
+                        # Check direct match
+                        if field_name in source_columns:
+                            source_field_name = field_name
+                        
+                        # Check reverse mapping
+                        # rename_map is {source: target}
+                        if not source_field_name:
+                            for s, t in rename_map.items():
+                                if t == field_name and s in source_columns:
+                                    source_field_name = s
+                                    break
+                                    
+                        if source_field_name and source_field_name in col_to_idx:
+                            idx = col_to_idx[source_field_name]
+                            data = columns_data[idx]
+                            
+                            # Handle type conversion (float -> int if needed)
+                            # PyArrow handles most, but we might need explicit checks if logic requires
+                            # For simplicity getting PyArrow to infer or casting
+                            
+                            try:
+                                arrow_arrays.append(pa.array(data, type=field.type))
+                            except Exception:
+                                # Fallback: let PyArrow infer then cast
+                                arrow_arrays.append(pa.array(data).cast(field.type))
+                        else:
+                            # Configured 100% dynamic schema? 
+                            # If ensuring table exists created the table based on source_df, then names usually match.
+                            # If manual override, might be null.
+                            arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
+
+                    batch_table = pa.Table.from_arrays(arrow_arrays, schema=target_schema)
+                    
+                    # Append to Iceberg
+                    table.append(batch_table)
+                    total_ingested += batch_size
+                    
+                    del rows
+                    del columns_data
+                    del batch_table
+                    gc.collect()
+                    
+            return total_ingested
+            
         except Exception as e:
-            logger.error(f"Failed to fetch data: {e}")
-            raise
-    
-    def transform_data(self, df: pd.DataFrame, config: Dict) -> pd.DataFrame:
-        """
-        Apply transformations:
-        - Column renaming
-        - Type conversions
-        """
-        # Rename columns if configured
-        if config['rename_column']:
-            try:
-                column_mapping = json.loads(config['rename_column'])
-                df = df.rename(columns=column_mapping)
-                logger.info(f"Renamed columns: {column_mapping}")
-            except Exception as e:
-                logger.warning(f"Failed to rename columns: {e}")
-        
-        # Convert float to int where appropriate
-        for col in df.select_dtypes(include=['float']).columns:
-            has_decimal = df[col].dropna().apply(
-                lambda x: isinstance(x, float) and not x.is_integer()
-            ).any()
-            
-            if not has_decimal:
-                df[col] = df[col].astype(pd.Int64Dtype())
-        
-        return df
-    
-    def write_to_bronze(
-        self, 
-        df: pd.DataFrame, 
-        table_name: str,
-        config: Dict
-    ):
-        """
-        Write data to Bronze Iceberg table
-        """
-        if df.empty:
-            logger.warning(f"No data to write for {table_name}")
-            return
-        
-        # Add metadata columns
-        df['snapshot_date'] = self.snapshot_date
-        df['ingestion_timestamp'] = datetime.now()
-        df['source_server'] = config['server']
-        
-        # Ensure table exists
-        table = self.ensure_bronze_table_exists(table_name, df)
-        
-        # Delete old partition if truncate mode
-        if config['truncate']:
-            try:
-                logger.info(f"Truncating partition for {self.snapshot_date}...")
-                table.delete(
-                    delete_filter=EqualTo("snapshot_date", self.snapshot_date)
-                )
-            except Exception as e:
-                logger.warning(f"Could not delete partition: {e}")
-        
-        # Convert to PyArrow and write
-        try:
-            pyarrow_schema = schema_to_pyarrow(table.schema())
-            arrow_table = pa.Table.from_pandas(df, schema=pyarrow_schema)
-            
-            table.append(arrow_table)
-            logger.success(f"✅ Wrote {len(df)} records to {table_name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to write to Bronze: {e}")
+            logger.error(f"Stream ingestion failed: {e}")
             raise
     
     def process_table(self, config: Dict, days_ago: int = 10, load_type: str = 'incremental'):
@@ -327,21 +358,46 @@ class BronzeIngestion:
                 logger.error(f"Skipping {table_name} - no connection")
                 return
             
-            # Fetch data
-            df = self.fetch_data_from_source(engine, config, days_ago, load_type)
+            # 1. Ensure Table Exists & Get Schema (using empty query)
+            # Fetch 0 rows to infer schema efficiently
+            query_schema = text(f"SELECT * FROM {config['table_name_source']} WHERE 1=0")
+            df_schema = pd.read_sql(query_schema, engine)
             
-            # Transform
-            df = self.transform_data(df, config)
-            
-            # Write to Bronze
-            self.write_to_bronze(df, table_name, config)
+            # Apply renaming to schema-df
+            if config['rename_column']:
+                try:
+                    mapping = json.loads(config['rename_column'])
+                    df_schema = df_schema.rename(columns=mapping)
+                except Exception as e:
+                    logger.warning(f"Failed to prepare schema renaming: {e}")
+
+            table = self.ensure_bronze_table_exists(table_name, df_schema)
+
+            # 2. Truncate Partition if needed (Logic moved from write_to_bronze)
+            if config['truncate']:
+                try:
+                    logger.info(f"Truncating partition for {self.snapshot_date}...")
+                    table.delete(
+                        delete_filter=EqualTo("snapshot_date", self.snapshot_date)
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not delete partition: {e}")
+
+            # 3. Stream Data (replaces fetch -> transform -> write)
+            total_records = self.stream_and_ingest(
+                engine, 
+                table, 
+                config, 
+                days_ago, 
+                load_type
+            )
             
             # Cleanup
             engine.dispose()
-            del df
+            del df_schema
             gc.collect()
             
-            logger.success(f"✅ Completed {table_name}")
+            logger.success(f"✅ Completed {table_name} - {total_records} records")
             
         except Exception as e:
             logger.error(f"❌ Failed {table_name}: {e}")
