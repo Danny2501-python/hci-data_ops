@@ -215,14 +215,18 @@ class BronzeIngestion:
             if keyword and str(keyword).strip() and str(keyword).lower() != 'none':
                 cutoff_date = self.snapshot_date - timedelta(days=days_ago)
                 cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
-                where_clause = f"({keyword} AT TIME ZONE 'Asia/Ho_Chi_Minh')::date >= '{cutoff_date_str}' AND {consider}"
+                # Use interval addition for robust timezone handling (UTC+7)
+                # This avoids 'timezone not found' errors if the DB lacks full timezone data
+                where_clause = f"({keyword} + interval '7 hour')::date >= '{cutoff_date_str}' AND {consider}"
             else:
                 where_clause = consider
         else:
             where_clause = consider
             
         # Build query
-        query = text(f"SELECT * FROM {table_source} WHERE {where_clause}")
+        query_str = f"SELECT * FROM {table_source} WHERE {where_clause}"
+        logger.info(f"Generated Query: {query_str}")
+        query = text(query_str)
         
         BATCH_SIZE = 50000
         total_ingested = 0
@@ -437,10 +441,14 @@ def main():
     # Optional: table_id for single table processing
     table_id = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
 
+    logger.info(f"Raw Arguments: {sys.argv}")
+    
     # Optional: load_type
     load_type = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else 'incremental'
+    load_type = load_type.lower().strip()
     
-    logger.info(f"Starting Bronze Ingestion for {snapshot_date}")
+    logger.info(f"Starting Bronze Ingestion")
+    logger.info(f"Arguments -> Snapshot Date: {snapshot_date}, Table ID: {table_id}, Load Type: {load_type}")
     
     try:
         job = BronzeIngestion(snapshot_date)
