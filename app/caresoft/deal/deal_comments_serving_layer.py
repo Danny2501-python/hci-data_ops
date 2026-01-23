@@ -66,19 +66,29 @@ class DealCommentsServingLayer:
 
 
     def ensure_serving_table_exists(self, columns):
-        """Create serving table (no PK)"""
+        """Create serving table with composite index on (brand_id, ticket_id)"""
         cursor = self.pg_conn.cursor()
         try:
             column_defs = [f'"{col}" TEXT' for col in columns]
             
+            # Create table
             sql = f"""
             CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
                 {', '.join(column_defs)}
             )
             """
             cursor.execute(sql)
+            
+            # Create composite index on (brand_id, ticket_id) for multi-brand isolation
+            table_name_safe = TARGET_TABLE.replace('.', '_')
+            index_sql = f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name_safe}_brand_ticket 
+            ON {TARGET_TABLE} (brand_id, ticket_id)
+            """
+            cursor.execute(index_sql)
+            
             self.pg_conn.commit()
-            logger.info(f"Ensured table {TARGET_TABLE} exists")
+            logger.info(f"Ensured table {TARGET_TABLE} exists with composite index")
                 
         except Exception as e:
             self.pg_conn.rollback()
@@ -92,9 +102,9 @@ class DealCommentsServingLayer:
         table = self.gold_catalog.load_table(SOURCE_TABLE)
         
         try:
-            # Scan Gold for snapshot_date
+            # Scan Gold for snapshot_date (use date object, not string)
             scan = table.scan(
-                row_filter=EqualTo("snapshot_date", self.snapshot_date.isoformat())
+                row_filter=EqualTo("snapshot_date", self.snapshot_date)
             )
             
             # Convert to Arrow and then to tuples
@@ -112,58 +122,71 @@ class DealCommentsServingLayer:
             logger.error(f"Error reading from gold: {e}")
             raise
 
-    def delete_existing_comments(self, ticket_ids: list):
-        """Delete existing comments by ticket_id"""
-        if not ticket_ids:
+    def sync_comments(self, columns, rows):
+        """Delete existing + Insert new comments in single transaction"""
+        if not rows:
+            logger.warning("No comments to sync")
             return
 
-        valid_ids = []
-        for tid in ticket_ids:
-            if tid is not None:
+        # Ensure table exists first
+        self.ensure_serving_table_exists(columns)
+        
+        # Extract and validate ticket_ids and brand_ids
+        ticket_id_idx = columns.index('ticket_id')
+        brand_id_idx = columns.index('brand_id')
+        
+        # Build list of (brand_id, ticket_id) tuples for deletion
+        delete_pairs = set()
+        for row in rows:
+            brand_id = row[brand_id_idx]
+            ticket_id = row[ticket_id_idx]
+            
+            # Validate both IDs
+            if brand_id is not None and ticket_id is not None:
                 try:
-                    v = float(tid)
-                    if -1e20 < v < 1e20:
-                        valid_ids.append(v)
+                    b = float(brand_id)
+                    t = float(ticket_id)
+                    if -1e20 < b < 1e20 and -1e20 < t < 1e20:
+                        delete_pairs.add((b, t))
                 except Exception:
                     pass
-
-        if not valid_ids:
-            return
-
-        cursor = self.pg_conn.cursor()
-        try:
-            placeholders = ",".join(["%s"] * len(valid_ids))
-            cursor.execute(
-                f"DELETE FROM {TARGET_TABLE} WHERE ticket_id IN ({placeholders})",
-                valid_ids
-            )
-            self.pg_conn.commit()
-            logger.info(f"Deleted records for {len(set(valid_ids))} ticket_ids")
-        except Exception:
-            self.pg_conn.rollback()
-            raise
-        finally:
-            cursor.close()
-
-    def insert_comments(self, columns, rows):
-        """Insert comments"""
-        if not rows:
-            return
-
-        self.ensure_serving_table_exists(columns)
-        cursor = self.pg_conn.cursor()
         
+        # Log brand distribution
+        brand_counts = {}
+        for brand_id, _ in delete_pairs:
+            brand_counts[brand_id] = brand_counts.get(brand_id, 0) + 1
+        logger.info(f"Brand distribution: {brand_counts}")
+
+        cursor = self.pg_conn.cursor()
         try:
-            cols_str = ', '.join([f'"{c}"' for c in columns])
+            # 1. Delete existing records by (brand_id, ticket_id) pairs
+            if delete_pairs:
+                # Build WHERE clause: (brand_id = %s AND ticket_id = %s) OR ...
+                conditions = []
+                params = []
+                for brand_id, ticket_id in delete_pairs:
+                    conditions.append("(brand_id = %s AND ticket_id = %s)")
+                    params.extend([brand_id, ticket_id])
+                
+                where_clause = " OR ".join(conditions)
+                delete_sql = f"DELETE FROM {TARGET_TABLE} WHERE {where_clause}"
+                
+                cursor.execute(delete_sql, params)
+                logger.info(f"Deleted records for {len(delete_pairs)} (brand_id, ticket_id) pairs")
             
+            # 2. Insert new records
+            cols_str = ', '.join([f'"{c}"' for c in columns])
             execute_values(
                 cursor,
                 f"INSERT INTO {TARGET_TABLE} ({cols_str}) VALUES %s",
                 rows,
                 page_size=1000
             )
+            
+            # 3. Commit transaction (atomic)
             self.pg_conn.commit()
-            logger.success(f"Inserted {len(rows)} records")
+            logger.success(f"Synced {len(rows)} comments for {len(delete_pairs)} (brand, ticket) pairs")
+            
         except Exception:
             self.pg_conn.rollback()
             raise
@@ -177,13 +200,9 @@ class DealCommentsServingLayer:
             self.connect_postgres()
             
             columns, rows = self.get_comments_for_date()
-            if rows:
-                # Extract ticket_ids for deletion
-                ticket_id_idx = columns.index('ticket_id')
-                ticket_ids = list(set(row[ticket_id_idx] for row in rows))
-                
-                self.delete_existing_comments(ticket_ids)
-                self.insert_comments(columns, rows)
+            
+            # Sync comments (delete + insert in single transaction)
+            self.sync_comments(columns, rows)
             
             logger.success("Deal comments serving layer completed")
             

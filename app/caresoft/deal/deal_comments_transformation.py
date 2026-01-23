@@ -78,7 +78,7 @@ class DealCommentsTransformation:
         except:
             logger.info(f"Creating table {TARGET_TABLE}...")
             
-            # Schema matching legacy table
+            # Schema matching legacy table + brand_id
             schema = Schema(
                 NestedField(1, "ticket_comments_id", LongType(), required=False),
                 NestedField(2, "ticket_id", LongType(), required=False),
@@ -105,6 +105,7 @@ class DealCommentsTransformation:
                 NestedField(23, "avatar", StringType(), required=False),
                 NestedField(24, "path", StringType(), required=False),
                 NestedField(25, "file_path", StringType(), required=False),
+                NestedField(26, "brand_id", IntegerType(), required=False),  # Brand identifier
                 
                 # Metadata
                 NestedField(100, "snapshot_date", DateType(), required=False),
@@ -142,7 +143,7 @@ class DealCommentsTransformation:
         # Scan for deals in current snapshot with comments
         scan = source_table.scan(
             row_filter=EqualTo("snapshot_date", self.snapshot_date),
-            selected_fields=("comments", "snapshot_date")
+            selected_fields=("id", "brand_id", "comments", "snapshot_date")  # Include id and brand_id
         )
         
         # Convert to pandas
@@ -159,12 +160,15 @@ class DealCommentsTransformation:
     def parse_comments(self, deals_df: pd.DataFrame) -> List[Dict]:
         """
         Parse comments JSON from each deal
+        Add brand_id and ticket_id to each comment
         """
         all_comments = []
         errors = 0
         
         for idx, row in deals_df.iterrows():
             comments_json = row['comments']
+            deal_id = row.get('id')  # ticket_id from deal
+            brand_id = row.get('brand_id')  # brand_id from deal
             
             try:
                 # Parse JSON (handle both string and already-parsed)
@@ -187,6 +191,11 @@ class DealCommentsTransformation:
                 # Add each comment
                 for comment in comments:
                     if isinstance(comment, dict):
+                        # Add deal context
+                        if 'ticket_id' not in comment or not comment['ticket_id']:
+                            comment['ticket_id'] = deal_id
+                        comment['brand_id'] = brand_id
+                        
                         # Add metadata
                         comment['snapshot_date'] = self.snapshot_date
                         comment['ingestion_timestamp'] = get_current_timestamp_naive()
@@ -219,7 +228,8 @@ class DealCommentsTransformation:
             'download_connection_string', 'call_id', 'email_receive_id',
             'addition_details', 'is_public', 'can_hide', 'can_remove',
             'can_reply_privately', 'facebook_comment_state', 'role_id',
-            'avatar', 'path', 'file_path', 'snapshot_date', 'ingestion_timestamp'
+            'avatar', 'path', 'file_path', 'brand_id',
+            'snapshot_date', 'ingestion_timestamp'
         ]
         
         for col in expected_columns:
@@ -235,7 +245,7 @@ class DealCommentsTransformation:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
         
-        for col in ['is_public', 'facebook_comment_state', 'role_id']:
+        for col in ['is_public', 'facebook_comment_state', 'role_id', 'brand_id']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int32')
         
