@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from airflow.models.param import Param
 import logging
 
+import pendulum
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -42,12 +43,15 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+# Timezone for Vietnam
+local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
+
 dag = DAG(
     'caresoft_call_etl',
     default_args=default_args,
     description='CareSoft Call Pipeline: Bronze → Serving',
     schedule_interval='5 0 * * *',
-    start_date=datetime(2026, 1, 1),
+    start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
     tags=['caresoft', 'call', 'etl', 'iceberg'],

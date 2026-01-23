@@ -5,6 +5,7 @@ from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 from airflow.models.param import Param
 import logging
+import pendulum
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +37,15 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+# Timezone for Vietnam
+local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
+
 dag = DAG(
     'caresoft_deal_etl',
     default_args=default_args,
     description='CareSoft ETL: ERP → Bronze → Silver → Gold → Serving',
     schedule_interval='30 1 * * *',  # Daily at 1:30 AM UTC+7
-    start_date=datetime(2026, 1, 1),
+    start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     tags=['caresoft', 'deal', 'etl', 'iceberg'],
     params={
