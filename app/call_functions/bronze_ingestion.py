@@ -26,6 +26,7 @@ from pyiceberg.types import (
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine.url import URL
 from loguru import logger
 import hashlib
 import gc
@@ -47,15 +48,15 @@ AWS_REGION = os.getenv('AWS_REGION')
 
 # Source database connections (from environment)
 SOURCE_DB_CONNECTIONS = {
-    '10.10.10.154': os.getenv('ERP_SCI_URI'),      # ERP
-    '10.10.10.153': os.getenv('GIAOVIEC_URI'),     # GiaoViec
-    '10.10.10.234': os.getenv('SEEDING_URI'),      # Seeding
-    '10.10.10.214': os.getenv('CUSTOM_DB_URI'),    # Custom DB
-    '118.70.128.33': os.getenv('HONGHA_URI'),      # HongHa
-    '10.10.10.226': os.getenv('DU_PHONG_URI'),     # Du Phong
-    '10.10.10.152': os.getenv('DEV_SCI_URI'),      # Dev SCI
-    '10.10.10.249': os.getenv('TEST_SCI_URI'),     # Test SCI
-    '10.10.10.230': os.getenv('PORTAL_GUIDE_URI'), # Portal Guide
+    '10.10.10.154': os.getenv('ERP_SCI_CONFIG'),
+    '10.10.10.153': os.getenv('GIAOVIEC_CONFIG'),
+    '10.10.10.234': os.getenv('SEEDING_CONFIG'),
+    '10.10.10.214': os.getenv('CUSTOM_DB_CONFIG'),
+    '118.70.128.33': os.getenv('HONGHA_CONFIG'),
+    '10.10.10.226': os.getenv('DU_PHONG_CONFIG'),
+    '10.10.10.152': os.getenv('DEV_SCI_CONFIG'),
+    '10.10.10.249': os.getenv('TEST_SCI_CONFIG'),
+    '10.10.10.230': os.getenv('PORTAL_GUIDE_CONFIG'),
 }
 
 
@@ -100,27 +101,41 @@ class BronzeIngestion:
     def create_source_connection(self, server: str):
         """
         Create SQLAlchemy engine for source database
+        Expected config format: {"user": "", "password": "", "host": "", "port": "", "dbname": ""}
         """
-        uri = SOURCE_DB_CONNECTIONS.get(server)
+        config_json = SOURCE_DB_CONNECTIONS.get(server)
         
-        if not uri:
+        if not config_json:
             logger.warning(f"No connection configured for server {server}")
             return None
         
-        # Fix postgres:// to postgresql://
-        if uri.startswith('postgres://'):
-            uri = uri.replace('postgres://', 'postgresql://', 1)
-        
-        engine = create_engine(uri)
-        logger.info(f"Connected to {server}")
-        return engine
+        try:
+            config = json.loads(config_json)
+            
+            # Construct URL safely using SQLAlchemy
+            url_obj = URL.create(
+                "postgresql",
+                username=config.get('user'),
+                password=config.get('password'),
+                host=config.get('host'),
+                port=int(config.get('port', 5432)),
+                database=config.get('dbname')
+            )
+            
+            engine = create_engine(url_obj)
+            logger.info(f"Connected to {server} ({config.get('dbname')})")
+            return engine
+            
+        except Exception as e:
+            logger.error(f"Failed to create connection for {server}: {e}")
+            return None
     
     def ensure_bronze_table_exists(self, table_name: str, source_df: pd.DataFrame):
         """
         Create Bronze table if not exists
         Dynamic schema based on source data
         """
-        bronze_table_name = f'staging_sci.{table_name}_bronze'
+        bronze_table_name = f'call_functions.{table_name}'
         
         try:
             table = self.bronze_catalog.load_table(bronze_table_name)
@@ -182,7 +197,8 @@ class BronzeIngestion:
         self, 
         engine, 
         config: Dict,
-        days_ago: int = 10
+        days_ago: int = 10,
+        load_type: str = 'incremental'
     ) -> pd.DataFrame:
         """
         Fetch data from source database
@@ -193,7 +209,7 @@ class BronzeIngestion:
         consider = config['consider'] or '1=1'
         
         # Build WHERE clause
-        if keyword and keyword.strip():
+        if load_type == 'incremental' and keyword and keyword.strip():
             # Incremental load
             cutoff_date = self.snapshot_date - timedelta(days=days_ago)
             cutoff_date_str = cutoff_date.strftime('%Y-%m-%d')
@@ -293,7 +309,7 @@ class BronzeIngestion:
             logger.error(f"Failed to write to Bronze: {e}")
             raise
     
-    def process_table(self, config: Dict, days_ago: int = 10):
+    def process_table(self, config: Dict, days_ago: int = 10, load_type: str = 'incremental'):
         """
         Process a single table configuration
         """
@@ -302,7 +318,7 @@ class BronzeIngestion:
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing table: {table_name}")
-        logger.info(f"Source: {config['source']} ({server})")
+        logger.info(f"Source: {config['source']} ({server}) - Mode: {load_type}")
         
         try:
             # Create source connection
@@ -312,7 +328,7 @@ class BronzeIngestion:
                 return
             
             # Fetch data
-            df = self.fetch_data_from_source(engine, config, days_ago)
+            df = self.fetch_data_from_source(engine, config, days_ago, load_type)
             
             # Transform
             df = self.transform_data(df, config)
@@ -331,12 +347,12 @@ class BronzeIngestion:
             logger.error(f"❌ Failed {table_name}: {e}")
             raise
     
-    def run(self, table_id: Optional[int] = None, days_ago: int = 10):
+    def run(self, table_id: Optional[int] = None, days_ago: int = 10, load_type: str = 'incremental'):
         """
         Execute Bronze ingestion for all configured tables
         """
         logger.info("="*80)
-        logger.info(f"Starting Bronze Ingestion for {self.snapshot_date}")
+        logger.info(f"Starting Bronze Ingestion for {self.snapshot_date} (Mode: {load_type})")
         logger.info("="*80)
         
         # Get table configurations
@@ -349,7 +365,7 @@ class BronzeIngestion:
         # Process each table
         for config in configs:
             try:
-                self.process_table(config, days_ago)
+                self.process_table(config, days_ago, load_type)
             except Exception as e:
                 logger.error(f"Failed to process table {config['table_name']}: {e}")
                 # Continue with next table
@@ -363,13 +379,16 @@ def main():
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
     
     # Optional: table_id for single table processing
-    table_id = int(sys.argv[2]) if len(sys.argv) > 2 else None
+    table_id = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
+
+    # Optional: load_type
+    load_type = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else 'incremental'
     
     logger.info(f"Starting Bronze Ingestion for {snapshot_date}")
     
     try:
         job = BronzeIngestion(snapshot_date)
-        job.run(table_id=table_id, days_ago=10)
+        job.run(table_id=table_id, days_ago=10, load_type=load_type)
         
         logger.success("✅ Bronze ingestion completed successfully")
         sys.exit(0)

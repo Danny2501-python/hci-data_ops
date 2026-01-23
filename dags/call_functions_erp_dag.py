@@ -62,6 +62,12 @@ dag = DAG(
             default=None,
             type=['null', 'integer'],
             description='Process specific table ID only. Leave empty to process all tables.',
+        ),
+        'load_type': Param(
+            default='incremental',
+            type='string',
+            enum=['incremental', 'full'],
+            description='Load type: incremental (default) or full.'
         )
     },
     user_defined_macros={'yesterday_tz': get_yesterday_tz},
@@ -88,15 +94,85 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
     
     # Source database connections (need to configure these)
-    'ERP_SCI_URI': 'postgresql://user:pass@10.10.10.154:5432/erp',
-    'GIAOVIEC_URI': 'postgresql://user:pass@10.10.10.153:5432/giaoviec',
-    'SEEDING_URI': 'postgresql://user:pass@10.10.10.234:5432/seeding',
-    'CUSTOM_DB_URI': 'postgresql://user:pass@10.10.10.214:5432/custom_db',
-    'HONGHA_URI': 'postgresql://user:pass@118.70.128.33:5432/hongha',
-    'DU_PHONG_URI': 'postgresql://user:pass@10.10.10.226:5432/du_phong',
-    'DEV_SCI_URI': 'postgresql://user:pass@10.10.10.152:5432/dev_sci',
-    'TEST_SCI_URI': 'postgresql://user:pass@10.10.10.249:5432/test_sci',
-    'PORTAL_GUIDE_URI': 'postgresql://user:pass@10.10.10.230:5432/portal_guide',
+    # Source database connections
+    # Source database connections
+    'DEFAULT_CONFIG': json.dumps({
+        'user': 'admin',
+        'password': 'QtdlxxrisA@!sfsgo#2024',
+        'host': '10.10.10.214',
+        'port': 5432,
+        'dbname': 'etl_marketing'
+    }),
+    'CUSTOM_DB_CONFIG': json.dumps({
+        'user': 'admin',
+        'password': 'QtdlxxrisA@!sfsgo#2024',
+        'host': '10.10.10.214',
+        'port': 5432,
+        'dbname': 'staging_sci'
+    }),
+    'CUSTOM_DB_DEV_CONFIG': json.dumps({
+        'user': 'admin',
+        'password': 'QtdlxxrisA@!sfsgo#2024',
+        'host': '10.10.10.214',
+        'port': 5432,
+        'dbname': 'staging_sci'
+    }),
+    'DU_PHONG_CONFIG': json.dumps({
+        'user': 'admin',
+        'password': 'QtdlxxrisA@!sfsgo#2024',
+        'host': '10.10.10.226',
+        'port': 5432,
+        'dbname': 'staging_sci'
+    }),
+    'ERP_SCI_CONFIG': json.dumps({
+        'user': 'reporter',
+        'password': 'xjsfpwzlqehd',
+        'host': '10.10.10.154',
+        'port': 5432,
+        'dbname': 'sci_erp'
+    }),
+    'DEV_SCI_CONFIG': json.dumps({
+        'user': 'reporter',
+        'password': 'xjsfpwzlqehd',
+        'host': '10.10.10.152',
+        'port': 5432,
+        'dbname': 'sci_erp'
+    }),
+    'TEST_SCI_CONFIG': json.dumps({
+        'user': 'reporter',
+        'password': 'xjsfpwzlqehd',
+        'host': '10.10.10.249',
+        'port': 5432,
+        'dbname': 'sci_erp'
+    }),
+    'GIAOVIEC_CONFIG': json.dumps({
+        'user': 'reader',
+        'password': 'Sci@123',
+        'host': '10.10.10.153',
+        'port': 54222,
+        'dbname': 'project'
+    }),
+    'SEEDING_CONFIG': json.dumps({
+        'user': 'reader',
+        'password': 'seeding@123',
+        'host': '10.10.10.234',
+        'port': 54300,
+        'dbname': 'sale'
+    }),
+    'HONGHA_CONFIG': json.dumps({
+        'user': 'reporter',
+        'password': 'hovxmsgewkru',
+        'host': 'db.benhvienhongha.com.vn',
+        'port': 55000,
+        'dbname': 'bvhongha'
+    }),
+    'PORTAL_GUIDE_CONFIG': json.dumps({
+        'user': 'admin',
+        'password': 'QtdlxxrisA@!sfsgo#2024',
+        'host': '10.10.10.230',
+        'port': 5432,
+        'dbname': 'portal_guide'
+    }),
 }
 
 # Resource requirements
@@ -138,7 +214,8 @@ bronze_ingestion = KubernetesPodOperator(
     arguments=[
         '/app/call_functions/bronze_ingestion.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("table_id") | default("", true) }}'
+        '{{ dag_run.conf.get("table_id") | default("", true) }}',
+        '{{ params.load_type }}'
     ],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],

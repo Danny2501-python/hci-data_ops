@@ -32,7 +32,7 @@ Migration of `etl_staging_sci` from Django-based ETL to **Airflow + Kubernetes +
 │  - Raw data from sources                                     │
 │  - Partitioned by snapshot_date                              │
 │  - Full schema preservation                                  │
-│  - Tables: staging_sci.{table_name}_bronze                   │
+│  - Tables: call_functions.{table_name}_bronze                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -195,16 +195,16 @@ python app/call_functions/bronze_ingestion.py 2026-01-21
 
 ```sql
 -- Trino/DBeaver
-SELECT * FROM bronze.staging_sci.table_name_bronze
+SELECT * FROM bronze.call_functions.table_name_bronze
 WHERE snapshot_date = DATE '2026-01-21'
 LIMIT 10;
 
 -- Check partitions
-SELECT * FROM bronze.staging_sci."table_name_bronze$partitions";
+SELECT * FROM bronze.call_functions."table_name_bronze$partitions";
 
 -- Count records
 SELECT snapshot_date, COUNT(*) 
-FROM bronze.staging_sci.table_name_bronze
+FROM bronze.call_functions.table_name_bronze
 GROUP BY snapshot_date
 ORDER BY snapshot_date DESC;
 ```
@@ -236,12 +236,12 @@ kubectl logs -n default -l dag_id=etl_staging_sci
 
 ```sql
 -- View snapshots
-SELECT * FROM bronze.staging_sci."table_name_bronze$snapshots"
+SELECT * FROM bronze.call_functions."table_name_bronze$snapshots"
 ORDER BY committed_at DESC
 LIMIT 5;
 
 -- View history
-SELECT * FROM bronze.staging_sci."table_name_bronze$history"
+SELECT * FROM bronze.call_functions."table_name_bronze$history"
 ORDER BY made_current_at DESC;
 ```
 
@@ -273,7 +273,7 @@ python app/call_functions/create_metadata_table.py
 
 ```sql
 -- Drop table
-DROP TABLE bronze.staging_sci.table_name_bronze;
+DROP TABLE bronze.call_functions.table_name_bronze;
 
 -- Re-run ingestion to auto-create with new schema
 ```
