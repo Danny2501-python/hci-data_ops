@@ -40,6 +40,15 @@ default_args = {
 # Timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
+
+
+def get_yesterday_tz():
+    """Get yesterday's date in Asia/Ho_Chi_Minh timezone"""
+    from datetime import datetime, timedelta
+    now = datetime.now(local_tz)
+    yesterday = now - timedelta(days=1)
+    return yesterday.strftime('%Y-%m-%d')
+
 dag = DAG(
     'caresoft_deal_etl',
     default_args=default_args,
@@ -55,6 +64,7 @@ dag = DAG(
             description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
+    user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
 
 # ============================================================================
@@ -177,7 +187,7 @@ task_erp_webhook_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/erp_webhook_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume],
@@ -208,7 +218,7 @@ task_webhook_transformation_silver = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/webhook_transformation_silver.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -241,7 +251,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_enrichment.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -275,7 +285,7 @@ task_refresh_serving_layer = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -303,7 +313,7 @@ task_refresh_serving_layer_v2 = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -336,7 +346,7 @@ task_deal_comments_transformation = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_comments_transformation.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],
@@ -367,7 +377,7 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/deal/deal_comments_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
     volumes=[nfs_volume, duckdb_temp_volume],

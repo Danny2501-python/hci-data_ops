@@ -100,6 +100,15 @@ default_args = {
 # Timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
+
+
+def get_yesterday_tz():
+    """Get yesterday's date in Asia/Ho_Chi_Minh timezone"""
+    from datetime import datetime, timedelta
+    now = datetime.now(local_tz)
+    yesterday = now - timedelta(days=1)
+    return yesterday.strftime('%Y-%m-%d')
+
 dag = DAG(
     'caresoft_service_etl',
     default_args=default_args,
@@ -116,6 +125,7 @@ dag = DAG(
             description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
+    user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
 
 # ============================================================================
@@ -129,7 +139,7 @@ task_service_ingestion = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/service/service_ingestion.py', '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'],
+    arguments=['/app/caresoft/service/service_ingestion.py', '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb'},
@@ -146,7 +156,7 @@ task_service_serving = KubernetesPodOperator(
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
-    arguments=['/app/caresoft/service/service_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}'],
+    arguments=['/app/caresoft/service/service_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={

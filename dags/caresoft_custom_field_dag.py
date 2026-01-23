@@ -53,6 +53,15 @@ default_args = {
 # Timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
+
+
+def get_yesterday_tz():
+    """Get yesterday's date in Asia/Ho_Chi_Minh timezone"""
+    from datetime import datetime, timedelta
+    now = datetime.now(local_tz)
+    yesterday = now - timedelta(days=1)
+    return yesterday.strftime('%Y-%m-%d')
+
 dag = DAG(
     'caresoft_custom_field_etl',
     default_args=default_args,
@@ -69,6 +78,7 @@ dag = DAG(
             description='Override snapshot date for backfill (YYYY-MM-DD). Leave empty to use execution date.',
         )
     },
+    user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
 
 # ============================================================================
@@ -135,7 +145,7 @@ task_ticket_custom_field_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_ingestion.py', 
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         'ticket'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -157,7 +167,7 @@ task_ticket_custom_field_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         'ticket'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -183,7 +193,7 @@ task_contact_custom_field_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_ingestion.py', 
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         'contact'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -205,7 +215,7 @@ task_contact_custom_field_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         'contact'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],

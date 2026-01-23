@@ -34,6 +34,15 @@ default_args = {
 # Timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
+
+
+def get_yesterday_tz():
+    """Get yesterday's date in Asia/Ho_Chi_Minh timezone"""
+    from datetime import datetime, timedelta
+    now = datetime.now(local_tz)
+    yesterday = now - timedelta(days=1)
+    return yesterday.strftime('%Y-%m-%d')
+
 dag = DAG(
     'call_functions_erp_etl',
     default_args=default_args,
@@ -55,6 +64,7 @@ dag = DAG(
             description='Process specific table ID only. Leave empty to process all tables.',
         )
     },
+    user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
 
 # ============================================================================
@@ -127,7 +137,7 @@ bronze_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/call_functions/bronze_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}'
     ],
     volumes=[nfs_volume, duckdb_volume],
