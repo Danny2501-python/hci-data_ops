@@ -240,14 +240,27 @@ class DealCommentsTransformation:
         df = df[expected_columns]
         
         # Type conversions
-        # Convert numeric columns
+        # Convert numeric columns (Long)
         for col in ['ticket_comments_id', 'ticket_id', 'commentator_id']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
         
+        # Convert numeric columns (Integer)
         for col in ['is_public', 'facebook_comment_state', 'role_id', 'brand_id']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int32')
+        
+        # Convert string columns (explicitly convert to string to avoid PyArrow conversion errors)
+        string_columns = [
+            'comment', 'username', 'facebook', 'facebook_name', 'comment_source',
+            'attack_file_id', 'file_name', 'file_id', 'download_connection_string',
+            'call_id', 'email_receive_id', 'addition_details', 'can_hide', 'can_remove',
+            'can_reply_privately', 'avatar', 'path', 'file_path'
+        ]
+        for col in string_columns:
+            if col in df.columns:
+                # Convert to string, but keep None/NaN as None (not string 'nan')
+                df[col] = df[col].apply(lambda x: str(x) if pd.notna(x) else None)
         
         # Convert timestamp
         if 'created_at' in df.columns:
