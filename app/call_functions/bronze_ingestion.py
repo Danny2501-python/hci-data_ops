@@ -342,6 +342,8 @@ class BronzeIngestion:
             
         except Exception as e:
             logger.error(f"Stream ingestion failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
     
     def process_table(self, config: Dict, days_ago: int = 10, load_type: str = 'incremental'):
