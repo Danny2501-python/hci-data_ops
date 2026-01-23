@@ -127,7 +127,7 @@ bronze_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/call_functions/bronze_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}',
+        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}'
     ],
     volumes=[nfs_volume, duckdb_volume],

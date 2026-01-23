@@ -135,7 +135,7 @@ task_ticket_custom_field_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_ingestion.py', 
-        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}',
+        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
         'ticket'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -157,7 +157,7 @@ task_ticket_custom_field_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}',
+        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
         'ticket'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -183,7 +183,7 @@ task_contact_custom_field_ingestion = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_ingestion.py', 
-        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}',
+        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
         'contact'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
@@ -205,7 +205,7 @@ task_contact_custom_field_serving = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") | default("", true) }}',
+        '{{ dag_run.conf.get("snapshot_date") or (data_interval_start | ds) }}',
         'contact'  # field_type
     ],
     volumes=[nfs_volume, duckdb_volume],
