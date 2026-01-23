@@ -312,19 +312,50 @@ class BronzeIngestion:
                             idx = col_to_idx[source_field_name]
                             data = columns_data[idx]
                             
-                            # Handle type conversion (float -> int if needed)
-                            # PyArrow handles most, but we might need explicit checks if logic requires
-                            # For simplicity getting PyArrow to infer or casting
+                            # Sanitize data to fix PyArrow timezone issues and type mismatches
+                            # Problem 1: Postgres returns "+07:00" offset which PyArrow doesn't recognize as a valid timezone name
+                            # Problem 2: Target schema might be String but data is Datetime
                             
+                            cleaned_data = None
+                            first_val = next((x for x in data if x is not None), None)
+                            
+                            if isinstance(first_val, (datetime, date)):
+                                cleaned_data = []
+                                # Determine if we need string conversion
+                                target_is_string = pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
+                                
+                                for item in data:
+                                    if item is None:
+                                        cleaned_data.append(None)
+                                        continue
+                                        
+                                    val = item
+                                    # Handle datetime/date objects
+                                    if isinstance(val, datetime):
+                                        # Remove timezone info (make naive) to satisfy PyArrow
+                                        val = val.replace(tzinfo=None)
+                                    
+                                    # Convert to string if target requires it
+                                    if target_is_string:
+                                        cleaned_data.append(str(val))
+                                    else:
+                                        cleaned_data.append(val)
+                                        
+                                data = cleaned_data
+
                             try:
                                 arrow_arrays.append(pa.array(data, type=field.type))
                             except Exception:
                                 # Fallback: let PyArrow infer then cast
-                                arrow_arrays.append(pa.array(data).cast(field.type))
+                                try:
+                                    arrow_arrays.append(pa.array(data).cast(field.type))
+                                except Exception as e:
+                                    logger.error(f"Failed to convert column {field_name} (Source: {source_field_name}): {e}")
+                                    # Last resort: append nulls to avoid crushing the whole batch
+                                    arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
                         else:
-                            # Configured 100% dynamic schema? 
-                            # If ensuring table exists created the table based on source_df, then names usually match.
-                            # If manual override, might be null.
+                            # Column missing in source or not mapped
+                            # logger.warning(f"Column {field_name} not found in source")
                             arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
 
                     batch_table = pa.Table.from_arrays(arrow_arrays, schema=target_schema)
