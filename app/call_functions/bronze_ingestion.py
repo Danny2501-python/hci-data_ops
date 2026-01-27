@@ -21,12 +21,14 @@ from pyiceberg.expressions import EqualTo, And, AlwaysTrue
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    NestedField, StringType, TimestampType, DateType, LongType
+    NestedField, StringType, TimestampType, DateType, LongType, 
+    BooleanType, DoubleType, IntegerType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.engine.url import URL
+from sqlalchemy import types as sa_types
 from loguru import logger
 import hashlib
 import gc
@@ -131,39 +133,89 @@ class BronzeIngestion:
             logger.error(f"Failed to create connection for {server}: {e}")
             return None
     
-    def ensure_bronze_table_exists(self, table_name: str, source_df: pd.DataFrame):
+    def _map_type_to_iceberg(self, sa_type):
+        """Map SQLAlchemy generic types to Iceberg types"""
+        # Handle standard types
+        if isinstance(sa_type, (sa_types.Boolean, sa_types.Boolean)):
+            return BooleanType()
+        
+        if isinstance(sa_type, (sa_types.Integer, sa_types.SmallInteger)):
+            return IntegerType()
+            
+        if isinstance(sa_type, sa_types.BigInteger):
+            return LongType()
+            
+        if isinstance(sa_type, (sa_types.DateTime, sa_types.TIMESTAMP)):
+            return TimestampType()
+            
+        if isinstance(sa_type, sa_types.Date):
+            return DateType()
+            
+        if isinstance(sa_type, (sa_types.Float, sa_types.Numeric, sa_types.DECIMAL, sa_types.REAL)):
+            # Warning: Using DoubleType for floats/numeric. 
+            # Previous logic used String for precision, but user wants matching types.
+            return DoubleType()
+            
+        # Default fallback
+        return StringType()
+
+    def ensure_bronze_table_exists(self, table_name: str, engine, config: Dict):
         """
         Create Bronze table if not exists
-        Dynamic schema based on source data
+        Dynamic schema based on source database inspection
         """
         bronze_table_name = f'call_functions.{table_name}'
         
         try:
             table = self.bronze_catalog.load_table(bronze_table_name)
             logger.info(f"Table {bronze_table_name} exists")
+            self._check_schema_evolution(table, engine, config) # Optional: Check for new columns
             return table
         except:
             logger.info(f"Creating table {bronze_table_name}...")
             
-            # Build schema from source DataFrame
+            # Inspect source schema
+            insp = inspect(engine)
+            source_table = config['table_name_source']
+            schema_name = None
+            t_name = source_table
+            
+            if '.' in source_table:
+                schema_name, t_name = source_table.split('.', 1)
+                
+            try:
+                columns = insp.get_columns(t_name, schema=schema_name)
+            except Exception as e:
+                logger.error(f"Failed to inspect table {source_table}: {e}")
+                raise
+
+            # Get rename mapping
+            rename_map = {}
+            if config.get('rename_column'):
+                try:
+                    rename_map = json.loads(config['rename_column'])
+                except:
+                    pass
+            
+            # Build fields
             fields = []
             field_id = 1
             
-            # Add source columns
-            for col in source_df.columns:
-                dtype = source_df[col].dtype
+            for col in columns:
+                col_name = col['name']
+                col_type = col['type']
                 
-                # Map pandas dtype to Iceberg type
-                if pd.api.types.is_integer_dtype(dtype):
-                    iceberg_type = LongType()
-                elif pd.api.types.is_float_dtype(dtype):
-                    iceberg_type = StringType()  # Store as string to avoid precision issues
-                elif pd.api.types.is_datetime64_any_dtype(dtype):
-                    iceberg_type = TimestampType()
-                else:
+                # Apply rename
+                final_name = rename_map.get(col_name, col_name)
+                
+                # Map type
+                try:
+                    iceberg_type = self._map_type_to_iceberg(col_type)
+                except Exception as e:
+                    logger.warning(f"Type mapping failed for {col_name} ({col_type}): {e}. Defaulting to String.")
                     iceberg_type = StringType()
                 
-                fields.append(NestedField(field_id, col, iceberg_type, required=False))
+                fields.append(NestedField(field_id, final_name, iceberg_type, required=False))
                 field_id += 1
             
             # Add metadata columns
@@ -193,6 +245,10 @@ class BronzeIngestion:
             
             logger.success(f"✅ Created table {bronze_table_name}")
             return table
+            
+    def _check_schema_evolution(self, table, engine, config):
+        """Basic check if we need to add columns (optional implementation)"""
+        pass
     
     def stream_and_ingest(
         self, 
@@ -395,20 +451,8 @@ class BronzeIngestion:
                 logger.error(f"Skipping {table_name} - no connection")
                 return
             
-            # 1. Ensure Table Exists & Get Schema (using empty query)
-            # Fetch 0 rows to infer schema efficiently
-            query_schema = text(f"SELECT * FROM {config['table_name_source']} WHERE 1=0")
-            df_schema = pd.read_sql(query_schema, engine)
-            
-            # Apply renaming to schema-df
-            if config['rename_column']:
-                try:
-                    mapping = json.loads(config['rename_column'])
-                    df_schema = df_schema.rename(columns=mapping)
-                except Exception as e:
-                    logger.warning(f"Failed to prepare schema renaming: {e}")
-
-            table = self.ensure_bronze_table_exists(table_name, df_schema)
+            # 1. Ensure Table Exists & Get Schema (using SQLAlchemy Inspection)
+            table = self.ensure_bronze_table_exists(table_name, engine, config)
 
             # 2. Cleanup data before write
             # Default: overwrite partition (delete current snapshot_date data)
