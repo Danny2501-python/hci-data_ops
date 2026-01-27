@@ -14,7 +14,6 @@ import sys
 import json
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
-import pandas as pd
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And, AlwaysTrue
@@ -30,7 +29,6 @@ from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.engine.url import URL
 from sqlalchemy import types as sa_types
 from loguru import logger
-import hashlib
 import gc
 
 # Add parent directory to path for imports
@@ -482,7 +480,6 @@ class BronzeIngestion:
             
             # Cleanup
             engine.dispose()
-            del df_schema
             gc.collect()
             
             logger.success(f"✅ Completed {table_name} - {total_records} records")
