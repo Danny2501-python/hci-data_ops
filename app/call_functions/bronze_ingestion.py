@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
-from pyiceberg.expressions import EqualTo, And
+from pyiceberg.expressions import EqualTo, And, AlwaysTrue
 from pyiceberg.io.pyarrow import schema_to_pyarrow
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
@@ -410,15 +410,22 @@ class BronzeIngestion:
 
             table = self.ensure_bronze_table_exists(table_name, df_schema)
 
-            # 2. Truncate Partition if needed (Logic moved from write_to_bronze)
-            if config['truncate']:
-                try:
-                    logger.info(f"Truncating partition for {self.snapshot_date}...")
+            # 2. Cleanup data before write
+            # Default: overwrite partition (delete current snapshot_date data)
+            # If truncate=True: wipe entire table/partition (based on user request)
+            try:
+                if config.get('truncate'):
+                    logger.info(f"Truncating ENTIRE table data (truncate=True)...")
+                    table.delete(
+                        delete_filter=AlwaysTrue()
+                    )
+                else:
+                    logger.info(f"Deleting data for snapshot_date {self.snapshot_date}...")
                     table.delete(
                         delete_filter=EqualTo("snapshot_date", self.snapshot_date)
                     )
-                except Exception as e:
-                    logger.warning(f"Could not delete partition: {e}")
+            except Exception as e:
+                logger.warning(f"Could not delete data: {e}")
 
             # 3. Stream Data (replaces fetch -> transform -> write)
             total_records = self.stream_and_ingest(

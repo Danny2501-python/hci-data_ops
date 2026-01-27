@@ -23,7 +23,7 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-TABLE_CONFIG_TABLE = 'call_functions.table_config'
+TABLE_CONFIG_TABLE = 'call_functions.declare_table_etl'
 
 
 def ensure_table_config_table_exists():
