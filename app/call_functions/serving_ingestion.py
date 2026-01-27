@@ -133,7 +133,7 @@ class ServingIngestion:
                 pg_type = type_map[field.type]
             elif isinstance(field.type, pa.TimestampType):
                  pg_type = 'TIMESTAMP'
-            elif isinstance(field.type, pa.Date32Type):
+            elif field.type.equals(pa.date32()) or field.type.equals(pa.date64()):
                  pg_type = 'DATE'
             
             column_defs.append(f'"{field.name}" {pg_type}')
