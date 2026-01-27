@@ -1,5 +1,6 @@
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 from airflow.models.param import Param
@@ -176,6 +177,26 @@ common_env_vars = {
     }),
 }
 
+# ============================================================================
+# LOAD AIRFLOW CONNECTIONS
+# ============================================================================
+
+# DWH Product Connection (for serving layer)
+dwh_product_uri = ''
+try:
+    hook = PostgresHook(postgres_conn_id='dwh_product')
+    conn = hook.get_connection('dwh_product')
+    dwh_product_uri = conn.get_uri()
+    
+    if '?__extra__=' in dwh_product_uri:
+        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+    # Fallback to empty string or handle error appropriately
+    # The serving task will fail if URI is missing, which is expected
+
 # Resource requirements
 resource_requirements = k8s.V1ResourceRequirements(
     requests={'cpu': '1000m', 'memory': '2Gi'},
@@ -230,10 +251,34 @@ bronze_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
+# Task 2: Serving Layer Ingestion (PostgreSQL)
+serving_layer = KubernetesPodOperator(
+    task_id='serving_layer',
+    name='etl-staging-sci-serving-layer',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/call_functions/serving_ingestion.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
+        '{{ dag_run.conf.get("table_id") | default("", true) }}'
+    ],
+    volumes=[nfs_volume, duckdb_volume],
+    volume_mounts=[nfs_mount, duckdb_mount],
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Single task for now
-# Future: Add Silver transformation, Gold serving layer
-bronze_ingestion
+bronze_ingestion >> serving_layer
