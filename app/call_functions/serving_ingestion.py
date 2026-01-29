@@ -99,53 +99,58 @@ class ServingIngestion:
             logger.error(f"Failed to read Iceberg data: {e}")
             raise
 
-    def ensure_target_table_exists(self, target_table_name: str, schema: pa.Schema, pk_columns: List[str]):
+    def ensure_target_table_exists(self, target_table_name: str, schema: pa.Schema, pk_columns: List[str], drop_table: bool = False):
         """
         Create target Postgres table if not exists based on Arrow schema
         """
-        
-        # Map Arrow types to Postgres types
-        type_map = {
-            pa.string(): 'TEXT',
-            pa.int32(): 'INTEGER',
-            pa.int64(): 'BIGINT',
-            pa.float32(): 'REAL',
-            pa.float64(): 'DOUBLE PRECISION',
-            pa.bool_(): 'BOOLEAN',
-            pa.date32(): 'DATE',
-            pa.timestamp('us'): 'TIMESTAMP',
-            pa.timestamp('ms'): 'TIMESTAMP',
-            pa.timestamp('ns'): 'TIMESTAMP',
-        }
-        
-        column_defs = []
-        for field in schema:
-            pg_type = 'TEXT' # Default
-            
-            # Simple type check
-            if field.type in type_map:
-                pg_type = type_map[field.type]
-            elif isinstance(field.type, pa.TimestampType):
-                 pg_type = 'TIMESTAMP'
-            elif field.type.equals(pa.date32()) or field.type.equals(pa.date64()):
-                 pg_type = 'DATE'
-            
-            column_defs.append(f'"{field.name}" {pg_type}')
-            
-        pk_constraint = ""
-        if pk_columns:
-            pk_str = ", ".join([f'"{c}"' for c in pk_columns])
-            pk_constraint = f', PRIMARY KEY ({pk_str})'
-            
-        create_sql = f"""
-        CREATE TABLE IF NOT EXISTS {target_table_name} (
-            {', '.join(column_defs)}
-            {pk_constraint}
-        )
-        """
-        
         cursor = self.pg_conn.cursor()
         try:
+             # Drop table if requested
+            if drop_table:
+                logger.warning(f"Dropping table {target_table_name} as requested")
+                cursor.execute(f"DROP TABLE IF EXISTS {target_table_name}")
+                self.pg_conn.commit()
+
+            # Map Arrow types to Postgres types
+            type_map = {
+                pa.string(): 'TEXT',
+                pa.int32(): 'INTEGER',
+                pa.int64(): 'BIGINT',
+                pa.float32(): 'REAL',
+                pa.float64(): 'DOUBLE PRECISION',
+                pa.bool_(): 'BOOLEAN',
+                pa.date32(): 'DATE',
+                pa.timestamp('us'): 'TIMESTAMP',
+                pa.timestamp('ms'): 'TIMESTAMP',
+                pa.timestamp('ns'): 'TIMESTAMP',
+            }
+            
+            column_defs = []
+            for field in schema:
+                pg_type = 'TEXT' # Default
+                
+                # Simple type check
+                if field.type in type_map:
+                    pg_type = type_map[field.type]
+                elif isinstance(field.type, pa.TimestampType):
+                     pg_type = 'TIMESTAMP'
+                elif field.type.equals(pa.date32()) or field.type.equals(pa.date64()):
+                     pg_type = 'DATE'
+                
+                column_defs.append(f'"{field.name}" {pg_type}')
+                
+            pk_constraint = ""
+            if pk_columns:
+                pk_str = ", ".join([f'"{c}"' for c in pk_columns])
+                pk_constraint = f', PRIMARY KEY ({pk_str})'
+                
+            create_sql = f"""
+            CREATE TABLE IF NOT EXISTS {target_table_name} (
+                {', '.join(column_defs)}
+                {pk_constraint}
+            )
+            """
+            
             cursor.execute(create_sql)
             self.pg_conn.commit()
             
@@ -287,7 +292,7 @@ class ServingIngestion:
                  return
 
         pk_columns = [k.strip() for k in primary_keyword.split(',')]
-        target_table_name = f"{table_name}_v1"
+        target_table_name = table_name
         
         logger.info(f"Processing {table_name} -> {target_table_name} (PK: {pk_columns})")
             
@@ -296,7 +301,8 @@ class ServingIngestion:
             self.connect_postgres()
             
         # 4. Ensure Schema (pass schema instead of table)
-        self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns)
+        drop_table = config.get('drop_table', False)
+        self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns, drop_table=drop_table)
         
         # 5. Upsert (pass reader)
         self.upsert_data(target_table_name, reader, pk_columns)
@@ -310,7 +316,7 @@ class ServingIngestion:
         logger.info(f"Loaded {len(configs)} table configurations")
         return configs
 
-    def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None):
+    def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None, drop_table: bool = False):
         """Run serving ingestion"""
         logger.info(f"Starting Serving Ingestion for {self.snapshot_date} (Source: {source_type})")
         
@@ -322,6 +328,10 @@ class ServingIngestion:
             
         for config in configs:
             try:
+                # Override config with runtime flag if provided
+                if drop_table:
+                    config['drop_table'] = True
+                    
                 self.process_table(config)
             except Exception as e:
                 logger.error(f"Failed table {config['table_name']}: {e}")
@@ -338,9 +348,13 @@ def main():
     # Arg 3: source_type (e.g. 'ERP')
     source_type = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
     
+    # Arg 4: drop_table flag (pass 'true' or '1' to enable)
+    drop_table_arg = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else 'false'
+    drop_table = drop_table_arg.lower() in ('true', '1', 'yes')
+    
     try:
         job = ServingIngestion(snapshot_date)
-        job.run(table_id, source_type=source_type)
+        job.run(table_id, source_type=source_type, drop_table=drop_table)
     except Exception as e:
         logger.error(f"Job failed: {e}")
         sys.exit(1)

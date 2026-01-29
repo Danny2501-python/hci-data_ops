@@ -70,6 +70,11 @@ dag = DAG(
             type='string',
             enum=['incremental', 'full'],
             description='Load type: incremental (default) or full.'
+        ),
+        'drop_table': Param(
+            default=False,
+            type='boolean',
+            description='Drop serving table before loading (Full Refresh). WARNING: Destructive.'
         )
     },
     user_defined_macros={'yesterday_tz': get_yesterday_tz},
@@ -182,18 +187,18 @@ common_env_vars = {
 # ============================================================================
 
 # DWH Product Connection (for serving layer)
-dwh_product_uri = ''
+dwh_dev_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product')
-    conn = hook.get_connection('dwh_product')
-    dwh_product_uri = conn.get_uri()
+    hook = PostgresHook(postgres_conn_id='dwh_dev')
+    conn = hook.get_connection('dwh_dev')
+    dwh_dev_uri = conn.get_uri()
     
-    if '?__extra__=' in dwh_product_uri:
-        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    if '?__extra__=' in dwh_dev_uri:
+        dwh_dev_uri = dwh_dev_uri.split('?__extra__=')[0]
     
-    logger.info("✅ Loaded connection URI for dwh_product")
+    logger.info("✅ Loaded connection URI for dwh_dev")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_dev connection: {e}")
     # Fallback to empty string or handle error appropriately
     # The serving task will fail if URI is missing, which is expected
 
@@ -262,14 +267,16 @@ serving_layer = KubernetesPodOperator(
     arguments=[
         '/app/call_functions/serving_ingestion.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("table_id") | default("", true) }}'
+        '{{ dag_run.conf.get("table_id") | default("", true) }}',
+        '', # Arg 3: source_type (None for standard)
+        '{{ params.drop_table }}' # Arg 4: drop_table
     ],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={
         **common_env_vars,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-        'POSTGRES_URI': dwh_product_uri,
+        'POSTGRES_URI': dwh_dev_uri,
     },
     container_resources=resource_requirements,
     is_delete_operator_pod=True,
