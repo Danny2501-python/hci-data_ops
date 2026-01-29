@@ -191,7 +191,7 @@ class ServingIngestion:
             
             # Iterate through batches
             # Iterate through batches
-            CHUNK_SIZE = 20000 # Process max 20k rows at a time to control RAM peak
+            CHUNK_SIZE = 10000 # Process max 10k rows at a time to control RAM peak
             
             import gc # Ensure gc is available
 
@@ -234,6 +234,12 @@ class ServingIngestion:
                 # Force GC after each big batch
                 del batch
                 gc.collect()
+
+            # 2.5. Analyze Staging Table
+            # Crucial for Postgres to know the row count/distribution in the temporary staging table
+            # so it can choose the optimal join plan for the MERGE step.
+            logger.debug("Analyzing staging table...")
+            cursor.execute(f"ANALYZE {staging_table}")
 
             # 3. Perform Merge/Upsert from Staging to Target
             cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
