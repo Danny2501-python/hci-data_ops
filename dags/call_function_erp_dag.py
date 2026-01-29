@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from airflow.models.param import Param
 import logging
 import json
-
 import pendulum
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -33,10 +33,7 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# Timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
-
-
 
 def get_yesterday_tz():
     """Get yesterday's date in Asia/Ho_Chi_Minh timezone"""
@@ -46,14 +43,14 @@ def get_yesterday_tz():
     return yesterday.strftime('%Y-%m-%d')
 
 dag = DAG(
-    'call_functions_erp_etl',
+    'call_function_erp_etl',
     default_args=default_args,
-    description='ETL Staging SCI: Source DBs → Bronze Iceberg',
-    schedule_interval='0 1 * * *',  # Daily at 01:00 AM
+    description='ERP Multi-Source Ingestion: SCI, KN, PR, HH -> Bronze -> Serving',
+    schedule_interval='15 1 * * *',  
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'call_functions', 'bronze', 'iceberg'],
+    tags=['etl', 'erp', 'multisource', 'iceberg'],
     params={
         'snapshot_date': Param(
             default=None,
@@ -63,7 +60,7 @@ dag = DAG(
         'table_id': Param(
             default=None,
             type=['null', 'integer'],
-            description='Process specific table ID only. Leave empty to process all tables.',
+            description='Process specific table ID only. Leave empty to process all.',
         ),
         'load_type': Param(
             default='incremental',
@@ -94,92 +91,36 @@ common_env_vars = {
     'AWS_ACCESS_KEY_ID': 'admin',
     'AWS_SECRET_ACCESS_KEY': 'password',
     'AWS_REGION': 'us-east-1',
-    
-    # Source database connections (need to configure these)
-    # Source database connections
-    # Source database connections
-    'DEFAULT_CONFIG': json.dumps({
-        'user': 'admin',
-        'password': 'QtdlxxrisA@!sfsgo#2024',
-        'host': '10.10.10.214',
-        'port': 5432,
-        'dbname': 'etl_marketing'
-    }),
-    'CUSTOM_DB_CONFIG': json.dumps({
-        'user': 'admin',
-        'password': 'QtdlxxrisA@!sfsgo#2024',
-        'host': '10.10.10.214',
-        'port': 5432,
-        'dbname': 'staging_sci'
-    }),
-    'CUSTOM_DB_DEV_CONFIG': json.dumps({
-        'user': 'admin',
-        'password': 'QtdlxxrisA@!sfsgo#2024',
-        'host': '10.10.10.214',
-        'port': 5432,
-        'dbname': 'staging_sci'
-    }),
-    'DU_PHONG_CONFIG': json.dumps({
-        'user': 'admin',
-        'password': 'QtdlxxrisA@!sfsgo#2024',
-        'host': '10.10.10.226',
-        'port': 5432,
-        'dbname': 'staging_sci'
-    }),
-    'ERP_SCI_CONFIG': json.dumps({
-        'user': 'reporter',
-        'password': 'xjsfpwzlqehd',
-        'host': '10.10.10.154',
-        'port': 5432,
-        'dbname': 'sci_erp'
-    }),
-    'DEV_SCI_CONFIG': json.dumps({
-        'user': 'reporter',
-        'password': 'xjsfpwzlqehd',
-        'host': '10.10.10.152',
-        'port': 5432,
-        'dbname': 'sci_erp'
-    }),
-    'TEST_SCI_CONFIG': json.dumps({
-        'user': 'reporter',
-        'password': 'xjsfpwzlqehd',
-        'host': '10.10.10.249',
-        'port': 5432,
-        'dbname': 'sci_erp'
-    }),
-    'GIAOVIEC_CONFIG': json.dumps({
-        'user': 'reader',
-        'password': 'Sci@123',
-        'host': '10.10.10.153',
-        'port': 54222,
-        'dbname': 'project'
-    }),
-    'SEEDING_CONFIG': json.dumps({
-        'user': 'reader',
-        'password': 'seeding@123',
-        'host': '10.10.10.234',
-        'port': 54300,
-        'dbname': 'sale'
-    }),
-    'HONGHA_CONFIG': json.dumps({
-        'user': 'reporter',
-        'password': 'hovxmsgewkru',
-        'host': 'db.benhvienhongha.com.vn',
-        'port': 55000,
-        'dbname': 'bvhongha'
-    }),
-    'PORTAL_GUIDE_CONFIG': json.dumps({
-        'user': 'admin',
-        'password': 'QtdlxxrisA@!sfsgo#2024',
-        'host': '10.10.10.230',
-        'port': 5432,
-        'dbname': 'portal_guide'
-    }),
 }
 
 # ============================================================================
-# LOAD AIRFLOW CONNECTIONS
+# LOAD ERP CONNECTIONS (Dynamic)
 # ============================================================================
+
+erp_configs = {}
+erp_conn_mapping = {
+    'ERP_SCI_URI': 'sci_erp_sci',
+    'ERP_KN_URI': 'sci_erp_kn',  
+    'ERP_PR_URI': 'sci_erp_pr',
+    'ERP_HH_URI': 'sci_erp_hh',
+}
+
+for env_var_name, conn_id in erp_conn_mapping.items():
+    try:
+        hook = PostgresHook(postgres_conn_id=conn_id)
+        conn = hook.get_connection(conn_id)
+        
+        # Get URI directly for new logic
+        uri = conn.get_uri()
+        if '?__extra__=' in uri:
+            uri = uri.split('?__extra__=')[0]
+            
+        erp_configs[env_var_name] = uri
+        logger.info(f"✅ Loaded ERP URI for {env_var_name} from {conn_id}")
+        
+    except Exception as e:
+        logger.warning(f"⚠️  Could not load {env_var_name} from {conn_id}: {e}")
+        erp_configs[env_var_name] = ""
 
 # DWH Product Connection (for serving layer)
 dwh_product_uri = ''
@@ -194,16 +135,13 @@ try:
     logger.info("✅ Loaded connection URI for dwh_product")
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
-    # Fallback to empty string or handle error appropriately
-    # The serving task will fail if URI is missing, which is expected
 
-# Resource requirements
+# K8s Resources
 resource_requirements = k8s.V1ResourceRequirements(
     requests={'cpu': '1000m', 'memory': '2Gi'},
     limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
-# NFS Volume (for scripts)
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
     nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH)
@@ -212,7 +150,6 @@ nfs_mount = k8s.V1VolumeMount(
     name='nfs-scripts', mount_path='/app', read_only=True
 )
 
-# DuckDB Temp Volume
 duckdb_volume = k8s.V1Volume(
     name='duckdb-temp',
     empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='5Gi')
@@ -225,10 +162,10 @@ duckdb_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
-# Task 1: Bronze Ingestion
-bronze_ingestion = KubernetesPodOperator(
-    task_id='bronze_ingestion',
-    name='etl-staging-sci-bronze-ingestion',
+# Task 1: ERP Bronze Ingestion (Multi-Source Loop)
+erp_bronze_ingestion = KubernetesPodOperator(
+    task_id='erp_bronze_ingestion',
+    name='erp-multisource-bronze-ingestion',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
@@ -237,12 +174,14 @@ bronze_ingestion = KubernetesPodOperator(
         '/app/call_functions/bronze_ingestion.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}',
-        '{{ params.load_type }}'
+        '{{ params.load_type }}',
+        'ERP'  # ARG4: Source Type
     ],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
     env_vars={
         **common_env_vars,
+        **erp_configs,  # Inject all 4 ERP configs
         'DUCKDB_TEMP_DIR': '/tmp/duckdb'
     },
     container_resources=resource_requirements,
@@ -251,10 +190,10 @@ bronze_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
-# Task 2: Serving Layer Ingestion (PostgreSQL)
-serving_layer = KubernetesPodOperator(
-    task_id='serving_layer',
-    name='etl-staging-sci-serving-layer',
+# Task 2: ERP Serving Layer (PostgreSQL)
+erp_serving_layer = KubernetesPodOperator(
+    task_id='erp_serving_layer',
+    name='erp-multisource-serving-layer',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
@@ -262,7 +201,8 @@ serving_layer = KubernetesPodOperator(
     arguments=[
         '/app/call_functions/serving_ingestion.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("table_id") | default("", true) }}'
+        '{{ dag_run.conf.get("table_id") | default("", true) }}',
+        'ERP' # ARG3: Source Type
     ],
     volumes=[nfs_volume, duckdb_volume],
     volume_mounts=[nfs_mount, duckdb_mount],
@@ -281,4 +221,4 @@ serving_layer = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-bronze_ingestion >> serving_layer
+erp_bronze_ingestion >> erp_serving_layer

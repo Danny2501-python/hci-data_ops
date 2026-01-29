@@ -18,7 +18,7 @@ from loguru import logger
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from common.etl_table_config import get_active_table_configs, get_table_config_by_id
+from common.etl_table_config import get_active_table_configs
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -231,45 +231,52 @@ class ServingIngestion:
     def process_table(self, config: Dict):
         """Process a single table"""
         table_name = config['table_name']
+        # 1. Get Data
+        arrow_table = self.get_iceberg_data(table_name)
+        if not arrow_table:
+            return
+
+        # 2. Determine Primary Key
         primary_keyword = config.get('primary_keyword')
         
         if not primary_keyword:
-            logger.warning(f"Skipping {table_name}: No primary_keyword configured")
-            return
+            # Fallback if 'id' exists in actual data schema
+            if 'id' in arrow_table.column_names:
+                 logger.warning(f"No primary_keyword for {table_name}, defaulting to 'id'")
+                 primary_keyword = 'id'
+            else:
+                 logger.warning(f"Skipping {table_name}: No primary_keyword configured and no 'id' column found")
+                 return
 
         pk_columns = [k.strip() for k in primary_keyword.split(',')]
         target_table_name = f"{table_name}_v1"
         
         logger.info(f"Processing {table_name} -> {target_table_name} (PK: {pk_columns})")
-        
-        # 1. Get Data
-        arrow_table = self.get_iceberg_data(table_name)
-        if not arrow_table:
-            return
             
-        # 2. Connect DB (lazy init)
+        # 3. Connect DB (lazy init)
         if not self.pg_conn:
             self.connect_postgres()
             
-        # 3. Ensure Schema
+        # 4. Ensure Schema
         self.ensure_target_table_exists(target_table_name, arrow_table, pk_columns)
         
-        # 4. Upsert
+        # 5. Upsert
         self.upsert_data(target_table_name, arrow_table, pk_columns)
 
-    def get_table_configs(self, table_id: Optional[int] = None) -> List[Dict]:
+    def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
         Read table configurations using common module
         """
-        configs = get_active_table_configs(table_id=table_id)
+        # If source_type is standard (None), we use the default logic
+        configs = get_active_table_configs(table_id=table_id, source=source_type)
         logger.info(f"Loaded {len(configs)} table configurations")
         return configs
 
-    def run(self, table_id: Optional[int] = None):
+    def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None):
         """Run serving ingestion"""
-        logger.info(f"Starting Serving Ingestion for {self.snapshot_date}")
+        logger.info(f"Starting Serving Ingestion for {self.snapshot_date} (Source: {source_type})")
         
-        configs = self.get_table_configs(table_id=table_id)
+        configs = self.get_table_configs(table_id=table_id, source_type=source_type)
         
         if not configs:
             logger.warning("No active configurations found")
@@ -290,9 +297,12 @@ def main():
     
     table_id = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
     
+    # Arg 3: source_type (e.g. 'ERP')
+    source_type = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+    
     try:
         job = ServingIngestion(snapshot_date)
-        job.run(table_id)
+        job.run(table_id, source_type=source_type)
     except Exception as e:
         logger.error(f"Job failed: {e}")
         sys.exit(1)

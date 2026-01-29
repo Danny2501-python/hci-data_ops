@@ -55,9 +55,15 @@ SOURCE_DB_CONNECTIONS = {
     '10.10.10.214': os.getenv('CUSTOM_DB_CONFIG'),
     '118.70.128.33': os.getenv('HONGHA_CONFIG'),
     '10.10.10.226': os.getenv('DU_PHONG_CONFIG'),
-    '10.10.10.152': os.getenv('DEV_SCI_CONFIG'),
-    '10.10.10.249': os.getenv('TEST_SCI_CONFIG'),
     '10.10.10.230': os.getenv('PORTAL_GUIDE_CONFIG'),
+}
+
+# ERP Sources: map to Environment Variables containing credentials (URIs)
+ERP_SOURCES = {
+    'sci': {'env': 'ERP_SCI_URI', 'brand_id': 7},
+    'kn':  {'env': 'ERP_KN_URI',  'brand_id': 1},
+    'pr':  {'env': 'ERP_PR_URI',  'brand_id': 3},
+    'hh':  {'env': 'ERP_HH_URI',  'brand_id': 4},
 }
 
 
@@ -91,11 +97,11 @@ class BronzeIngestion:
         
         logger.info(f"Initialized BronzeIngestion for {self.snapshot_date}")
     
-    def get_table_configs(self, table_id: Optional[int] = None) -> List[Dict]:
+    def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
         Read table configurations using common module
         """
-        configs = get_active_table_configs(table_id=table_id)
+        configs = get_active_table_configs(table_id=table_id, source=source_type)
         logger.info(f"Loaded {len(configs)} table configurations")
         return configs
     
@@ -221,6 +227,7 @@ class BronzeIngestion:
                 NestedField(field_id, "snapshot_date", DateType(), required=True),
                 NestedField(field_id + 1, "ingestion_timestamp", TimestampType(), required=True),
                 NestedField(field_id + 2, "source_server", StringType(), required=False),
+                NestedField(field_id + 3, "brand_id", IntegerType(), required=False),
             ])
             
             schema = Schema(*fields)
@@ -254,7 +261,9 @@ class BronzeIngestion:
         table,
         config: Dict,
         days_ago: int = 10,
-        load_type: str = 'incremental'
+        load_type: str = 'incremental',
+        brand_id: int = None,
+        source_name: str = None
     ) -> int:
         """
         Stream data from SQL -> PyArrow -> Iceberg (Bypassing Pandas)
@@ -339,7 +348,12 @@ class BronzeIngestion:
                             arrow_arrays.append(pa.array([get_current_timestamp_naive()] * batch_size, type=pa.timestamp('us')))
                             continue
                         if field_name == 'source_server':
-                            arrow_arrays.append(pa.array([config['server']] * batch_size, type=pa.string()))
+                            srv_val = source_name if source_name else config['server']
+                            arrow_arrays.append(pa.array([srv_val] * batch_size, type=pa.string()))
+                            continue
+                        
+                        if field_name == 'brand_id':
+                            arrow_arrays.append(pa.array([brand_id] * batch_size, type=pa.int32()))
                             continue
                             
                         # Find source column name (reverse default mapping)
@@ -431,56 +445,114 @@ class BronzeIngestion:
             logger.error(traceback.format_exc())
             raise
     
+        except Exception as e:
+            logger.error(f"❌ Failed {table_name}: {e}")
+            raise
+
+    def process_table_standard(self, config: Dict, table, days_ago: int, load_type: str):
+         """Process standard 1-to-1 table"""
+         server = config['server']
+         engine = self.create_source_connection(server)
+         if not engine:
+             logger.error(f"Skipping {config['table_name']} - no connection to {server}")
+             return 0
+         
+         try:
+             total = self.stream_and_ingest(engine, table, config, days_ago, load_type)
+             return total
+         finally:
+             engine.dispose()
+             gc.collect()
+
+    def process_table_erp(self, config: Dict, table, days_ago: int, load_type: str):
+        """Process ERP table (1-to-4 sources) using direct URI connections"""
+        total_all = 0
+        from sqlalchemy.engine.url import make_url
+
+        for name, info in ERP_SOURCES.items():
+            env_var = info['env']
+            brand_id = info['brand_id']
+            uri = os.getenv(env_var)
+            
+            if not uri:
+                logger.warning(f"Skipping {name}: Environment variable {env_var} not set")
+                continue
+
+            logger.info(f"--- Processing ERP source: {name.upper()} ---")
+            
+            # Fix SQLAlchemy dialect if needed
+            if uri.startswith("postgres://"):
+                uri = uri.replace("postgres://", "postgresql://", 1)
+                
+            try:
+                engine = create_engine(uri)
+                recs = self.stream_and_ingest(
+                    engine, table, config, days_ago, load_type, 
+                    brand_id=brand_id, source_name=name
+                )
+                total_all += recs
+                logger.info(f"Ingested {recs} from {name}")
+                
+            except Exception as e:
+                logger.error(f"Failed source {name}: {e}")
+            finally:
+                try:
+                    engine.dispose()
+                except:
+                    pass
+                
+        return total_all
+
+
     def process_table(self, config: Dict, days_ago: int = 10, load_type: str = 'incremental'):
         """
         Process a single table configuration
         """
         table_name = config['table_name']
-        server = config['server']
+        source_type = config.get('source')
         
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing table: {table_name}")
-        logger.info(f"Source: {config['source']} ({server}) - Mode: {load_type}")
+        logger.info(f"Source: {source_type} - Mode: {load_type}")
         
         try:
-            # Create source connection
-            engine = self.create_source_connection(server)
+            # 1. Determine Sample Engine for Schema
+            # For ERP, we force use 'sci' (ERP_SCI_URI) as reference schema
+            if source_type == 'ERP':
+                 # Create temp engine just for schema inspection
+                 sample_uri = os.getenv('ERP_SCI_URI')
+                 if sample_uri and sample_uri.startswith('postgres://'):
+                     sample_uri = sample_uri.replace('postgres://', 'postgresql://', 1)
+                 engine = create_engine(sample_uri) if sample_uri else None
+                 if not engine:
+                     logger.error("Missing ERP_SCI_URI for schema inspection")
+                     return
+            else:
+                 engine = self.create_source_connection(config['server'])
             if not engine:
-                logger.error(f"Skipping {table_name} - no connection")
+                logger.error(f"Skipping {table_name} - no connection to sample server {sample_server}")
                 return
-            
-            # 1. Ensure Table Exists & Get Schema (using SQLAlchemy Inspection)
-            table = self.ensure_bronze_table_exists(table_name, engine, config)
 
-            # 2. Cleanup data before write
-            # Default: overwrite partition (delete current snapshot_date data)
-            # If truncate=True: wipe entire table/partition (based on user request)
+            # 2. Ensure Table Exists
+            table = self.ensure_bronze_table_exists(table_name, engine, config)
+            engine.dispose() # Close sample connection
+            
+            # 3. Cleanup Data
             try:
                 if config.get('truncate'):
-                    logger.info(f"Truncating ENTIRE table data (truncate=True)...")
-                    table.delete(
-                        delete_filter=AlwaysTrue()
-                    )
+                    logger.info(f"Truncating ENTIRE table data...")
+                    table.delete(delete_filter=AlwaysTrue())
                 else:
                     logger.info(f"Deleting data for snapshot_date {self.snapshot_date}...")
-                    table.delete(
-                        delete_filter=EqualTo("snapshot_date", self.snapshot_date)
-                    )
+                    table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
             except Exception as e:
                 logger.warning(f"Could not delete data: {e}")
 
-            # 3. Stream Data (replaces fetch -> transform -> write)
-            total_records = self.stream_and_ingest(
-                engine, 
-                table, 
-                config, 
-                days_ago, 
-                load_type
-            )
-            
-            # Cleanup
-            engine.dispose()
-            gc.collect()
+            # 4. Ingest Data (Fork logic)
+            if source_type == 'ERP':
+                total_records = self.process_table_erp(config, table, days_ago, load_type)
+            else:
+                total_records = self.process_table_standard(config, table, days_ago, load_type)
             
             logger.success(f"✅ Completed {table_name} - {total_records} records")
             
@@ -488,16 +560,16 @@ class BronzeIngestion:
             logger.error(f"❌ Failed {table_name}: {e}")
             raise
     
-    def run(self, table_id: Optional[int] = None, days_ago: int = 10, load_type: str = 'incremental'):
+    def run(self, table_id: Optional[int] = None, days_ago: int = 10, load_type: str = 'incremental', source_type: str = None):
         """
         Execute Bronze ingestion for all configured tables
         """
         logger.info("="*80)
-        logger.info(f"Starting Bronze Ingestion for {self.snapshot_date} (Mode: {load_type})")
+        logger.info(f"Starting Bronze Ingestion (Source: {source_type})")
         logger.info("="*80)
         
-        # Get table configurations
-        configs = self.get_table_configs(table_id)
+        # Get table configurations with filter
+        configs = self.get_table_configs(table_id, source_type)
         
         if not configs:
             logger.warning("No table configurations found")
@@ -528,12 +600,15 @@ def main():
     load_type = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else 'incremental'
     load_type = load_type.lower().strip()
     
+    # Optional: source_type (e.g. 'ERP')
+    source_type = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+    
     logger.info(f"Starting Bronze Ingestion")
-    logger.info(f"Arguments -> Snapshot Date: {snapshot_date}, Table ID: {table_id}, Load Type: {load_type}")
+    logger.info(f"Arguments -> Date: {snapshot_date}, ID: {table_id}, Type: {load_type}, Source: {source_type}")
     
     try:
         job = BronzeIngestion(snapshot_date)
-        job.run(table_id=table_id, days_ago=10, load_type=load_type)
+        job.run(table_id=table_id, days_ago=10, load_type=load_type, source_type=source_type)
         
         logger.success("✅ Bronze ingestion completed successfully")
         sys.exit(0)
