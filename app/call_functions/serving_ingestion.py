@@ -86,29 +86,21 @@ class ServingIngestion:
         logger.info(f"Scanning {full_table_name} for {self.snapshot_date}")
         
         try:
-            # check if snapshot_date exists in schema to avoid error
-            # It should exist as per bronze design
-            
             scan = table.scan(
                 row_filter=EqualTo("snapshot_date", self.snapshot_date)
             )
             
-            arrow_table = scan.to_arrow()
-            if len(arrow_table) == 0:
-                logger.info(f"No data found for {self.snapshot_date}")
-                return None
-                
-            return arrow_table
+            # Use to_arrow_batch_reader to stream data instead of loading everything to memory
+            return scan.to_arrow_batch_reader()
             
         except Exception as e:
             logger.error(f"Failed to read Iceberg data: {e}")
             raise
 
-    def ensure_target_table_exists(self, target_table_name: str, arrow_table: pa.Table, pk_columns: List[str]):
+    def ensure_target_table_exists(self, target_table_name: str, schema: pa.Schema, pk_columns: List[str]):
         """
         Create target Postgres table if not exists based on Arrow schema
         """
-        schema = arrow_table.schema
         
         # Map Arrow types to Postgres types
         type_map = {
@@ -165,29 +157,15 @@ class ServingIngestion:
         finally:
             cursor.close()
 
-    def upsert_data(self, target_table_name: str, arrow_table: pa.Table, pk_columns: List[str]):
+    def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str]):
         """
-        Upsert data into Postgres
+        Upsert data into Postgres using stream processing
         """
-        if not arrow_table or len(arrow_table) == 0:
+        if not reader:
             return
 
         cursor = self.pg_conn.cursor()
-        columns = arrow_table.column_names
-        
-        # Prepare data values
-        # Convert Arrow table to Python list of tuples for execute_values
-        # Need to handle types compatible with psycopg2
-        
-        data_rows = []
-        for batch in arrow_table.to_batches():
-            d = batch.to_pydict()
-            # Zip columns
-            rows = zip(*[d[c] for c in columns])
-            data_rows.extend(rows)
-            
-        # Clean data for Postgres (handle None/NaN/Timestamps)
-        # Psycopg2 handles None as NULL. 
+        columns = reader.schema.names
         
         cols_str = ', '.join([f'"{c}"' for c in columns])
         
@@ -211,15 +189,28 @@ class ServingIngestion:
                 sql_template += f" ON CONFLICT ({pk_str}) DO NOTHING"
         
         try:
-            # Batch execution
-            BATCH_SIZE = 5000
-            for i in range(0, len(data_rows), BATCH_SIZE):
-                batch = data_rows[i:i + BATCH_SIZE]
-                execute_values(cursor, sql_template, batch, page_size=BATCH_SIZE)
-                logger.info(f"Upserted items {i} to {i+len(batch)}")
+            total_rows = 0
+            # Iterate through batches from Iceberg
+            for batch in reader:
+                if len(batch) == 0:
+                    continue
+                    
+                # Convert batch to Python list of tuples
+                d = batch.to_pydict()
+                # Zip columns
+                rows = list(zip(*[d[c] for c in columns]))
+                
+                # Batch execution for this chunk
+                BATCH_SIZE = 5000
+                for i in range(0, len(rows), BATCH_SIZE):
+                    chunk = rows[i:i + BATCH_SIZE]
+                    execute_values(cursor, sql_template, chunk, page_size=BATCH_SIZE)
+                    total_rows += len(chunk)
+                
+                logger.debug(f"Processed batch of {len(rows)} rows (Total so far: {total_rows})")
             
             self.pg_conn.commit()
-            logger.success(f"✅ Successfully processed {len(data_rows)} rows for {target_table_name}")
+            logger.success(f"✅ Successfully processed {total_rows} rows for {target_table_name}")
             
         except Exception as e:
             self.pg_conn.rollback()
@@ -231,17 +222,20 @@ class ServingIngestion:
     def process_table(self, config: Dict):
         """Process a single table"""
         table_name = config['table_name']
-        # 1. Get Data
-        arrow_table = self.get_iceberg_data(table_name)
-        if not arrow_table:
+        # 1. Get Data Stream
+        reader = self.get_iceberg_data(table_name)
+        if not reader:
             return
 
         # 2. Determine Primary Key
         primary_keyword = config.get('primary_keyword')
         
+        # Use reader.schema.names instead of arrow_table.column_names
+        column_names = reader.schema.names
+        
         if not primary_keyword:
             # Fallback if 'id' exists in actual data schema
-            if 'id' in arrow_table.column_names:
+            if 'id' in column_names:
                  logger.warning(f"No primary_keyword for {table_name}, defaulting to 'id'")
                  primary_keyword = 'id'
             else:
@@ -257,11 +251,11 @@ class ServingIngestion:
         if not self.pg_conn:
             self.connect_postgres()
             
-        # 4. Ensure Schema
-        self.ensure_target_table_exists(target_table_name, arrow_table, pk_columns)
+        # 4. Ensure Schema (pass schema instead of table)
+        self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns)
         
-        # 5. Upsert
-        self.upsert_data(target_table_name, arrow_table, pk_columns)
+        # 5. Upsert (pass reader)
+        self.upsert_data(target_table_name, reader, pk_columns)
 
     def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
