@@ -190,33 +190,50 @@ class ServingIngestion:
             total_rows = 0
             
             # Iterate through batches
+            # Iterate through batches
+            CHUNK_SIZE = 20000 # Process max 20k rows at a time to control RAM peak
+            
+            import gc # Ensure gc is available
+
             for batch in reader:
                 if len(batch) == 0:
                     continue
                 
                 # Check types and cast if necessary (e.g. Timestamp to generic string if issues arise)
                 # For now rely on PyArrow's default CSV serialization which is ISO8601
-                
-                # Buffer for CSV data
-                csv_buffer = io.BytesIO()
-                
-                # Write batch to CSV buffer
-                # Note: We match the column order of the table (assuming created from same schema)
-                # but explicit column list in COPY is safer.
                 columns = batch.schema.names
-                
-                pv.write_csv(batch, csv_buffer, write_options=csv_write_options)
-                csv_buffer.seek(0)
-                
                 cols_str = ', '.join([f'"{c}"' for c in columns])
                 
-                sql_copy = f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)"
+                # Manual slicing for large batches to avoid huge CSV buffers
+                num_rows = len(batch)
                 
-                cursor.copy_expert(sql_copy, csv_buffer)
+                for i in range(0, num_rows, CHUNK_SIZE):
+                    # Slice the batch (view, zero-copy usually)
+                    chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
+                    
+                    # Buffer for CSV data
+                    csv_buffer = io.BytesIO()
+                    
+                    try:
+                        # Write chunk to CSV buffer
+                        pv.write_csv(chunk, csv_buffer, write_options=csv_write_options)
+                        csv_buffer.seek(0)
+                        
+                        sql_copy = f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)"
+                        cursor.copy_expert(sql_copy, csv_buffer)
+                        
+                        total_rows += len(chunk)
+                        logger.debug(f"Streamed chunk {len(chunk)} rows to staging (Total: {total_rows})")
+                        
+                    finally:
+                        # Explicit cleanup
+                        csv_buffer.close()
+                        del csv_buffer
+                        del chunk
                 
-                del csv_buffer
-                total_rows += len(batch)
-                logger.debug(f"Streamed {len(batch)} rows to staging (Total: {total_rows})")
+                # Force GC after each big batch
+                del batch
+                gc.collect()
 
             # 3. Perform Merge/Upsert from Staging to Target
             cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
@@ -273,8 +290,9 @@ class ServingIngestion:
                     cursor.execute(f"ALTER TABLE {target_table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
                     
                     # 2. Delete existing rows (DELETE ... USING ...)
-                    pk_match = " AND ".join([f'"{target_table_name}"."{c}" = "{staging_table}"."{c}"' for c in pk_columns])
-                    sql_delete = f'DELETE FROM {target_table_name} USING {staging_table} WHERE {pk_match}'
+                    # Use aliases to safely handle table names (even with schemas) inside the WHERE clause
+                    pk_match = " AND ".join([f'dest."{c}" = src."{c}"' for c in pk_columns])
+                    sql_delete = f'DELETE FROM {target_table_name} AS dest USING {staging_table} AS src WHERE {pk_match}'
                     logger.info("Fallback: Deleting existing rows matching keys")
                     cursor.execute(sql_delete)
                     
