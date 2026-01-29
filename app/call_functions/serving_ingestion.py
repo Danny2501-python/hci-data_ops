@@ -9,7 +9,9 @@ from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 import pyarrow as pa
 import psycopg2
-from psycopg2.extras import execute_values
+import pyarrow.csv as pv
+import io
+import uuid
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from sqlalchemy import create_engine
@@ -159,64 +161,106 @@ class ServingIngestion:
 
     def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str]):
         """
-        Upsert data into Postgres using stream processing
+        Upsert data into Postgres using Staging Table + COPY protocol
+        This avoids OOM by not creating Python objects for every row.
         """
         if not reader:
             return
 
+        # Generate a unique staging table name
+        staging_table = f"{target_table_name}_staging_{uuid.uuid4().hex[:8]}"
+        
         cursor = self.pg_conn.cursor()
-        columns = reader.schema.names
-        
-        cols_str = ', '.join([f'"{c}"' for c in columns])
-        
-        sql_template = f"INSERT INTO {target_table_name} ({cols_str}) VALUES %s"
-        
-        if pk_columns:
-            # ON CONFLICT behavior
-            pk_str = ", ".join([f'"{c}"' for c in pk_columns])
-            
-            # Update all columns EXCEPT PK
-            update_cols = [c for c in columns if c not in pk_columns]
-            
-            if update_cols:
-                update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-                sql_template += f"""
-                ON CONFLICT ({pk_str}) 
-                DO UPDATE SET {update_set}
-                """
-            else:
-                # If only PK columns exist (edge case), do nothing
-                sql_template += f" ON CONFLICT ({pk_str}) DO NOTHING"
         
         try:
+            # 1. Create Staging Table (Unlogged for speed)
+            # clone structure from target_table
+            cursor.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table_name} INCLUDING DEFAULTS)")
+            
+            # 2. Stream Data into Staging using COPY
+            # CSV format options for PyArrow
+            csv_write_options = pv.WriteOptions(include_header=False)
+            # Adjust timestamp format if needed, but ISO8601 usually works for Postgres
+            
             total_rows = 0
-            # Iterate through batches from Iceberg
+            
+            # Iterate through batches
             for batch in reader:
                 if len(batch) == 0:
                     continue
-                    
-                # Convert batch to Python list of tuples
-                d = batch.to_pydict()
-                # Zip columns
-                rows = list(zip(*[d[c] for c in columns]))
                 
-                # Batch execution for this chunk
-                BATCH_SIZE = 20000
-                for i in range(0, len(rows), BATCH_SIZE):
-                    chunk = rows[i:i + BATCH_SIZE]
-                    execute_values(cursor, sql_template, chunk, page_size=BATCH_SIZE)
-                    total_rows += len(chunk)
+                # Check types and cast if necessary (e.g. Timestamp to generic string if issues arise)
+                # For now rely on PyArrow's default CSV serialization which is ISO8601
                 
-                logger.debug(f"Processed batch of {len(rows)} rows (Total so far: {total_rows})")
+                # Buffer for CSV data
+                csv_buffer = io.BytesIO()
+                
+                # Write batch to CSV buffer
+                # Note: We match the column order of the table (assuming created from same schema)
+                # but explicit column list in COPY is safer.
+                columns = batch.schema.names
+                
+                pv.write_csv(batch, csv_buffer, write_options=csv_write_options)
+                csv_buffer.seek(0)
+                
+                cols_str = ', '.join([f'"{c}"' for c in columns])
+                
+                sql_copy = f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)"
+                
+                cursor.copy_expert(sql_copy, csv_buffer)
+                
+                del csv_buffer
+                total_rows += len(batch)
+                logger.debug(f"Streamed {len(batch)} rows to staging (Total: {total_rows})")
+
+            # 3. Perform Merge/Upsert from Staging to Target
+            cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
+            
+            if pk_columns:
+                pk_str = ", ".join([f'"{c}"' for c in pk_columns])
+                columns = reader.schema.names
+                update_cols = [c for c in columns if c not in pk_columns]
+
+                if update_cols:
+                    update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+                    sql_merge = f"""
+                    INSERT INTO {target_table_name} ({cols_str})
+                    SELECT {cols_str} FROM {staging_table}
+                    ON CONFLICT ({pk_str}) 
+                    DO UPDATE SET {update_set}
+                    """
+                else:
+                    # PK only case
+                    sql_merge = f"""
+                    INSERT INTO {target_table_name} ({cols_str})
+                    SELECT {cols_str} FROM {staging_table}
+                    ON CONFLICT ({pk_str}) DO NOTHING
+                    """
+            else:
+                # No PK, just append (though this shouldn't happen based on logic)
+                sql_merge = f"""
+                INSERT INTO {target_table_name} ({cols_str})
+                SELECT {cols_str} FROM {staging_table}
+                """
+            
+            logger.info("Merging data from staging to target table...")
+            cursor.execute(sql_merge)
             
             self.pg_conn.commit()
-            logger.success(f"✅ Successfully processed {total_rows} rows for {target_table_name}")
-            
+            logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
+
         except Exception as e:
             self.pg_conn.rollback()
-            logger.error(f"Failed to upsert data: {e}")
+            logger.error(f"Failed to upsert data via staging: {e}")
             raise
         finally:
+            # 4. Cleanup Staging
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                self.pg_conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to drop staging table {staging_table}: {e}")
+            
             cursor.close()
 
     def process_table(self, config: Dict):
