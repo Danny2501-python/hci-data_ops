@@ -147,6 +147,12 @@ resource_requirements = k8s.V1ResourceRequirements(
     limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
+# Serving Layer Resource requirements
+resource_requirements_serving = k8s.V1ResourceRequirements(
+    requests={'cpu': '2000m', 'memory': '4Gi'},
+    limits={'cpu': '3000m', 'memory': '6Gi'}
+)
+
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
     nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH)
@@ -217,7 +223,7 @@ erp_serving_layer = KubernetesPodOperator(
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_dev_uri,
     },
-    container_resources=resource_requirements,
+    container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,

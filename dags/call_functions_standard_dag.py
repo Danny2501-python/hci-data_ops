@@ -208,6 +208,12 @@ resource_requirements = k8s.V1ResourceRequirements(
     limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
+# Serving Layer Resource requirements (Higher memory for large efficient loads)
+resource_requirements_serving = k8s.V1ResourceRequirements(
+    requests={'cpu': '2000m', 'memory': '4Gi'},
+    limits={'cpu': '3000m', 'memory': '6Gi'}
+)
+
 # NFS Volume (for scripts)
 nfs_volume = k8s.V1Volume(
     name='nfs-scripts',
@@ -278,7 +284,7 @@ serving_layer = KubernetesPodOperator(
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_dev_uri,
     },
-    container_resources=resource_requirements,
+    container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
