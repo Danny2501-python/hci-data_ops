@@ -249,10 +249,47 @@ class ServingIngestion:
                 """
             
             logger.info("Merging data from staging to target table...")
-            cursor.execute(sql_merge)
-            
-            self.pg_conn.commit()
-            logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
+            try:
+                cursor.execute(sql_merge)
+                self.pg_conn.commit()
+                logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
+            except Exception as e:
+                self.pg_conn.rollback()
+                logger.warning(f"Standard UPSERT failed: {e}. Attempting fallback (Drop PK -> Delete -> Insert)")
+                
+                if not pk_columns:
+                    # If no PK, we can't really "Delete by key", so re-raise
+                    raise e
+                
+                # Renew cursor
+                cursor.close()
+                cursor = self.pg_conn.cursor()
+                
+                try:
+                    # 1. Drop PK Constraint
+                    # Assumption: Default Postgres naming convention: table_name + _pkey
+                    constraint_name = f"{target_table_name}_pkey"
+                    logger.info(f"Fallback: Dropping constraint {constraint_name} if exists")
+                    cursor.execute(f"ALTER TABLE {target_table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
+                    
+                    # 2. Delete existing rows (DELETE ... USING ...)
+                    pk_match = " AND ".join([f'"{target_table_name}"."{c}" = "{staging_table}"."{c}"' for c in pk_columns])
+                    sql_delete = f'DELETE FROM {target_table_name} USING {staging_table} WHERE {pk_match}'
+                    logger.info("Fallback: Deleting existing rows matching keys")
+                    cursor.execute(sql_delete)
+                    
+                    # 3. Insert new rows
+                    sql_insert = f'INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table}'
+                    logger.info("Fallback: Inserting new rows")
+                    cursor.execute(sql_insert)
+                    
+                    self.pg_conn.commit()
+                    logger.success(f"✅ Fallback successful: Loaded {total_rows} rows via DELETE+INSERT")
+                    
+                except Exception as fallback_e:
+                    self.pg_conn.rollback()
+                    logger.error(f"Fallback failed: {fallback_e}")
+                    raise fallback_e  # Raise the secondary error
 
         except Exception as e:
             self.pg_conn.rollback()
