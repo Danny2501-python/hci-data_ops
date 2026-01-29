@@ -201,7 +201,7 @@ class ServingIngestion:
                 rows = list(zip(*[d[c] for c in columns]))
                 
                 # Batch execution for this chunk
-                BATCH_SIZE = 50000
+                BATCH_SIZE = 20000
                 for i in range(0, len(rows), BATCH_SIZE):
                     chunk = rows[i:i + BATCH_SIZE]
                     execute_values(cursor, sql_template, chunk, page_size=BATCH_SIZE)

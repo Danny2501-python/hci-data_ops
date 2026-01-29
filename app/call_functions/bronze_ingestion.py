@@ -60,10 +60,10 @@ SOURCE_DB_CONNECTIONS = {
 
 # ERP Sources: map to Environment Variables containing credentials (URIs)
 ERP_SOURCES = {
-    'sci': {'env': 'ERP_SCI_URI', 'brand_id': 7},
-    'kn':  {'env': 'ERP_KN_URI',  'brand_id': 1},
-    'pr':  {'env': 'ERP_PR_URI',  'brand_id': 3},
-    'hh':  {'env': 'ERP_HH_URI',  'brand_id': 4},
+    'sci': {'env': 'ERP_SCI_URI', 'brand_etl': 7},
+    'kn':  {'env': 'ERP_KN_URI',  'brand_etl': 1},
+    'pr':  {'env': 'ERP_PR_URI',  'brand_etl': 3},
+    'hh':  {'env': 'ERP_HH_URI',  'brand_etl': 4},
 }
 
 
@@ -227,7 +227,7 @@ class BronzeIngestion:
                 NestedField(field_id, "snapshot_date", DateType(), required=True),
                 NestedField(field_id + 1, "ingestion_timestamp", TimestampType(), required=True),
                 NestedField(field_id + 2, "source_server", StringType(), required=False),
-                NestedField(field_id + 3, "brand_id", IntegerType(), required=False),
+                NestedField(field_id + 3, "brand_etl", IntegerType(), required=False),
             ])
             
             schema = Schema(*fields)
@@ -262,7 +262,7 @@ class BronzeIngestion:
         config: Dict,
         days_ago: int = 10,
         load_type: str = 'incremental',
-        brand_id: int = None,
+        brand_etl: int = None,
         source_name: str = None
     ) -> int:
         """
@@ -352,8 +352,8 @@ class BronzeIngestion:
                             arrow_arrays.append(pa.array([srv_val] * batch_size, type=pa.string()))
                             continue
                         
-                        if field_name == 'brand_id':
-                            arrow_arrays.append(pa.array([brand_id] * batch_size, type=pa.int32()))
+                        if field_name == 'brand_etl':
+                            arrow_arrays.append(pa.array([brand_etl] * batch_size, type=pa.int32()))
                             continue
                             
                         # Find source column name (reverse default mapping)
@@ -471,7 +471,7 @@ class BronzeIngestion:
 
         for name, info in ERP_SOURCES.items():
             env_var = info['env']
-            brand_id = info['brand_id']
+            brand_etl = info['brand_etl']
             uri = os.getenv(env_var)
             
             if not uri:
@@ -488,7 +488,7 @@ class BronzeIngestion:
                 engine = create_engine(uri)
                 recs = self.stream_and_ingest(
                     engine, table, config, days_ago, load_type, 
-                    brand_id=brand_id, source_name=name
+                    brand_etl=brand_etl, source_name=name
                 )
                 total_all += recs
                 logger.info(f"Ingested {recs} from {name}")
