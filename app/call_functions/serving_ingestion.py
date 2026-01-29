@@ -240,6 +240,11 @@ class ServingIngestion:
             # so it can choose the optimal join plan for the MERGE step.
             logger.debug("Analyzing staging table...")
             cursor.execute(f"ANALYZE {staging_table}")
+            
+            # COMMIT here to persist the staging table.
+            # If the subsequent MERGE fails and we rollback, we don't want to lose the staging table 
+            # because we need it for the Fallback strategy (Delete+Insert).
+            self.pg_conn.commit()
 
             # 3. Perform Merge/Upsert from Staging to Target
             cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
