@@ -68,34 +68,53 @@ class ServingIngestion:
         dependencies = []
         cursor = self.pg_conn.cursor()
         try:
-            # Query pg_depend to find dependent relations
-            # Note: This finds objects that depend on the table (refobjid)
+            # Recursive query to find direct and indirect dependencies
             query = f"""
+            WITH RECURSIVE dependency_tree AS (
+                -- Base case: direct dependencies of the table
+                SELECT 
+                    rw.ev_class AS oid, 
+                    1 AS level
+                FROM pg_rewrite rw
+                JOIN pg_depend d ON d.objid = rw.oid
+                WHERE d.refobjid = '{table_name}'::regclass
+                AND rw.ev_class != d.refobjid
+                
+                UNION ALL
+                
+                -- Recursive case: dependencies of the found views
+                SELECT 
+                    rw.ev_class AS oid, 
+                    dt.level + 1
+                FROM pg_rewrite rw
+                JOIN pg_depend d ON d.objid = rw.oid
+                JOIN dependency_tree dt ON d.refobjid = dt.oid
+                WHERE rw.ev_class != d.refobjid
+            )
             SELECT 
                 n.nspname AS schema_name,
                 c.relname AS relation_name,
-                c.relkind AS type,   -- 'v' for View, 'm' for Materialized View
-                pg_get_viewdef(c.oid, true) AS definition
-            FROM pg_rewrite rw
-            JOIN pg_depend d ON d.objid = rw.oid
-            JOIN pg_class c ON c.oid = rw.ev_class
+                c.relkind AS type,
+                pg_get_viewdef(c.oid, true) AS definition,
+                MAX(dt.level) AS max_level -- Use max level to determine restore order
+            FROM dependency_tree dt
+            JOIN pg_class c ON c.oid = dt.oid
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE d.refobjid = '{table_name}'::regclass
-            AND c.oid != d.refobjid
-            ORDER BY c.relkind DESC; -- Try to handle MVs before Views if possible, though strict ordering requires recursive DAG traversal
+            GROUP BY c.oid, n.nspname, c.relname, c.relkind, c.oid
+            ORDER BY max_level ASC; -- Restore Level 1 (Direct) first, then Level 2 (Indirect)
             """
             cursor.execute(query)
             rows = cursor.fetchall()
             
             for row in rows:
-                schema, name, king, definition = row
+                schema, name, king, definition, level = row
                 full_name = f'"{schema}"."{name}"' if schema != 'public' else f'"{name}"'
                 dependencies.append({
                     'name': full_name,
                     'type': 'MATERIALIZED VIEW' if king == 'm' else 'VIEW',
                     'definition': definition
                 })
-                logger.info(f"Detected dependency: {full_name} ({'MatView' if king == 'm' else 'View'})")
+                logger.info(f"Detected dependency (L{level}): {full_name}")
                 
         except Exception as e:
             logger.warning(f"Could not check dependencies for {table_name} (might not exist yet): {e}")
