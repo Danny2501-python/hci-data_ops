@@ -112,9 +112,23 @@ class ServingIngestion:
                 dependencies.append({
                     'name': full_name,
                     'type': 'MATERIALIZED VIEW' if king == 'm' else 'VIEW',
-                    'definition': definition
+                    'definition': definition,
+                    'level': level
                 })
                 logger.info(f"Detected dependency (L{level}): {full_name}")
+            
+            # Persist to backup table
+            if dependencies:
+                import json
+                deps_json = json.dumps(dependencies)
+                cursor.execute("""
+                    INSERT INTO public.etl_dependency_backup (table_name, backup_data, created_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (table_name) 
+                    DO UPDATE SET backup_data = EXCLUDED.backup_data, created_at = NOW()
+                """, (table_name, deps_json))
+                self.pg_conn.commit()
+                logger.info(f"Persisted dependency backup for {table_name} to DB")
                 
         except Exception as e:
             logger.warning(f"Could not check dependencies for {table_name} (might not exist yet): {e}")
@@ -124,14 +138,29 @@ class ServingIngestion:
             
         return dependencies
 
-    def restore_dependencies(self, dependencies: List[Dict]):
+    def restore_dependencies(self, dependencies: List[Dict], table_name: str = None):
         """
-        Re-create views/matviews from backups
+        Re-create views/matviews from backups.
+        If dependencies list is empty, try to recover from DB backup using table_name.
         """
+        cursor = self.pg_conn.cursor()
+        
+        # Recovery Mode: Try to fetch from DB if memory list is empty
+        if not dependencies and table_name:
+            try:
+                logger.info(f"Checking for orphaned dependency backup for {table_name}...")
+                cursor.execute("SELECT backup_data FROM public.etl_dependency_backup WHERE table_name = %s", (table_name,))
+                row = cursor.fetchone()
+                if row:
+                    import json
+                    dependencies = json.loads(row[0])
+                    logger.warning(f"RECOVERY: Found {len(dependencies)} dependencies from previous crash backup!")
+            except Exception as e:
+                logger.warning(f"Recovery check failed: {e}")
+
         if not dependencies:
             return
             
-        cursor = self.pg_conn.cursor()
         try:
             for dep in dependencies:
                 logger.info(f"Restoring dependency: {dep['name']}")
@@ -141,8 +170,15 @@ class ServingIngestion:
                     self.pg_conn.commit()
                 except Exception as e:
                     self.pg_conn.rollback()
-                    logger.error(f"Failed to restore {dep['name']}: {e}")
-                    
+                    # Improve error logging
+                    logger.error(f"Failed to restore {dep['name']} (Level {dep.get('level')}): {e}")
+            
+            # Cleanup backup after success
+            if table_name:
+                cursor.execute("DELETE FROM public.etl_dependency_backup WHERE table_name = %s", (table_name,))
+                self.pg_conn.commit()
+                logger.info(f"Cleared dependency backup for {table_name}")
+
         finally:
             cursor.close()
 
@@ -155,6 +191,18 @@ class ServingIngestion:
             self.pg_conn = psycopg2.connect(POSTGRES_URI)
             self.pg_conn.autocommit = False
             logger.info("Connected to PostgreSQL")
+            
+            # Ensure backup table exists for crash recovery
+            with self.pg_conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS public.etl_dependency_backup (
+                        table_name TEXT PRIMARY KEY,
+                        backup_data JSONB,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                self.pg_conn.commit()
+
         except Exception as e:
             logger.error(f"Failed to connect to Postgres: {e}")
             raise
@@ -468,10 +516,14 @@ class ServingIngestion:
         # 5. Upsert (pass reader)
         self.upsert_data(target_table_name, reader, pk_columns)
         
-        # 6. Restore Dependencies (if any were dropped)
-        if drop_table and dependencies:
-            logger.info("Restoring dropped dependencies...")
-            self.restore_dependencies(dependencies)
+        # 6. Restore Dependencies
+        # Always attempt restore if we dropped, OR if we want to check for orphaned backups (Self-Healing)
+        # We pass the dependencies list (which might be empty if we crashed before) and table_name
+        if drop_table or True: # Force check for recovery
+             # Only log if we have something to restore
+            if dependencies or drop_table:
+                 logger.info("Restoring dependencies...")
+            self.restore_dependencies(dependencies, table_name=target_table_name)
 
     def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
