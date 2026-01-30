@@ -60,6 +60,73 @@ class ServingIngestion:
         
         self.pg_conn = None
         
+    def backup_dependencies(self, table_name: str) -> List[Dict]:
+        """
+        Find all views/materialized views dependent on the table.
+        Returns a list of dicts with 'type', 'name', 'definition'.
+        """
+        dependencies = []
+        cursor = self.pg_conn.cursor()
+        try:
+            # Query pg_depend to find dependent relations
+            # Note: This finds objects that depend on the table (refobjid)
+            query = f"""
+            SELECT 
+                n.nspname AS schema_name,
+                c.relname AS relation_name,
+                c.relkind AS type,   -- 'v' for View, 'm' for Materialized View
+                pg_get_viewdef(c.oid, true) AS definition
+            FROM pg_rewrite rw
+            JOIN pg_depend d ON d.objid = rw.oid
+            JOIN pg_class c ON c.oid = rw.ev_class
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE d.refobjid = '{table_name}'::regclass
+            AND c.oid != d.refobjid
+            ORDER BY c.relkind DESC; -- Try to handle MVs before Views if possible, though strict ordering requires recursive DAG traversal
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                schema, name, king, definition = row
+                full_name = f'"{schema}"."{name}"' if schema != 'public' else f'"{name}"'
+                dependencies.append({
+                    'name': full_name,
+                    'type': 'MATERIALIZED VIEW' if king == 'm' else 'VIEW',
+                    'definition': definition
+                })
+                logger.info(f"Detected dependency: {full_name} ({'MatView' if king == 'm' else 'View'})")
+                
+        except Exception as e:
+            logger.warning(f"Could not check dependencies for {table_name} (might not exist yet): {e}")
+            self.pg_conn.rollback()
+        finally:
+            cursor.close()
+            
+        return dependencies
+
+    def restore_dependencies(self, dependencies: List[Dict]):
+        """
+        Re-create views/matviews from backups
+        """
+        if not dependencies:
+            return
+            
+        cursor = self.pg_conn.cursor()
+        try:
+            for dep in dependencies:
+                logger.info(f"Restoring dependency: {dep['name']}")
+                sql = f"CREATE {dep['type']} {dep['name']} AS {dep['definition']}"
+                try:
+                    cursor.execute(sql)
+                    self.pg_conn.commit()
+                except Exception as e:
+                    self.pg_conn.rollback()
+                    logger.error(f"Failed to restore {dep['name']}: {e}")
+                    
+        finally:
+            cursor.close()
+
     def connect_postgres(self):
         """Connect to PostgreSQL"""
         if not POSTGRES_URI:
@@ -99,7 +166,7 @@ class ServingIngestion:
             logger.error(f"Failed to read Iceberg data: {e}")
             raise
 
-    def ensure_target_table_exists(self, target_table_name: str, schema: pa.Schema, pk_columns: List[str], drop_table: bool = False):
+    def ensure_target_table_exists(self, target_table_name: str, schema: pa.Schema, pk_columns: List[str], drop_table: bool = False, dependencies_out: List = None):
         """
         Create target Postgres table if not exists based on Arrow schema
         """
@@ -107,8 +174,16 @@ class ServingIngestion:
         try:
              # Drop table if requested
             if drop_table:
-                logger.warning(f"Dropping table {target_table_name} as requested")
-                cursor.execute(f"DROP TABLE IF EXISTS {target_table_name}")
+                if dependencies_out is not None:
+                    try:
+                        found_deps = self.backup_dependencies(target_table_name)
+                        if found_deps:
+                            dependencies_out.extend(found_deps)
+                    except Exception as e:
+                         logger.warning(f"Failed to backup dependencies for {target_table_name}: {e}")
+
+                logger.warning(f"Dropping table {target_table_name} AND DEPENDENCIES (CASCADE) as requested")
+                cursor.execute(f"DROP TABLE IF EXISTS {target_table_name} CASCADE")
                 self.pg_conn.commit()
 
             # Map Arrow types to Postgres types
@@ -368,10 +443,16 @@ class ServingIngestion:
             
         # 4. Ensure Schema (pass schema instead of table)
         drop_table = config.get('drop_table', False)
-        self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns, drop_table=drop_table)
+        dependencies = []
+        self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns, drop_table=drop_table, dependencies_out=dependencies)
         
         # 5. Upsert (pass reader)
         self.upsert_data(target_table_name, reader, pk_columns)
+        
+        # 6. Restore Dependencies (if any were dropped)
+        if drop_table and dependencies:
+            logger.info("Restoring dropped dependencies...")
+            self.restore_dependencies(dependencies)
 
     def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
