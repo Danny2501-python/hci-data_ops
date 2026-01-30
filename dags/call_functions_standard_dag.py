@@ -204,8 +204,8 @@ except Exception as e:
 
 # Resource requirements
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
+    requests={'cpu': '2000m', 'memory': '4Gi'},
+    limits={'cpu': '3000m', 'memory': '6Gi'}
 )
 
 # Serving Layer Resource requirements (Higher memory for large efficient loads)
