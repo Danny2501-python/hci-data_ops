@@ -291,7 +291,7 @@ class BronzeIngestion:
         logger.info(f"Generated Query: {query_str}")
         query = text(query_str)
         
-        BATCH_SIZE = 50000
+        BATCH_SIZE = 20000
         total_ingested = 0
         
         logger.info(f"Starting STREAM ingestion for {config['table_name']}")
