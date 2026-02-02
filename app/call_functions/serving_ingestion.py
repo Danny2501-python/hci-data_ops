@@ -138,57 +138,22 @@ class ServingIngestion:
             
         return dependencies
 
-    def restore_dependencies(self, dependencies: List[Dict], table_name: str = None):
-        """
-        Re-create views/matviews from backups.
-        If dependencies list is empty, try to recover from DB backup using table_name.
-        """
-        cursor = self.pg_conn.cursor()
-        
-        # Recovery Mode: Try to fetch from DB if memory list is empty
-        if not dependencies and table_name:
-            try:
-                logger.info(f"Checking for orphaned dependency backup for {table_name}...")
-                cursor.execute("SELECT backup_data FROM public.etl_dependency_backup WHERE table_name = %s", (table_name,))
-                row = cursor.fetchone()
-                if row:
-                    import json
-                    dependencies = json.loads(row[0])
-                    logger.warning(f"RECOVERY: Found {len(dependencies)} dependencies from previous crash backup!")
-            except Exception as e:
-                logger.warning(f"Recovery check failed: {e}")
 
-        if not dependencies:
-            return
-            
-        try:
-            for dep in dependencies:
-                logger.info(f"Restoring dependency: {dep['name']}")
-                sql = f"CREATE {dep['type']} {dep['name']} AS {dep['definition']}"
-                try:
-                    cursor.execute(sql)
-                    self.pg_conn.commit()
-                except Exception as e:
-                    self.pg_conn.rollback()
-                    # Improve error logging
-                    logger.error(f"Failed to restore {dep['name']} (Level {dep.get('level')}): {e}")
-            
-            # Cleanup backup after success
-            if table_name:
-                cursor.execute("DELETE FROM public.etl_dependency_backup WHERE table_name = %s", (table_name,))
-                self.pg_conn.commit()
-                logger.info(f"Cleared dependency backup for {table_name}")
-
-        finally:
-            cursor.close()
 
     def connect_postgres(self):
-        """Connect to PostgreSQL"""
+        """Connect to PostgreSQL with Keepalive enabled"""
         if not POSTGRES_URI:
             raise ValueError("POSTGRES_URI environment variable not set")
         
         try:
-            self.pg_conn = psycopg2.connect(POSTGRES_URI)
+            # Enable TCP Keepalive to prevent connection drops during long Materialized View restoration
+            self.pg_conn = psycopg2.connect(
+                POSTGRES_URI,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5
+            )
             self.pg_conn.autocommit = False
             logger.info("Connected to PostgreSQL")
             
@@ -516,14 +481,11 @@ class ServingIngestion:
         # 5. Upsert (pass reader)
         self.upsert_data(target_table_name, reader, pk_columns)
         
-        # 6. Restore Dependencies
-        # Always attempt restore if we dropped, OR if we want to check for orphaned backups (Self-Healing)
-        # We pass the dependencies list (which might be empty if we crashed before) and table_name
-        if drop_table or True: # Force check for recovery
-             # Only log if we have something to restore
-            if dependencies or drop_table:
-                 logger.info("Restoring dependencies...")
-            self.restore_dependencies(dependencies, table_name=target_table_name)
+        # 6. Restore Dependencies (SKIPPED AS REQUESTED)
+        # User requested manual restoration. Dependencies are preserved in public.etl_dependency_backup
+        if drop_table and dependencies:
+             logger.warning(f"Dependencies for {target_table_name} have been dropped (CASCADE).")
+             logger.warning(f"Backup saved to table 'public.etl_dependency_backup'. Please restore manually.")
 
     def get_table_configs(self, table_id: Optional[int] = None, source_type: Optional[str] = None) -> List[Dict]:
         """
