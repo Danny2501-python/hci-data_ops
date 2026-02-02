@@ -271,7 +271,7 @@ class ServingIngestion:
         finally:
             cursor.close()
 
-    def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str]):
+    def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str], truncate: bool = False):
         """
         Upsert data into Postgres using Staging Table + COPY protocol
         This avoids OOM by not creating Python objects for every row.
@@ -356,6 +356,20 @@ class ServingIngestion:
             # 3. Perform Merge/Upsert from Staging to Target
             cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
             
+            if truncate:
+                logger.warning(f"Truncating table {target_table_name} as requested before loading")
+                cursor.execute(f"TRUNCATE TABLE {target_table_name}")
+                
+                sql_insert = f"""
+                INSERT INTO {target_table_name} ({cols_str})
+                SELECT {cols_str} FROM {staging_table}
+                """
+                logger.info("Inserting data from staging to target table (Truncate mode)...")
+                cursor.execute(sql_insert)
+                self.pg_conn.commit()
+                logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name} (Truncate & Load)")
+                return
+
             if pk_columns:
                 pk_str = ", ".join([f'"{c}"' for c in pk_columns])
                 columns = reader.schema.names
@@ -479,7 +493,9 @@ class ServingIngestion:
         self.ensure_target_table_exists(target_table_name, reader.schema, pk_columns, drop_table=drop_table, dependencies_out=dependencies)
         
         # 5. Upsert (pass reader)
-        self.upsert_data(target_table_name, reader, pk_columns)
+        # 5. Upsert (pass reader)
+        truncate = config.get('truncate', False)
+        self.upsert_data(target_table_name, reader, pk_columns, truncate=truncate)
         
         # 6. Restore Dependencies (SKIPPED AS REQUESTED)
         # User requested manual restoration. Dependencies are preserved in public.etl_dependency_backup
