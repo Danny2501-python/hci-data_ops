@@ -230,10 +230,10 @@ class GoogleSheetIngestion:
             # Determine field type
             if col_name == 'snapshot_date':
                 field_type = DateType()
-                required = True
+                required = False  # PyArrow sets all fields as nullable
             elif col_name == 'ingestion_timestamp':
                 field_type = TimestampType()
-                required = True
+                required = False  # PyArrow sets all fields as nullable
             else:
                 field_type = get_iceberg_type(dtype)
                 required = False
