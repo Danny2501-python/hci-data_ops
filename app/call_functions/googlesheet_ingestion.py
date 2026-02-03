@@ -273,9 +273,20 @@ class GoogleSheetIngestion:
                 logger.info(f"Deleting existing data for {self.snapshot_date}")
                 table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
             
-            # Append new data with schema merge (handles new columns automatically)
+            # Update schema if new columns exist (schema evolution)
+            try:
+                from pyiceberg.table import UpdateSchema
+                with table.update_schema() as update:
+                    for field in schema.fields:
+                        if field.name not in [f.name for f in table.schema().fields]:
+                            update.add_column(field.name, field.field_type, required=field.required)
+                            logger.info(f"Added new column to schema: {field.name}")
+            except Exception as schema_err:
+                logger.debug(f"Schema update skipped: {schema_err}")
+            
+            # Append new data
             logger.info(f"Writing {len(df)} rows to {table_name}")
-            table.append(arrow_table, schema_mode='merge')
+            table.append(arrow_table)
             
             logger.success(f"✅ Successfully wrote {len(df)} rows to {table_name}")
             
