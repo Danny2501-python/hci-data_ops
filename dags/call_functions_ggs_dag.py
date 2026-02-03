@@ -67,6 +67,11 @@ dag = DAG(
             type=['null', 'integer'],
             description='Process specific sheet ID only. Leave empty to process all.',
         ),
+        'drop_table': Param(
+            default=False,
+            type='boolean',
+            description='Drop and recreate serving tables (full refresh)',
+        ),
     },
     user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
@@ -149,36 +154,35 @@ googlesheet_bronze_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
-# Task 2: Serving Layer (Future - uncomment when ready)
-# googlesheet_serving_layer = KubernetesPodOperator(
-#     task_id='googlesheet_serving_layer',
-#     name='googlesheet-serving-layer',
-#     namespace=NAMESPACE,
-#     image=PYTHON_ETL_IMAGE,
-#     image_pull_policy='IfNotPresent',
-#     cmds=['python'],
-#     arguments=[
-#         '/app/call_functions/serving_ingestion.py',
-#         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-#         '{{ dag_run.conf.get("sheet_id") | default("", true) }}',
-#         'GOOGLESHEET',  # ARG3: Source Type
-#         'false'  # ARG4: drop_table flag
-#     ],
-#     volumes=[nfs_volume],
-#     volume_mounts=[nfs_mount],
-#     env_vars={
-#         **common_env_vars,
-#         'POSTGRES_URI': dwh_dev_uri,
-#     },
-#     container_resources=resource_requirements_bronze,
-#     is_delete_operator_pod=True,
-#     get_logs=True,
-#     dag=dag,
-# )
+# Task 2: Google Sheet Serving Layer
+googlesheet_serving_layer = KubernetesPodOperator(
+    task_id='googlesheet_serving_layer',
+    name='googlesheet-serving-layer',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/call_functions/googlesheet_serving.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
+        '{{ dag_run.conf.get("sheet_id") | default("", true) }}',
+        '{{ "true" if dag_run.conf.get("drop_table") else "false" }}',
+    ],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_dev_uri,
+    },
+    container_resources=resource_requirements_bronze,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
 
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Only Bronze for now
-# googlesheet_bronze_ingestion >> googlesheet_serving_layer  # Uncomment when serving is ready
+# Bronze -> Serving pipeline
+googlesheet_bronze_ingestion >> googlesheet_serving_layer
