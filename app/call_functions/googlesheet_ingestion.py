@@ -146,51 +146,7 @@ class GoogleSheetIngestion:
             # Xử lý data -> chuyển column thành lower (matching old logic)
             df.columns = df.columns.str.lower()
             
-            # Slugify Vietnamese column names to ASCII-safe names
-            # This ensures Iceberg compatibility
-            import re
-            import unicodedata
-            
-            def slugify_column(col_name):
-                """Convert Vietnamese column name to ASCII-safe slug"""
-                # Normalize unicode characters
-                nfkd = unicodedata.normalize('NFKD', col_name)
-                # Remove accents
-                ascii_str = nfkd.encode('ASCII', 'ignore').decode('ASCII')
-                # Replace spaces and special chars with underscore
-                slug = re.sub(r'[^\w\s-]', '', ascii_str.lower())
-                slug = re.sub(r'[-\s]+', '_', slug)
-                # Remove leading/trailing underscores
-                slug = slug.strip('_')
-                return slug if slug else 'column'
-            
-            # Apply slugify to all columns
-            original_columns = df.columns.tolist()
-            slugified_columns = [slugify_column(col) for col in original_columns]
-            
-            # Check for duplicates after slugify
-            seen = {}
-            final_columns = []
-            for orig, slug in zip(original_columns, slugified_columns):
-                if slug in seen:
-                    # Add counter to make unique
-                    counter = seen[slug] + 1
-                    seen[slug] = counter
-                    final_slug = f"{slug}_{counter}"
-                else:
-                    seen[slug] = 0
-                    final_slug = slug
-                final_columns.append(final_slug)
-                
-                # Log if column was changed
-                if orig != final_slug:
-                    logger.info(f"Slugified column: '{orig}' -> '{final_slug}'")
-            
-            df.columns = final_columns
-            
             # Remove empty columns
-            df_columns = df.columns.tolist()
-            df_columns = [col for col in df_columns if col != '']
             df = df.loc[:, df.columns != '']
             
             logger.info(f"Read {len(df)} rows with columns: {df.columns.tolist()}")
@@ -203,8 +159,7 @@ class GoogleSheetIngestion:
     def infer_iceberg_schema(self, df: pd.DataFrame, table_name: str) -> Schema:
         """
         Infer Iceberg schema from pandas DataFrame
-        Note: Order matters! Check more specific types first (bool before int)
-        Note: DataFrame should already have metadata columns added
+        Note: DataFrame should NOT have metadata columns yet
         """
         def get_iceberg_type(dtype):
             """Map pandas dtype to Iceberg type with proper precedence"""
@@ -224,26 +179,30 @@ class GoogleSheetIngestion:
             else:
                 return StringType()
         
-        # Infer fields from DataFrame columns (including metadata if already added)
+        # Infer fields from DataFrame columns (data only, no metadata)
         fields = []
         for i, (col_name, dtype) in enumerate(df.dtypes.items()):
-            # Determine field type
-            if col_name == 'snapshot_date':
-                field_type = DateType()
-                required = False  # PyArrow sets all fields as nullable
-            elif col_name == 'ingestion_timestamp':
-                field_type = TimestampType()
-                required = False  # PyArrow sets all fields as nullable
-            else:
-                field_type = get_iceberg_type(dtype)
-                required = False
-            
             fields.append(NestedField(
                 field_id=i + 1,
                 name=col_name,
-                field_type=field_type,
-                required=required
+                field_type=get_iceberg_type(dtype),
+                required=False  # All fields optional (PyArrow default)
             ))
+        
+        # Add metadata columns at the end
+        next_id = len(fields) + 1
+        fields.append(NestedField(
+            field_id=next_id,
+            name="snapshot_date",
+            field_type=DateType(),
+            required=False
+        ))
+        fields.append(NestedField(
+            field_id=next_id + 1,
+            name="ingestion_timestamp",
+            field_type=TimestampType(),
+            required=False
+        ))
         
         return Schema(*fields)
     
@@ -286,42 +245,23 @@ class GoogleSheetIngestion:
         
         Args:
             table_name: Target table name
-            df: DataFrame to write
+            df: DataFrame to write (WITHOUT metadata columns)
             method_data: If True, truncate (delete all) before writing
         """
         if df.empty:
             logger.warning(f"No data to write for {table_name}")
             return
         
-        # Debug: Log current columns before adding metadata
-        logger.debug(f"DataFrame columns before metadata: {df.columns.tolist()}")
+        # Infer schema from data columns BEFORE adding metadata
+        schema = self.infer_iceberg_schema(df, table_name)
+        table = self.ensure_table_exists(table_name, schema)
         
-        # Rename conflicting columns to avoid duplicate names with metadata
-        # If Google Sheet has 'snapshot_date' or 'ingestion_timestamp', rename them
-        rename_map = {}
-        if 'snapshot_date' in df.columns:
-            rename_map['snapshot_date'] = 'original_snapshot_date'
-            logger.warning(f"Column 'snapshot_date' exists in data, renaming to 'original_snapshot_date'")
-        if 'ingestion_timestamp' in df.columns:
-            rename_map['ingestion_timestamp'] = 'original_ingestion_timestamp'
-            logger.warning(f"Column 'ingestion_timestamp' exists in data, renaming to 'original_ingestion_timestamp'")
-        
-        if rename_map:
-            df = df.rename(columns=rename_map)
-        
-        # Add metadata columns
+        # Add metadata columns AFTER schema inference
         df['snapshot_date'] = self.snapshot_date
         df['ingestion_timestamp'] = get_current_timestamp_naive()
         
-        # Debug: Log final columns after metadata
-        logger.debug(f"DataFrame columns after metadata: {df.columns.tolist()}")
-        
         # Convert to PyArrow Table
         arrow_table = pa.Table.from_pandas(df, preserve_index=False)
-        
-        # Infer and ensure table exists
-        schema = self.infer_iceberg_schema(df, table_name)
-        table = self.ensure_table_exists(table_name, schema)
         
         try:
             if method_data:
