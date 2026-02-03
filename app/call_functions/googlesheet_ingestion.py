@@ -273,9 +273,9 @@ class GoogleSheetIngestion:
                 logger.info(f"Deleting existing data for {self.snapshot_date}")
                 table.delete(delete_filter=EqualTo("snapshot_date", self.snapshot_date))
             
-            # Append new data
+            # Append new data with schema merge (handles new columns automatically)
             logger.info(f"Writing {len(df)} rows to {table_name}")
-            table.append(arrow_table)
+            table.append(arrow_table, schema_mode='merge')
             
             logger.success(f"✅ Successfully wrote {len(df)} rows to {table_name}")
             
