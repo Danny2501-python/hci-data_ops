@@ -43,7 +43,7 @@ def get_yesterday_tz():
     return yesterday.strftime('%Y-%m-%d')
 
 dag = DAG(
-    'call_function_erp_etl',
+    'call_functions_erp_etl',
     default_args=default_args,
     description='ERP Multi-Source Ingestion: SCI, KN, PR, HH -> Bronze -> Serving',
     schedule_interval='15 1 * * *',  
