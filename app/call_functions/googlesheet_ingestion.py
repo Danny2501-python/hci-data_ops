@@ -308,6 +308,9 @@ class GoogleSheetIngestion:
             logger.warning(f"Missing required fields for sheet {name} (ID: {sheet_id})")
             return
         
+        # Normalize table name to lowercase (matching PostgreSQL behavior)
+        table_data = table_data.lower()
+        
         # Generate Google Sheet link for easy access
         sheet_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
         logger.info(f"📊 Processing Google Sheet: {name} -> {table_data}")
