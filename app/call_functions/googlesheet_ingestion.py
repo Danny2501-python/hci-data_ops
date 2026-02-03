@@ -146,6 +146,48 @@ class GoogleSheetIngestion:
             # Xử lý data -> chuyển column thành lower (matching old logic)
             df.columns = df.columns.str.lower()
             
+            # Slugify Vietnamese column names to ASCII-safe names
+            # This ensures Iceberg compatibility
+            import re
+            import unicodedata
+            
+            def slugify_column(col_name):
+                """Convert Vietnamese column name to ASCII-safe slug"""
+                # Normalize unicode characters
+                nfkd = unicodedata.normalize('NFKD', col_name)
+                # Remove accents
+                ascii_str = nfkd.encode('ASCII', 'ignore').decode('ASCII')
+                # Replace spaces and special chars with underscore
+                slug = re.sub(r'[^\w\s-]', '', ascii_str.lower())
+                slug = re.sub(r'[-\s]+', '_', slug)
+                # Remove leading/trailing underscores
+                slug = slug.strip('_')
+                return slug if slug else 'column'
+            
+            # Apply slugify to all columns
+            original_columns = df.columns.tolist()
+            slugified_columns = [slugify_column(col) for col in original_columns]
+            
+            # Check for duplicates after slugify
+            seen = {}
+            final_columns = []
+            for orig, slug in zip(original_columns, slugified_columns):
+                if slug in seen:
+                    # Add counter to make unique
+                    counter = seen[slug] + 1
+                    seen[slug] = counter
+                    final_slug = f"{slug}_{counter}"
+                else:
+                    seen[slug] = 0
+                    final_slug = slug
+                final_columns.append(final_slug)
+                
+                # Log if column was changed
+                if orig != final_slug:
+                    logger.info(f"Slugified column: '{orig}' -> '{final_slug}'")
+            
+            df.columns = final_columns
+            
             # Remove empty columns
             df_columns = df.columns.tolist()
             df_columns = [col for col in df_columns if col != '']
@@ -246,6 +288,19 @@ class GoogleSheetIngestion:
         if df.empty:
             logger.warning(f"No data to write for {table_name}")
             return
+        
+        # Rename conflicting columns to avoid duplicate names with metadata
+        # If Google Sheet has 'snapshot_date' or 'ingestion_timestamp', rename them
+        rename_map = {}
+        if 'snapshot_date' in df.columns:
+            rename_map['snapshot_date'] = 'original_snapshot_date'
+            logger.warning(f"Column 'snapshot_date' exists in data, renaming to 'original_snapshot_date'")
+        if 'ingestion_timestamp' in df.columns:
+            rename_map['ingestion_timestamp'] = 'original_ingestion_timestamp'
+            logger.warning(f"Column 'ingestion_timestamp' exists in data, renaming to 'original_ingestion_timestamp'")
+        
+        if rename_map:
+            df = df.rename(columns=rename_map)
         
         # Add metadata columns
         df['snapshot_date'] = self.snapshot_date
