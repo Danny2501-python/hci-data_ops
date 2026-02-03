@@ -204,6 +204,7 @@ class GoogleSheetIngestion:
         """
         Infer Iceberg schema from pandas DataFrame
         Note: Order matters! Check more specific types first (bool before int)
+        Note: DataFrame should already have metadata columns added
         """
         def get_iceberg_type(dtype):
             """Map pandas dtype to Iceberg type with proper precedence"""
@@ -223,23 +224,26 @@ class GoogleSheetIngestion:
             else:
                 return StringType()
         
-        # Infer fields from DataFrame columns
-        fields = [
-            NestedField(
+        # Infer fields from DataFrame columns (including metadata if already added)
+        fields = []
+        for i, (col_name, dtype) in enumerate(df.dtypes.items()):
+            # Determine field type
+            if col_name == 'snapshot_date':
+                field_type = DateType()
+                required = True
+            elif col_name == 'ingestion_timestamp':
+                field_type = TimestampType()
+                required = True
+            else:
+                field_type = get_iceberg_type(dtype)
+                required = False
+            
+            fields.append(NestedField(
                 field_id=i + 1,
                 name=col_name,
-                field_type=get_iceberg_type(dtype),
-                required=False
-            )
-            for i, (col_name, dtype) in enumerate(df.dtypes.items())
-        ]
-        
-        # Add metadata columns
-        next_id = len(fields) + 1
-        fields.extend([
-            NestedField(next_id, "snapshot_date", DateType(), required=True),
-            NestedField(next_id + 1, "ingestion_timestamp", TimestampType(), required=True),
-        ])
+                field_type=field_type,
+                required=required
+            ))
         
         return Schema(*fields)
     
@@ -289,6 +293,9 @@ class GoogleSheetIngestion:
             logger.warning(f"No data to write for {table_name}")
             return
         
+        # Debug: Log current columns before adding metadata
+        logger.debug(f"DataFrame columns before metadata: {df.columns.tolist()}")
+        
         # Rename conflicting columns to avoid duplicate names with metadata
         # If Google Sheet has 'snapshot_date' or 'ingestion_timestamp', rename them
         rename_map = {}
@@ -305,6 +312,9 @@ class GoogleSheetIngestion:
         # Add metadata columns
         df['snapshot_date'] = self.snapshot_date
         df['ingestion_timestamp'] = get_current_timestamp_naive()
+        
+        # Debug: Log final columns after metadata
+        logger.debug(f"DataFrame columns after metadata: {df.columns.tolist()}")
         
         # Convert to PyArrow Table
         arrow_table = pa.Table.from_pandas(df, preserve_index=False)
