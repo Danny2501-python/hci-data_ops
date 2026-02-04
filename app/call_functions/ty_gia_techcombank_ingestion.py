@@ -167,7 +167,9 @@ class TyGiaTechcombankIngestion:
         def get_iceberg_type(dtype):
             """Map pandas dtype to Iceberg type"""
             if pd.api.types.is_integer_dtype(dtype):
-                return IntegerType()
+                # Use LongType for int64 to match PyArrow's conversion
+                # pandas int64 -> PyArrow long (64-bit), not int (32-bit)
+                return LongType()
             elif pd.api.types.is_float_dtype(dtype):
                 return DoubleType()
             elif pd.api.types.is_datetime64_any_dtype(dtype):
