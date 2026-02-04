@@ -100,9 +100,9 @@ class TyGiaTechcombankIngestion:
                     data = response.json()
                     new_calls_data = data.get('exchangeRate', {}).get('data', [])
                     
-                    # Add date to each record
+                    # Add date to each record (as datetime object for direct use)
                     for item in new_calls_data:
-                        item['date'] = formatted_date
+                        item['date'] = datetime.strptime(formatted_date, '%Y-%m-%d')
                     
                     calls_data.extend(new_calls_data)
                     logger.info(f"✓ Fetched {len(new_calls_data)} records for {formatted_date}")
@@ -138,27 +138,17 @@ class TyGiaTechcombankIngestion:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int64')
         
-        # StringType columns: label, sourcecurrency, targetcurrency
-        string_columns = ['label', 'sourcecurrency', 'targetcurrency']
+        # StringType columns: label, sourcecurrency, targetcurrency, inputdate
+        string_columns = ['label', 'sourcecurrency', 'targetcurrency', 'inputdate']
         for col in string_columns:
             if col in df.columns:
                 df[col] = df[col].astype(str).replace('nan', None)
         
-        # TimestampType columns: inputdate, date
-        # Convert date string to timestamp (timezone-naive for Iceberg)
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-            # Remove timezone if present (Iceberg doesn't support tz-aware timestamps)
-            if df['date'].dt.tz is not None:
-                df['date'] = df['date'].dt.tz_localize(None)
-        
-        # inputdate: convert if exists, otherwise set to None
-        if 'inputdate' in df.columns:
-            # Try to parse as timestamp (could be Unix timestamp or date string)
-            df['inputdate'] = pd.to_datetime(df['inputdate'], errors='coerce')
-            # Remove timezone if present
-            if df['inputdate'].dt.tz is not None:
-                df['inputdate'] = df['inputdate'].dt.tz_localize(None)
+        # TimestampType columns: convert ns to us for PyIceberg compatibility
+        timestamp_columns = ['date']
+        for col in timestamp_columns:
+            if col in df.columns and df[col].dtype == 'datetime64[ns]':
+                df[col] = df[col].astype('datetime64[us]')
         
         # Ensure all required columns exist (add missing ones with None)
         required_columns = [
@@ -169,10 +159,8 @@ class TyGiaTechcombankIngestion:
             if col not in df.columns:
                 if col in long_columns:
                     df[col] = 0  # Default to 0 for numeric columns
-                elif col in ['inputdate', 'date']:
-                    df[col] = pd.NaT  # Default to NaT for timestamp columns
                 else:
-                    df[col] = None  # Default to None for string columns
+                    df[col] = None  # Default to None for string columns (including dates)
         
         # Select only required columns in correct order
         df = df[required_columns]
@@ -197,7 +185,7 @@ class TyGiaTechcombankIngestion:
             NestedField(field_id=6, name="askratetm", field_type=LongType(), required=False),
             NestedField(field_id=7, name="sourcecurrency", field_type=StringType(), required=False),
             NestedField(field_id=8, name="targetcurrency", field_type=StringType(), required=False),
-            NestedField(field_id=9, name="inputdate", field_type=TimestampType(), required=False),
+            NestedField(field_id=9, name="inputdate", field_type=StringType(), required=False),
             NestedField(field_id=10, name="date", field_type=TimestampType(), required=False),
             # Metadata columns
             NestedField(field_id=11, name="snapshot_date", field_type=DateType(), required=False),
