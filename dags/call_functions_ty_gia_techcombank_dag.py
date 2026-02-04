@@ -6,6 +6,7 @@ Fetches exchange rate data from Techcombank and stores in Bronze layer
 
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 from airflow.models.param import Param
@@ -56,12 +57,12 @@ def get_30_days_ago_tz():
 dag = DAG(
     'call_functions_ty_gia_techcombank_etl',
     default_args=default_args,
-    description='Ty Gia Techcombank Ingestion: Techcombank API -> Bronze Iceberg',
+    description='Ty Gia Techcombank Ingestion: Techcombank API → Bronze Iceberg → Serving PostgreSQL',
     schedule_interval='0 2 * * *',  # Run daily at 2 AM
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'ty-gia', 'techcombank', 'iceberg', 'bronze'],
+    tags=['etl', 'ty-gia', 'techcombank', 'iceberg', 'bronze', 'serving'],
     params={
         'snapshot_date': Param(
             default=None,
@@ -111,8 +112,31 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
 }
 
+# ============================================================================
+# LOAD AIRFLOW CONNECTIONS
+# ============================================================================
+
+# DWH Dev Connection (for serving layer)
+dwh_dev_uri = ''
+try:
+    hook = PostgresHook(postgres_conn_id='dwh_dev')
+    conn = hook.get_connection('dwh_dev')
+    dwh_dev_uri = conn.get_uri()
+    
+    if '?__extra__=' in dwh_dev_uri:
+        dwh_dev_uri = dwh_dev_uri.split('?__extra__=')[0]
+    
+    logger.info("✅ Loaded connection URI for dwh_dev")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_dev connection: {e}")
+
 # K8s Resources
 resource_requirements_bronze = k8s.V1ResourceRequirements(
+    requests={'cpu': '500m', 'memory': '512Mi'},
+    limits={'cpu': '1000m', 'memory': '1Gi'}
+)
+
+resource_requirements_serving = k8s.V1ResourceRequirements(
     requests={'cpu': '500m', 'memory': '512Mi'},
     limits={'cpu': '1000m', 'memory': '1Gi'}
 )
@@ -157,9 +181,39 @@ ty_gia_techcombank_bronze_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
+# Task: Ty Gia Techcombank Serving Layer
+ty_gia_techcombank_serving_layer = KubernetesPodOperator(
+    task_id='ty_gia_techcombank_serving_layer',
+    name='ty-gia-techcombank-serving-layer',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/call_functions/ty_gia_techcombank_serving.py',
+        # Argument 1: snapshot_date
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
+        # Argument 2: source_table (Iceberg)
+        '{{ dag_run.conf.get("table_name") or "ty_gia_techcombank" }}',
+        # Argument 3: target_table (PostgreSQL)
+        'ty_gia_techcombank_v1',
+    ],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    env_vars={
+        **common_env_vars,
+        # PostgreSQL config from Airflow connection
+        'POSTGRES_URI': dwh_dev_uri,
+    },
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Single task - no dependencies
-ty_gia_techcombank_bronze_ingestion
+# Bronze -> Serving
+ty_gia_techcombank_bronze_ingestion >> ty_gia_techcombank_serving_layer
