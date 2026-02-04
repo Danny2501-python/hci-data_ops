@@ -442,7 +442,7 @@ class GoogleSheetServingIngestion:
         """Process a single Google Sheet"""
         name = config['name']
         table_name = config['table_data'].lower()  # Bronze table
-        target_table = f"{table_name}_v1"  # Serving table
+        target_table = table_name  # Serving table
         
         # Parse primary keys
         pk_columns = []
