@@ -128,11 +128,35 @@ class TyGiaTechcombankIngestion:
         # Normalize column names to lowercase
         df.columns = df.columns.str.lower()
         
+        # Log initial dtypes
+        logger.info(f"Initial DataFrame dtypes:\n{df.dtypes}")
+        
+        # Convert numeric string columns to proper numeric types
+        # API might return numbers as strings, need to convert them
+        for col in df.columns:
+            if col == 'date':  # Skip date column
+                continue
+            if col in ['label', 'code']:  # Skip known string columns
+                continue
+            
+            # Try to convert to numeric
+            try:
+                # First try integer
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            except Exception:
+                pass
+        
         # Convert float columns to int (matching old logic)
+        # Only convert if all values are whole numbers
         float_columns = df.select_dtypes(include=['float']).columns
         for col in float_columns:
-            df[col] = df[col].fillna(0).astype(int)
+            # Check if all non-null values are whole numbers
+            if df[col].notna().any():
+                if (df[col].dropna() % 1 == 0).all():
+                    df[col] = df[col].fillna(0).astype(int)
         
+        logger.info(f"Final DataFrame dtypes:\n{df.dtypes}")
+        logger.info(f"Sample data (first row):\n{df.head(1).to_dict('records')}")
         logger.info(f"Processed {len(df)} USD exchange rate records")
         return df
     
@@ -153,11 +177,14 @@ class TyGiaTechcombankIngestion:
         
         # Infer fields from DataFrame columns
         fields = []
+        logger.info("Schema inference - Column type mapping:")
         for i, (col_name, dtype) in enumerate(df.dtypes.items()):
+            iceberg_type = get_iceberg_type(dtype)
+            logger.info(f"  {col_name}: {dtype} -> {iceberg_type}")
             fields.append(NestedField(
                 field_id=i + 1,
                 name=col_name,
-                field_type=get_iceberg_type(dtype),
+                field_type=iceberg_type,
                 required=False
             ))
         
