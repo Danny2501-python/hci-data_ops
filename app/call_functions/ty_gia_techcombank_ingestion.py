@@ -15,7 +15,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
     NestedField, StringType, IntegerType, FloatType, 
-    DoubleType, DateType, TimestampType
+    DoubleType, DateType, TimestampType, LongType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
