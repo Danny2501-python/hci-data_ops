@@ -128,84 +128,75 @@ class TyGiaTechcombankIngestion:
         # Normalize column names to lowercase
         df.columns = df.columns.str.lower()
         
-        # Log initial dtypes
-        logger.info(f"Initial DataFrame dtypes:\n{df.dtypes}")
+        logger.info(f"Initial DataFrame shape: {df.shape}")
+        logger.info(f"Initial columns: {df.columns.tolist()}")
         
-        # Convert numeric string columns to proper numeric types
-        # API might return numbers as strings, need to convert them
-        for col in df.columns:
-            if col == 'date':  # Skip date column
-                continue
-            if col in ['label', 'code']:  # Skip known string columns
-                continue
-            
-            # Try to convert to numeric
-            try:
-                # First try integer
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            except Exception:
-                pass
+        # Manual type conversion to match Iceberg schema
+        # LongType columns: itemid, bidratetm, bidrateck, askrate, askratetm
+        long_columns = ['itemid', 'bidratetm', 'bidrateck', 'askrate', 'askratetm']
+        for col in long_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int64')
         
-        # Convert float columns to int (matching old logic)
-        # Only convert if all values are whole numbers
-        float_columns = df.select_dtypes(include=['float']).columns
-        for col in float_columns:
-            # Check if all non-null values are whole numbers
-            if df[col].notna().any():
-                if (df[col].dropna() % 1 == 0).all():
-                    df[col] = df[col].fillna(0).astype(int)
+        # StringType columns: label, sourcecurrency, targetcurrency
+        string_columns = ['label', 'sourcecurrency', 'targetcurrency']
+        for col in string_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str).replace('nan', None)
+        
+        # TimestampType columns: inputdate, date
+        # Convert date string to timestamp
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        
+        # inputdate: convert if exists, otherwise set to None
+        if 'inputdate' in df.columns:
+            # Try to parse as timestamp (could be Unix timestamp or date string)
+            df['inputdate'] = pd.to_datetime(df['inputdate'], errors='coerce')
+        
+        # Ensure all required columns exist (add missing ones with None)
+        required_columns = [
+            'itemid', 'label', 'bidratetm', 'bidrateck', 'askrate', 
+            'askratetm', 'sourcecurrency', 'targetcurrency', 'inputdate', 'date'
+        ]
+        for col in required_columns:
+            if col not in df.columns:
+                if col in long_columns:
+                    df[col] = 0  # Default to 0 for numeric columns
+                elif col in ['inputdate', 'date']:
+                    df[col] = pd.NaT  # Default to NaT for timestamp columns
+                else:
+                    df[col] = None  # Default to None for string columns
+        
+        # Select only required columns in correct order
+        df = df[required_columns]
         
         logger.info(f"Final DataFrame dtypes:\n{df.dtypes}")
         logger.info(f"Sample data (first row):\n{df.head(1).to_dict('records')}")
         logger.info(f"Processed {len(df)} USD exchange rate records")
+        
         return df
     
-    def infer_iceberg_schema(self, df: pd.DataFrame) -> Schema:
+    def get_iceberg_schema(self) -> Schema:
         """
-        Infer Iceberg schema from pandas DataFrame
+        Get Iceberg schema for ty_gia_techcombank table
+        Based on legacy PostgreSQL schema
         """
-        def get_iceberg_type(dtype):
-            """Map pandas dtype to Iceberg type"""
-            if pd.api.types.is_integer_dtype(dtype):
-                # Use LongType for int64 to match PyArrow's conversion
-                # pandas int64 -> PyArrow long (64-bit), not int (32-bit)
-                return LongType()
-            elif pd.api.types.is_float_dtype(dtype):
-                return DoubleType()
-            elif pd.api.types.is_datetime64_any_dtype(dtype):
-                return TimestampType()
-            else:
-                return StringType()
-        
-        # Infer fields from DataFrame columns
-        fields = []
-        logger.info("Schema inference - Column type mapping:")
-        for i, (col_name, dtype) in enumerate(df.dtypes.items()):
-            iceberg_type = get_iceberg_type(dtype)
-            logger.info(f"  {col_name}: {dtype} -> {iceberg_type}")
-            fields.append(NestedField(
-                field_id=i + 1,
-                name=col_name,
-                field_type=iceberg_type,
-                required=False
-            ))
-        
-        # Add metadata columns
-        next_id = len(fields) + 1
-        fields.extend([
-            NestedField(
-                field_id=next_id,
-                name="snapshot_date",
-                field_type=DateType(),
-                required=False
-            ),
-            NestedField(
-                field_id=next_id + 1,
-                name="ingestion_timestamp",
-                field_type=TimestampType(),
-                required=False
-            )
-        ])
+        fields = [
+            NestedField(field_id=1, name="itemid", field_type=LongType(), required=False),
+            NestedField(field_id=2, name="label", field_type=StringType(), required=False),
+            NestedField(field_id=3, name="bidratetm", field_type=LongType(), required=False),
+            NestedField(field_id=4, name="bidrateck", field_type=LongType(), required=False),
+            NestedField(field_id=5, name="askrate", field_type=LongType(), required=False),
+            NestedField(field_id=6, name="askratetm", field_type=LongType(), required=False),
+            NestedField(field_id=7, name="sourcecurrency", field_type=StringType(), required=False),
+            NestedField(field_id=8, name="targetcurrency", field_type=StringType(), required=False),
+            NestedField(field_id=9, name="inputdate", field_type=TimestampType(), required=False),
+            NestedField(field_id=10, name="date", field_type=TimestampType(), required=False),
+            # Metadata columns
+            NestedField(field_id=11, name="snapshot_date", field_type=DateType(), required=False),
+            NestedField(field_id=12, name="ingestion_timestamp", field_type=TimestampType(), required=False),
+        ]
         
         return Schema(*fields)
     
@@ -254,8 +245,8 @@ class TyGiaTechcombankIngestion:
             logger.warning(f"No data to write for {table_name}")
             return
         
-        # Infer schema from data columns BEFORE adding metadata
-        schema = self.infer_iceberg_schema(df)
+        # Get predefined schema (no longer infer from data)
+        schema = self.get_iceberg_schema()
         table = self.ensure_table_exists(table_name, schema)
         
         # Add metadata columns AFTER schema inference
