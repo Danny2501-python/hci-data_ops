@@ -145,14 +145,20 @@ class TyGiaTechcombankIngestion:
                 df[col] = df[col].astype(str).replace('nan', None)
         
         # TimestampType columns: inputdate, date
-        # Convert date string to timestamp
+        # Convert date string to timestamp (timezone-naive for Iceberg)
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            # Remove timezone if present (Iceberg doesn't support tz-aware timestamps)
+            if df['date'].dt.tz is not None:
+                df['date'] = df['date'].dt.tz_localize(None)
         
         # inputdate: convert if exists, otherwise set to None
         if 'inputdate' in df.columns:
             # Try to parse as timestamp (could be Unix timestamp or date string)
             df['inputdate'] = pd.to_datetime(df['inputdate'], errors='coerce')
+            # Remove timezone if present
+            if df['inputdate'].dt.tz is not None:
+                df['inputdate'] = df['inputdate'].dt.tz_localize(None)
         
         # Ensure all required columns exist (add missing ones with None)
         required_columns = [
