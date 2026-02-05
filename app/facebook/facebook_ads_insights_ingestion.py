@@ -1,21 +1,17 @@
 """
-Facebook Ads Insights Ingestion - SIMPLIFIED VERSION
+Facebook Ads Insights Ingestion
 Migrated from etl_marketing Django app
-Strategy: Call API → Write 1:1 to table (no foreign key dependencies)
+Strategy: Call API → Write 1:1 to table (no dependencies)
 """
 
 import os
 import sys
 import time
-import random
-import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 from loguru import logger
 
 # Facebook Business SDK
-from facebook_business.api import FacebookAdsApi
-from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.adsinsights import AdsInsights
 
 # Common utilities
@@ -35,13 +31,13 @@ FB_API_VERSION = os.getenv('FB_API_VERSION', 'v18.0')
 
 
 # ============================================================================
-# FACEBOOK ADS INSIGHTS INGESTION (SIMPLIFIED)
+# FACEBOOK ADS INSIGHTS INGESTION
 # ============================================================================
 
-class FacebookAdsInsightsSimplified:
+class FacebookAdsInsightsIngestion:
     """
-    Simplified Facebook Ads Insights Ingestion
-    Strategy: API → Direct write to table (no dependencies)
+    Facebook Ads Insights Ingestion
+    Strategy: Direct write to table (no dependencies)
     """
     
     def __init__(self, db: PostgreSQLHelper, days_for_ago: int = 1):
@@ -49,54 +45,40 @@ class FacebookAdsInsightsSimplified:
         self.days_for_ago = days_for_ago
         self.rate_limit_tracker = FacebookRateLimitTracker()
     
-
-    
     def upsert_insight(self, insight_data: Dict, brand_id: int):
         """
-        Upsert insight data to core_facebook_ad_ad_insight_v1
-        Matches schema: id, date, fb_account_currency, fb_ad_ad_id, spend, region, brand_id
-        """
-        fb_ad_ad_id = insight_data.get('ad_id')
-        date = insight_data.get('date_start')
-        region = insight_data.get('region', '')
-        spend = float(insight_data.get('spend', 0))
-        fb_account_currency = insight_data.get('account_currency', 'VND')
+        Upsert insight to database
         
-        # Check if exists
-        check_query = """
-            SELECT id FROM core_facebook_ad_ad_insight_v1
-            WHERE fb_ad_ad_id = %s AND date = %s AND region = %s
+        Table: core_facebook_ad_ad_insight
+        Primary Key: (fb_ad_ad_id, date, region)
         """
-        result = self.db.fetchone(check_query, (fb_ad_ad_id, date, region))
+        query = """
+            INSERT INTO core_facebook_ad_ad_insight (
+                date, fb_account_currency, fb_ad_ad_id, spend, region,
+                brand_id, etl_created, etl_updated
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, NOW(), NOW()
+            )
+            ON CONFLICT (fb_ad_ad_id, date, region) 
+            DO UPDATE SET
+                fb_account_currency = EXCLUDED.fb_account_currency,
+                spend = EXCLUDED.spend,
+                brand_id = EXCLUDED.brand_id,
+                etl_updated = NOW()
+        """
         
-        if result:
-            # Update
-            update_query = """
-                UPDATE core_facebook_ad_ad_insight_v1
-                SET spend = %s, fb_account_currency = %s, 
-                    etl_updated = NOW()
-                WHERE id = %s
-            """
-            self.db.execute(update_query, (
-                spend, fb_account_currency, result[0]
-            ))
-            logger.debug(f"Updated insight for ad {fb_ad_ad_id}, date {date}")
-        else:
-            # Insert
-            insert_query = """
-                INSERT INTO core_facebook_ad_ad_insight_v1
-                (fb_ad_ad_id, date, spend, fb_account_currency, region, brand_id, etl_created, etl_updated)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-            """
-            self.db.execute(insert_query, (
-                fb_ad_ad_id,
-                date,
-                spend,
-                fb_account_currency,
-                region,
-                brand_id
-            ))
-            logger.debug(f"Created insight for ad {fb_ad_ad_id}, date {date}")
+        region = insight_data.get('region', 'unknown')
+        
+        params = (
+            insight_data.get('date_start'),
+            insight_data.get('account_currency'),
+            insight_data.get('ad_id'),
+            insight_data.get('spend', 0),
+            region,
+            brand_id
+        )
+        
+        self.db.execute(query, params)
     
     def fetch_insights(self, account: Dict):
         """Fetch insights from Facebook API"""
@@ -112,7 +94,7 @@ class FacebookAdsInsightsSimplified:
         params = {
             'time_range': {"since": this_day_str, "until": this_day_str},
             'level': 'ad',
-            'breakdowns': [AdsInsights.Breakdowns.region],
+            'breakdowns': ['region']
         }
         
         fields = [
@@ -124,6 +106,7 @@ class FacebookAdsInsightsSimplified:
             AdsInsights.Field.date_start,
             AdsInsights.Field.date_stop,
             AdsInsights.Field.account_currency,
+            AdsInsights.Field.region
         ]
         
         try:
@@ -132,27 +115,22 @@ class FacebookAdsInsightsSimplified:
             logger.error(f"Failed to get insights: {e}")
             return
         
-        # Reset rate limit tracker for this account
         self.rate_limit_tracker.reset()
         count = 0
+        brand_id = account.get('current_brand_id')
         
         for insight in insights:
-            # Break if too many rate limit waits
-            if self.rate_limit_tracker.time_await_limit >= 5:
-                logger.error("Time_await_limit >= 5, breaking loop")
-                break
-            
             try:
                 data = insight._json
                 
-                # Direct write to table (no dependencies!)
-                self.upsert_insight(data, account.get('current_brand_id'))
+                # Direct write to table
+                self.upsert_insight(data, brand_id)
                 count += 1
                 
             except Exception as e:
                 logger.error(f"Error processing insight: {e}, data: {insight._json}")
             
-            # Check rate limit only when headers change (new API call)
+            # Check rate limit
             try:
                 current_headers = insights.headers()
                 if self.rate_limit_tracker.should_check_limit(current_headers):
@@ -166,19 +144,17 @@ class FacebookAdsInsightsSimplified:
     def run(self):
         """Execute Facebook Ads insights ingestion"""
         logger.info("="*80)
-        logger.info(f"Starting Facebook Ads Insights Ingestion (SIMPLIFIED)")
+        logger.info(f"Starting Facebook Ads Insights Ingestion")
         logger.info(f"Days for ago: {self.days_for_ago}")
         logger.info("="*80)
         
         try:
-            # Get active accounts using shared function
             accounts = get_active_facebook_accounts(self.db)
             logger.info(f"Found {len(accounts)} active Facebook Ad accounts")
             
-            # Process each account
             for account in accounts:
                 try:
-                    time.sleep(1)  # Rate limiting between accounts
+                    time.sleep(1)
                     logger.info(f"Processing account: {account['name']} ({account['ad_account_id']})")
                     
                     self.fetch_insights(account)
@@ -200,11 +176,16 @@ class FacebookAdsInsightsSimplified:
 # MAIN ENTRY POINT
 # ============================================================================
 
-def main():
-    """Main execution function"""
-    days_for_ago = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+if __name__ == "__main__":
+    # Parse command-line arguments (call_functions pattern)
+    # Usage: python facebook_ads_insights_ingestion.py [days_for_ago]
     
-    logger.info(f"Arguments → Days for ago: {days_for_ago}")
+    # Argument 1: days_for_ago (integer)
+    days_for_ago = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else 1
+    
+    logger.info(f"Raw Arguments: {sys.argv}")
+    logger.info(f"Starting Facebook Ads Insights Ingestion")
+    logger.info(f"Arguments -> Days for ago: {days_for_ago}")
     
     try:
         if not POSTGRES_URI:
@@ -213,7 +194,7 @@ def main():
         db = PostgreSQLHelper(POSTGRES_URI)
         logger.info("Connected to PostgreSQL")
         
-        job = FacebookAdsInsightsSimplified(db, days_for_ago)
+        job = FacebookAdsInsightsIngestion(db, days_for_ago)
         job.run()
         
         db.close()
@@ -227,7 +208,3 @@ def main():
         import traceback
         logger.error(traceback.format_exc())
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
