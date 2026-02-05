@@ -338,6 +338,7 @@ class FacebookAdsInsightsSimplified:
         
         self.time_await_limit = 0
         count = 0
+        last_headers = None
         
         for insight in insights:
             # Break if too many rate limit waits
@@ -355,8 +356,12 @@ class FacebookAdsInsightsSimplified:
             except Exception as e:
                 logger.error(f"Error processing insight: {e}, data: {insight._json}")
             
+            # Check rate limit only when headers change (new API call)
             try:
-                self.check_limit(insights.headers())
+                current_headers = insights.headers()
+                if current_headers != last_headers:
+                    self.check_limit(current_headers)
+                    last_headers = current_headers
             except Exception as e:
                 logger.error(f"Error checking limit: {e}")
         
