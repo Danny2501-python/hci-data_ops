@@ -131,49 +131,49 @@ facebook_ads_insights_simple_t1 = KubernetesPodOperator(
     dag=dag,
 )
 
-# Task: Facebook Ads Insights Ingestion (T-2) - SIMPLIFIED
-facebook_ads_insights_simple_t2 = KubernetesPodOperator(
-    task_id='facebook_ads_insights_simple_t2',
-    name='facebook-ads-insights-simple-t2',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/facebook/facebook_ads_insights_ingestion_simple.py',
-        # Argument 1: days_for_ago
-        '2',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements_facebook,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
+# # Task: Facebook Ads Insights Ingestion (T-2) - SIMPLIFIED
+# facebook_ads_insights_simple_t2 = KubernetesPodOperator(
+#     task_id='facebook_ads_insights_simple_t2',
+#     name='facebook-ads-insights-simple-t2',
+#     namespace=NAMESPACE,
+#     image=PYTHON_ETL_IMAGE,
+#     image_pull_policy='IfNotPresent',
+#     cmds=['python'],
+#     arguments=[
+#         '/app/facebook/facebook_ads_insights_ingestion_simple.py',
+#         # Argument 1: days_for_ago
+#         '2',
+#     ],
+#     volumes=[nfs_volume],
+#     volume_mounts=[nfs_mount],
+#     env_vars=common_env_vars,
+#     container_resources=resource_requirements_facebook,
+#     is_delete_operator_pod=True,
+#     get_logs=True,
+#     dag=dag,
+# )
 
-# Task: Facebook Ads Insights Ingestion (T-3) - SIMPLIFIED
-facebook_ads_insights_simple_t3 = KubernetesPodOperator(
-    task_id='facebook_ads_insights_simple_t3',
-    name='facebook-ads-insights-simple-t3',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/facebook/facebook_ads_insights_ingestion_simple.py',
-        # Argument 1: days_for_ago
-        '3',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements_facebook,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
+# # Task: Facebook Ads Insights Ingestion (T-3) - SIMPLIFIED
+# facebook_ads_insights_simple_t3 = KubernetesPodOperator(
+#     task_id='facebook_ads_insights_simple_t3',
+#     name='facebook-ads-insights-simple-t3',
+#     namespace=NAMESPACE,
+#     image=PYTHON_ETL_IMAGE,
+#     image_pull_policy='IfNotPresent',
+#     cmds=['python'],
+#     arguments=[
+#         '/app/facebook/facebook_ads_insights_ingestion_simple.py',
+#         # Argument 1: days_for_ago
+#         '3',
+#     ],
+#     volumes=[nfs_volume],
+#     volume_mounts=[nfs_mount],
+#     env_vars=common_env_vars,
+#     container_resources=resource_requirements_facebook,
+#     is_delete_operator_pod=True,
+#     get_logs=True,
+#     dag=dag,
+# )
 
 # ============================================================================
 # TASK DEPENDENCIES
