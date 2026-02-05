@@ -124,7 +124,8 @@ class FacebookAdsInsightsSimplified:
     
     def init_api(self, account: Dict) -> Optional[AdAccount]:
         """Initialize Facebook API"""
-        now = datetime.now()
+        from datetime import timezone
+        now = datetime.now(timezone.utc)  # Use timezone-aware datetime
         
         if (account.get('access_token_expires') and 
             account['access_token_expires'] > now):
