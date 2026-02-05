@@ -360,6 +360,7 @@ class FacebookAdsInsightsSimplified:
             try:
                 current_headers = insights.headers()
                 if current_headers != last_headers:
+                    logger.debug(f"Headers changed, checking rate limit (processed {count} insights so far)")
                     self.check_limit(current_headers)
                     last_headers = current_headers
             except Exception as e:
