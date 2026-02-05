@@ -9,7 +9,6 @@ import sys
 import time
 import random
 import json
-import psycopg2
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from loguru import logger
@@ -19,66 +18,20 @@ from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.adsinsights import AdsInsights
 
+# Common utilities
+from common.facebook_api import (
+    FacebookRateLimitTracker,
+    get_active_facebook_accounts,
+    init_facebook_api
+)
+from common.database import PostgreSQLHelper
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 FB_API_VERSION = os.getenv('FB_API_VERSION', 'v18.0')
-
-
-# ============================================================================
-# DATABASE HELPER
-# ============================================================================
-
-class PostgreSQLHelper:
-    """Helper class for PostgreSQL operations"""
-    
-    def __init__(self, connection_uri: str):
-        self.conn = psycopg2.connect(
-            connection_uri,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5
-        )
-        self.conn.autocommit = False
-    
-    def execute(self, query: str, params: tuple = None):
-        """Execute a query"""
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(query, params)
-            self.conn.commit()
-            return cursor
-        except Exception as e:
-            self.conn.rollback()
-            raise e
-        finally:
-            cursor.close()
-    
-    def fetchone(self, query: str, params: tuple = None):
-        """Fetch one result"""
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(query, params)
-            return cursor.fetchone()
-        finally:
-            cursor.close()
-    
-    def fetchall(self, query: str, params: tuple = None):
-        """Fetch all results"""
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute(query, params)
-            return cursor.fetchall()
-        finally:
-            cursor.close()
-    
-    def close(self):
-        """Close connection"""
-        if self.conn:
-            self.conn.close()
 
 
 # ============================================================================
@@ -94,166 +47,9 @@ class FacebookAdsInsightsSimplified:
     def __init__(self, db: PostgreSQLHelper, days_for_ago: int = 1):
         self.db = db
         self.days_for_ago = days_for_ago
-        self.time_await_limit = 0
+        self.rate_limit_tracker = FacebookRateLimitTracker()
     
-    def get_active_accounts(self) -> List[Dict]:
-        """Get all active Facebook Ad accounts"""
-        query = """
-            SELECT id, name, ad_account_id, app_id, app_secret, 
-                   access_token, access_token_expires, script_type_to_run, current_brand_id
-            FROM core_facebook_ad_account_v1
-            WHERE is_active = TRUE
-        """
-        rows = self.db.fetchall(query)
-        
-        accounts = []
-        for row in rows:
-            accounts.append({
-                'id': row[0],
-                'name': row[1],
-                'ad_account_id': row[2],
-                'app_id': row[3],
-                'app_secret': row[4],
-                'access_token': row[5],
-                'access_token_expires': row[6],
-                'script_type_to_run': row[7],
-                'current_brand_id': row[8],
-            })
-        
-        return accounts
-    
-    def init_api(self, account: Dict) -> Optional[AdAccount]:
-        """Initialize Facebook API"""
-        from datetime import timezone
-        now = datetime.now(timezone.utc)  # Use timezone-aware datetime
-        
-        if (account.get('access_token_expires') and 
-            account['access_token_expires'] > now):
-            
-            api = FacebookAdsApi.init(
-                app_id=account['app_id'],
-                app_secret=account['app_secret'],
-                access_token=account['access_token'],
-                api_version=FB_API_VERSION
-            )
-            
-            ad_account = AdAccount("act_" + account['ad_account_id'])
-            logger.info(f"Initialized API for account: {account['name']}")
-            return ad_account, api
-        else:
-            logger.error(f"Token expired for account: {account['name']}")
-            return None, None
-    
-    def check_limit(self, headers):
-        """
-        Check Facebook rate limit
-        EXACT COPY from original fb_business.py
-        """
-        def _lower_keys(d):
-            return {k.lower(): v for k, v in d.items()}
-        
-        try:
-            h = _lower_keys(headers or {})
-            usage_snapshot = {
-                "source": None,
-                "call_pct": None,
-                "cpu_pct": None,
-                "time_pct": None,
-                "insights_util": {},
-                "tier": None,
-                "eta_sec": None,
-            }
-            
-            # 1) Business Use Case header
-            if "x-business-use-case-usage" in h:
-                usage_snapshot["source"] = "x-business-use-case-usage"
-                raw = h["x-business-use-case-usage"]
-                data = json.loads(raw)
-                
-                try:
-                    first_key = next(iter(data.keys()))
-                    entry = (data[first_key] or [{}])[0]
-                except Exception:
-                    entry = {}
-                
-                call = float(entry.get("call_count", 0))
-                cpu = float(entry.get("total_cputime", 0))
-                total = float(entry.get("total_time", 0))
-                usage_snapshot.update({"call_pct": call, "cpu_pct": cpu, "time_pct": total})
-                
-                eta_min = entry.get("estimated_time_to_regain_access")
-                if isinstance(eta_min, (int, float)) and eta_min > 0:
-                    usage_snapshot["eta_sec"] = int(eta_min * 60)
-            
-            # 2) App-level header
-            elif "x-app-usage" in h:
-                usage_snapshot["source"] = "x-app-usage"
-                entry = json.loads(h["x-app-usage"])
-                usage_snapshot.update({
-                    "call_pct": float(entry.get("call_count", 0)),
-                    "cpu_pct": float(entry.get("total_cputime", 0)),
-                    "time_pct": float(entry.get("total_time", 0)),
-                })
-            
-            # 3) Insights throttle
-            if "x-fb-ads-insights-throttle" in h:
-                thr = json.loads(h["x-fb-ads-insights-throttle"])
-                usage_snapshot["insights_util"] = {
-                    "app_id_util_pct": thr.get("app_id_util_pct"),
-                    "acc_id_util_pct": thr.get("acc_id_util_pct"),
-                    "business_id_util_pct": thr.get("business_id_util_pct"),
-                }
-                usage_snapshot["tier"] = thr.get("ads_api_access_tier")
-                
-                if usage_snapshot["eta_sec"] is None:
-                    candidates = [
-                        v for v in [
-                            usage_snapshot.get("call_pct"),
-                            usage_snapshot.get("cpu_pct"),
-                            usage_snapshot.get("time_pct"),
-                            thr.get("app_id_util_pct"),
-                            thr.get("acc_id_util_pct"),
-                            thr.get("business_id_util_pct"),
-                        ] if isinstance(v, (int, float))
-                    ]
-                    max_util = max(candidates) if candidates else 0
-                    
-                    if max_util >= 90:
-                        usage_snapshot["eta_sec"] = random.randint(240, 480)
-                    elif max_util >= 80:
-                        usage_snapshot["eta_sec"] = random.randint(60, 120)
-                    elif max_util >= 70:
-                        usage_snapshot["eta_sec"] = random.randint(20, 60)
-            
-            # Decide backoff
-            max_pct = max([
-                p for p in (usage_snapshot["call_pct"], usage_snapshot["cpu_pct"], usage_snapshot["time_pct"])
-                if isinstance(p, (int, float))
-            ], default=0)
-            
-            if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 80) or any(
-                (isinstance(v, (int, float)) and v >= 80) for v in usage_snapshot["insights_util"].values() if v is not None
-            ):
-                if usage_snapshot["eta_sec"]:
-                    wait_time = usage_snapshot["eta_sec"]
-                else:
-                    self.time_await_limit = getattr(self, "time_await_limit", 0) + 1
-                    wait_time = min(300, int(5 * (2 ** self.time_await_limit)))
-                
-                wait_time = int(wait_time * (1 + random.random() * 0.2))
-                
-                logger.warning(
-                    f"Rate limit high. Cooling {wait_time}s | "
-                    f"source={usage_snapshot['source']} | usage={max_pct}% | "
-                    f"insights_util={usage_snapshot['insights_util']} | tier={usage_snapshot['tier']}"
-                )
-                time.sleep(wait_time)
-            
-            return usage_snapshot
-        
-        except Exception as e:
-            logger.error(f"Error checking rate limit: {e}")
-            return {"source": None, "call_pct": 0, "cpu_pct": 0, "time_pct": 0, "insights_util": {}, "tier": None, "eta_sec": None}
+
     
     def upsert_insight(self, insight_data: Dict, brand_id: int):
         """
@@ -304,7 +100,7 @@ class FacebookAdsInsightsSimplified:
     
     def fetch_insights(self, account: Dict):
         """Fetch insights from Facebook API"""
-        ad_account, api = self.init_api(account)
+        ad_account, api = init_facebook_api(account, FB_API_VERSION)
         
         if not ad_account:
             return
@@ -336,13 +132,13 @@ class FacebookAdsInsightsSimplified:
             logger.error(f"Failed to get insights: {e}")
             return
         
-        self.time_await_limit = 0
+        # Reset rate limit tracker for this account
+        self.rate_limit_tracker.reset()
         count = 0
-        last_headers = None
         
         for insight in insights:
             # Break if too many rate limit waits
-            if self.time_await_limit >= 5:
+            if self.rate_limit_tracker.time_await_limit >= 5:
                 logger.error("Time_await_limit >= 5, breaking loop")
                 break
             
@@ -359,10 +155,9 @@ class FacebookAdsInsightsSimplified:
             # Check rate limit only when headers change (new API call)
             try:
                 current_headers = insights.headers()
-                if current_headers != last_headers:
+                if self.rate_limit_tracker.should_check_limit(current_headers):
                     logger.debug(f"Headers changed, checking rate limit (processed {count} insights so far)")
-                    self.check_limit(current_headers)
-                    last_headers = current_headers
+                    self.rate_limit_tracker.check_limit(current_headers)
             except Exception as e:
                 logger.error(f"Error checking limit: {e}")
         
@@ -376,8 +171,8 @@ class FacebookAdsInsightsSimplified:
         logger.info("="*80)
         
         try:
-            # Get active accounts
-            accounts = self.get_active_accounts()
+            # Get active accounts using shared function
+            accounts = get_active_facebook_accounts(self.db)
             logger.info(f"Found {len(accounts)} active Facebook Ad accounts")
             
             # Process each account
