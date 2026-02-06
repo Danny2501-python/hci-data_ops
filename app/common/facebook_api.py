@@ -153,6 +153,12 @@ class FacebookRateLimitTracker:
                 if isinstance(p, (int, float))
             ], default=0)
             
+            # Log usage on every check for visibility
+            logger.info(
+                f"Rate Limit Status: usage={max_pct}% | source={usage_snapshot['source']} | "
+                f"insights_util={usage_snapshot['insights_util']}"
+            )
+
             if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 70) or any(
                 (isinstance(v, (int, float)) and v >= 70) for v in usage_snapshot["insights_util"].values() if v is not None
             ):
