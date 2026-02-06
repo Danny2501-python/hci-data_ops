@@ -86,9 +86,16 @@ class FacebookRateLimitTracker:
                 "eta_sec": None,
             }
             
+            # Helper to update snapshot with max values
+            def update_max(key, val):
+                if val is not None:
+                    curr = usage_snapshot.get(key)
+                    if curr is None or val > curr:
+                        usage_snapshot[key] = val
+
             # 1) Business Use Case header
             if "x-business-use-case-usage" in h:
-                usage_snapshot["source"] = "x-business-use-case-usage"
+                usage_snapshot["source"] = "x-business-use-case-usage" # Default source priority
                 raw = h["x-business-use-case-usage"]
                 data = json.loads(raw)
                 
@@ -98,32 +105,34 @@ class FacebookRateLimitTracker:
                 except Exception:
                     entry = {}
                 
-                call = float(entry.get("call_count", 0))
-                cpu = float(entry.get("total_cputime", 0))
-                total = float(entry.get("total_time", 0))
-                usage_snapshot.update({"call_pct": call, "cpu_pct": cpu, "time_pct": total})
+                update_max("call_pct", float(entry.get("call_count", 0)))
+                update_max("cpu_pct", float(entry.get("total_cputime", 0)))
+                update_max("time_pct", float(entry.get("total_time", 0)))
                 
                 eta_min = entry.get("estimated_time_to_regain_access")
                 if isinstance(eta_min, (int, float)) and eta_min > 0:
                     usage_snapshot["eta_sec"] = int(eta_min * 60)
             
             # 2) App-level header
-            elif "x-app-usage" in h:
-                usage_snapshot["source"] = "x-app-usage"
+            if "x-app-usage" in h:
+                # Only set source if not set or usage is higher (simplified: just keep BUC as primary if exists, else App)
+                if usage_snapshot["source"] is None:
+                    usage_snapshot["source"] = "x-app-usage"
+                
                 entry = json.loads(h["x-app-usage"])
-                usage_snapshot.update({
-                    "call_pct": float(entry.get("call_count", 0)),
-                    "cpu_pct": float(entry.get("total_cputime", 0)),
-                    "time_pct": float(entry.get("total_time", 0)),
-                })
+                update_max("call_pct", float(entry.get("call_count", 0)))
+                update_max("cpu_pct", float(entry.get("total_cputime", 0)))
+                update_max("time_pct", float(entry.get("total_time", 0)))
 
             # 3) Ad Account Level (Specific for Ad Account Rate Limits)
-            elif "x-ad-account-usage" in h:
-                usage_snapshot["source"] = "x-ad-account-usage"
+            if "x-ad-account-usage" in h:
+                if usage_snapshot["source"] is None or usage_snapshot["source"] == "x-app-usage":
+                     usage_snapshot["source"] = "x-ad-account-usage"
+
                 entry = json.loads(h["x-ad-account-usage"])
                 # x-ad-account-usage typically returns {'acc_id_util_pct': float}
                 val = float(entry.get("acc_id_util_pct", 0))
-                usage_snapshot["time_pct"] = val  # Map to time_pct for threshold check
+                update_max("time_pct", val)
             
             # 3) Insights throttle
             if "x-fb-ads-insights-throttle" in h:
