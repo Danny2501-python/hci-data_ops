@@ -153,8 +153,8 @@ class FacebookRateLimitTracker:
                 if isinstance(p, (int, float))
             ], default=0)
             
-            if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 80) or any(
-                (isinstance(v, (int, float)) and v >= 80) for v in usage_snapshot["insights_util"].values() if v is not None
+            if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 70) or any(
+                (isinstance(v, (int, float)) and v >= 70) for v in usage_snapshot["insights_util"].values() if v is not None
             ):
                 if usage_snapshot["eta_sec"]:
                     wait_time = usage_snapshot["eta_sec"]
