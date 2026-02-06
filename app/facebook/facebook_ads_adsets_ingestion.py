@@ -95,20 +95,10 @@ class FacebookAdsAdSetsIngestion:
                     count += 1
                     
                 except Exception as e:
-                    # Check if rate limit error - STOP immediately
-                    error_str = str(e).lower()
-                    if any(keyword in error_str for keyword in [
-                        'rate limit', 
-                        'user request limit',
-                        'code": 17',
-                        'error_subcode": 2446079'
-                    ]):
-                        logger.warning(f"⚠️ Rate limit hit after fetching {count} ad sets")
-                        logger.warning(f"Stopping fetch to avoid further API rejections")
-                        break  # STOP immediately
-                    
-                    # Other errors - log and continue
-                    logger.error(f"Error processing ad set: {e}, data: {adset._json}")
+                    # Log data processing errors and continue
+                    # (Rate limit errors will be caught by outer try/except)
+                    logger.error(f"Error processing ad set: {e}")
+                    continue
                 
                 try:
                     current_headers = adsets.headers()

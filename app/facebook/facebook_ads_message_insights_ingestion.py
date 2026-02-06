@@ -91,33 +91,49 @@ class FacebookAdsMessageInsightsIngestion:
         count = 0
         brand_id = account.get('current_brand_id')
         
-        for insight in insights:
-            try:
-                data = insight._json
+        try:
+            for insight in insights:
+                try:
+                    data = insight._json
+                    
+                    # NO FILTERING - Save all insights with unique_actions (same as original)
+                    # Collect message insight data
+                    self.message_insights_data.append({
+                        'date': data.get('date_start'),
+                        'fb_account_currency': data.get('account_currency'),
+                        'fb_ad_ad_id': data.get('ad_id'),
+                        'spend': float(data.get('spend', 0)),
+                        'region': data.get('region', ''),
+                        'brand_id': brand_id,
+                        'unique_actions': json.dumps(data.get('unique_actions', []))
+                    })
+                    count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing message insight: {e}")
+                    continue
                 
-                # NO FILTERING - Save all insights with unique_actions (same as original)
-                # Collect message insight data
-                self.message_insights_data.append({
-                    'date': data.get('date_start'),
-                    'fb_account_currency': data.get('account_currency'),
-                    'fb_ad_ad_id': data.get('ad_id'),
-                    'spend': float(data.get('spend', 0)),
-                    'region': data.get('region', ''),
-                    'brand_id': brand_id,
-                    'unique_actions': json.dumps(data.get('unique_actions', []))
-                })
-                count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing message insight: {e}, data: {insight._json}")
-            
-            try:
-                current_headers = insights.headers()
-                if self.rate_limit_tracker.should_check_limit(current_headers):
-                    logger.debug(f"Headers changed, checking rate limit (processed {count} message insights so far)")
-                    self.rate_limit_tracker.check_limit(current_headers)
-            except Exception as e:
-                logger.error(f"Error checking limit: {e}")
+                try:
+                    current_headers = insights.headers()
+                    if self.rate_limit_tracker.should_check_limit(current_headers):
+                        logger.debug(f"Headers changed, checking rate limit (processed {count} message insights so far)")
+                        self.rate_limit_tracker.check_limit(current_headers)
+                except Exception as e:
+                    logger.error(f"Error checking limit: {e}")
+        
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in [
+                'rate limit', 
+                'user request limit',
+                'code": 17',
+                'error_subcode": 2446079'
+            ]):
+                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} message insights)")
+                logger.warning(f"Iterator exception: {e}")
+            else:
+                logger.error(f"Error during iteration: {e}")
+                raise
         
         logger.success(f"✅ Collected {count} message insights for account: {account['name']}")
     

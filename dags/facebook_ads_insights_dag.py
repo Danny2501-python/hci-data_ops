@@ -45,7 +45,7 @@ dag = DAG(
     'facebook_ads_insights_etl',
     default_args=default_args,
     description='Facebook Ads Insights: Insights + Message Insights (with dependency creation)',
-    schedule_interval='0 5 * * *',  # Run daily at 5 AM (after Ads DAG)
+    schedule_interval=None,  # Triggered by Master DAG or manually (was: '0 5 * * *')
     start_date=datetime(2026, 2, 5, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
@@ -151,4 +151,4 @@ facebook_ads_message_insights = KubernetesPodOperator(
 # ============================================================================
 
 # Wait for ads DAG, then run both insights tasks in parallel
-[facebook_ads_insights, facebook_ads_message_insights]
+facebook_ads_insights >> facebook_ads_message_insights

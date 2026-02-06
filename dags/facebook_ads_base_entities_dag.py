@@ -1,7 +1,7 @@
 """
 Airflow DAG for Facebook Ads Base Entities ETL
-Fetches Campaigns, Ad Sets, and Creatives in parallel
-These entities have NO dependencies and can run simultaneously
+Fetches Campaigns, Ad Sets, and Creatives SEQUENTIALLY
+Tasks run in sequence to avoid hitting Facebook API rate limits (200 calls/hour per account)
 """
 
 from airflow import DAG
@@ -43,8 +43,8 @@ local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 dag = DAG(
     'facebook_ads_base_entities_etl',
     default_args=default_args,
-    description='Facebook Ads Base Entities: Campaigns + Ad Sets + Creatives (Parallel)',
-    schedule_interval='0 3 * * *',  # Run daily at 3 AM (before Ads DAG)
+    description='Facebook Ads Base Entities: Campaigns → Ad Sets → Creatives (Sequential)',
+    schedule_interval=None,  # Triggered by Master DAG or manually (was: '0 3 * * *')
     start_date=datetime(2026, 2, 5, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
@@ -170,5 +170,7 @@ facebook_ads_creatives = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-# All 3 tasks run in PARALLEL (no dependencies between them)
-[facebook_ads_campaigns, facebook_ads_adsets, facebook_ads_creatives]
+# Run tasks SEQUENTIALLY to avoid hitting Facebook API rate limits
+# All 3 tasks use the same Facebook Ad Account and share the same rate limit quota
+# Running in parallel causes rate limit errors (200 calls/hour per account)
+facebook_ads_campaigns >> facebook_ads_adsets >> facebook_ads_creatives

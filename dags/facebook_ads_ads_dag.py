@@ -45,7 +45,7 @@ dag = DAG(
     'facebook_ads_ads_etl',
     default_args=default_args,
     description='Facebook Ads (Ad Ads): Fetches Ads with dependency creation',
-    schedule_interval='0 4 * * *',  # Run daily at 4 AM (after Base Entities DAG)
+    schedule_interval=None,  # Triggered by Master DAG or manually (was: '0 4 * * *')
     start_date=datetime(2026, 2, 5, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

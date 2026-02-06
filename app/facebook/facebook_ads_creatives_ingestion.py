@@ -79,34 +79,50 @@ class FacebookAdsCreativesIngestion:
         count = 0
         brand_id = account.get('current_brand_id')
         
-        for creative in creatives:
-            try:
-                data = creative._json
+        try:
+            for creative in creatives:
+                try:
+                    data = creative._json
+                    
+                    # Collect creative data
+                    self.creatives_data.append({
+                        'fb_ad_creative_id': data.get('id'),
+                        'name': data.get('name'),
+                        'fb_ad_account_id': data.get('account_id'),
+                        'fb_object_id': data.get('object_id'),
+                        'fb_object_story_id': data.get('object_story_id'),
+                        'fb_link_url': data.get('link_url'),
+                        'fb_effective_object_story_id': data.get('effective_object_story_id'),
+                        'status': data.get('status'),
+                        'brand_id': brand_id
+                    })
+                    count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing creative: {e}")
+                    continue
                 
-                # Collect creative data
-                self.creatives_data.append({
-                    'fb_ad_creative_id': data.get('id'),
-                    'name': data.get('name'),
-                    'fb_ad_account_id': data.get('account_id'),
-                    'fb_object_id': data.get('object_id'),
-                    'fb_object_story_id': data.get('object_story_id'),
-                    'fb_link_url': data.get('link_url'),
-                    'fb_effective_object_story_id': data.get('effective_object_story_id'),
-                    'status': data.get('status'),
-                    'brand_id': brand_id
-                })
-                count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing creative: {e}, data: {creative._json}")
-            
-            try:
-                current_headers = creatives.headers()
-                if self.rate_limit_tracker.should_check_limit(current_headers):
-                    logger.debug(f"Headers changed, checking rate limit (processed {count} creatives so far)")
-                    self.rate_limit_tracker.check_limit(current_headers)
-            except Exception as e:
-                logger.error(f"Error checking limit: {e}")
+                try:
+                    current_headers = creatives.headers()
+                    if self.rate_limit_tracker.should_check_limit(current_headers):
+                        logger.debug(f"Headers changed, checking rate limit (processed {count} creatives so far)")
+                        self.rate_limit_tracker.check_limit(current_headers)
+                except Exception as e:
+                    logger.error(f"Error checking limit: {e}")
+        
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in [
+                'rate limit', 
+                'user request limit',
+                'code": 17',
+                'error_subcode": 2446079'
+            ]):
+                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} creatives)")
+                logger.warning(f"Iterator exception: {e}")
+            else:
+                logger.error(f"Error during iteration: {e}")
+                raise
         
         logger.success(f"✅ Collected {count} creatives for account: {account['name']}")
     

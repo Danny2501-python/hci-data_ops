@@ -80,33 +80,49 @@ class FacebookAdsAdsIngestion:
         count = 0
         brand_id = account.get('current_brand_id')
         
-        for ad in ads:
-            try:
-                data = ad._json
+        try:
+            for ad in ads:
+                try:
+                    data = ad._json
+                    
+                    # Collect ad data
+                    self.ads_data.append({
+                        'fb_ad_ad_id': data.get('id'),
+                        'name': data.get('name'),
+                        'fb_ad_set_id': data.get('adset_id'),
+                        'fb_creative_id': data.get('creative', {}).get('id') if isinstance(data.get('creative'), dict) else None,
+                        'created_time': data.get('created_time'),
+                        'updated_time': data.get('updated_time'),
+                        'status': data.get('status'),
+                        'brand_id': brand_id
+                    })
+                    count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing ad: {e}")
+                    continue
                 
-                # Collect ad data
-                self.ads_data.append({
-                    'fb_ad_ad_id': data.get('id'),
-                    'name': data.get('name'),
-                    'fb_ad_set_id': data.get('adset_id'),
-                    'fb_creative_id': data.get('creative', {}).get('id') if isinstance(data.get('creative'), dict) else None,
-                    'created_time': data.get('created_time'),
-                    'updated_time': data.get('updated_time'),
-                    'status': data.get('status'),
-                    'brand_id': brand_id
-                })
-                count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing ad: {e}, data: {ad._json}")
-            
-            try:
-                current_headers = ads.headers()
-                if self.rate_limit_tracker.should_check_limit(current_headers):
-                    logger.debug(f"Headers changed, checking rate limit (processed {count} ads so far)")
-                    self.rate_limit_tracker.check_limit(current_headers)
-            except Exception as e:
-                logger.error(f"Error checking limit: {e}")
+                try:
+                    current_headers = ads.headers()
+                    if self.rate_limit_tracker.should_check_limit(current_headers):
+                        logger.debug(f"Headers changed, checking rate limit (processed {count} ads so far)")
+                        self.rate_limit_tracker.check_limit(current_headers)
+                except Exception as e:
+                    logger.error(f"Error checking limit: {e}")
+        
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in [
+                'rate limit', 
+                'user request limit',
+                'code": 17',
+                'error_subcode": 2446079'
+            ]):
+                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} ads)")
+                logger.warning(f"Iterator exception: {e}")
+            else:
+                logger.error(f"Error during iteration: {e}")
+                raise
         
         logger.success(f"✅ Collected {count} ads for account: {account['name']}")
     
