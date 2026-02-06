@@ -1,12 +1,14 @@
 """
 Facebook Ads Insights Ingestion
 Migrated from etl_marketing Django app
-Strategy: Call API → Write 1:1 to table (no dependencies)
+Strategy: Bulk DELETE + COPY (CSV) for maximum performance
 """
 
 import os
 import sys
 import time
+import csv
+import tempfile
 from datetime import datetime, timedelta
 from typing import Dict, List
 from loguru import logger
@@ -37,51 +39,17 @@ FB_API_VERSION = os.getenv('FB_API_VERSION', 'v18.0')
 class FacebookAdsInsightsIngestion:
     """
     Facebook Ads Insights Ingestion
-    Strategy: Direct write to table (no dependencies)
+    Strategy: Bulk DELETE + COPY from CSV
     """
     
     def __init__(self, db: PostgreSQLHelper, days_for_ago: int = 1):
         self.db = db
         self.days_for_ago = days_for_ago
         self.rate_limit_tracker = FacebookRateLimitTracker()
-    
-    def upsert_insight(self, insight_data: Dict, brand_id: int):
-        """
-        Upsert insight to database
-        
-        Table: core_facebook_ad_ad_insight
-        Primary Key: (fb_ad_ad_id, date, region)
-        """
-        query = """
-            INSERT INTO core_facebook_ad_ad_insight (
-                date, fb_account_currency, fb_ad_ad_id, spend, region,
-                brand_id, etl_created, etl_updated
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, NOW(), NOW()
-            )
-            ON CONFLICT (fb_ad_ad_id, date, region) 
-            DO UPDATE SET
-                fb_account_currency = EXCLUDED.fb_account_currency,
-                spend = EXCLUDED.spend,
-                brand_id = EXCLUDED.brand_id,
-                etl_updated = NOW()
-        """
-        
-        region = insight_data.get('region', 'unknown')
-        
-        params = (
-            insight_data.get('date_start'),
-            insight_data.get('account_currency'),
-            insight_data.get('ad_id'),
-            insight_data.get('spend', 0),
-            region,
-            brand_id
-        )
-        
-        self.db.execute(query, params)
+        self.insights_data = []  # Collect all insights
     
     def fetch_insights(self, account: Dict):
-        """Fetch insights from Facebook API"""
+        """Fetch insights from Facebook API and collect to list"""
         ad_account, api = init_facebook_api(account, FB_API_VERSION)
         
         if not ad_account:
@@ -97,14 +65,15 @@ class FacebookAdsInsightsIngestion:
             'breakdowns': ['region']
         }
         
+        # Fetch same fields as original code (even if not all saved to DB)
         fields = [
-            AdsInsights.Field.account_id,
-            AdsInsights.Field.campaign_id,
-            AdsInsights.Field.adset_id,
+            AdsInsights.Field.account_id,      # Fetched but not saved (not in DB schema)
+            AdsInsights.Field.campaign_id,     # Fetched but not saved (not in DB schema)
+            AdsInsights.Field.adset_id,        # Fetched but not saved (not in DB schema)
             AdsInsights.Field.ad_id,
             AdsInsights.Field.spend,
             AdsInsights.Field.date_start,
-            AdsInsights.Field.date_stop,
+            AdsInsights.Field.date_stop,       # Fetched but not saved (not in DB schema)
             AdsInsights.Field.account_currency,
             AdsInsights.Field.region
         ]
@@ -123,14 +92,20 @@ class FacebookAdsInsightsIngestion:
             try:
                 data = insight._json
                 
-                # Direct write to table
-                self.upsert_insight(data, brand_id)
+                # Collect insight data
+                self.insights_data.append({
+                    'date': data.get('date_start'),
+                    'fb_account_currency': data.get('account_currency'),
+                    'fb_ad_ad_id': data.get('ad_id'),
+                    'spend': float(data.get('spend', 0)),
+                    'region': data.get('region', 'unknown'),
+                    'brand_id': brand_id
+                })
                 count += 1
                 
             except Exception as e:
                 logger.error(f"Error processing insight: {e}, data: {insight._json}")
             
-            # Check rate limit
             try:
                 current_headers = insights.headers()
                 if self.rate_limit_tracker.should_check_limit(current_headers):
@@ -139,12 +114,72 @@ class FacebookAdsInsightsIngestion:
             except Exception as e:
                 logger.error(f"Error checking limit: {e}")
         
-        logger.success(f"✅ Processed {count} insights for account: {account['name']}")
+        logger.success(f"✅ Collected {count} insights for account: {account['name']}")
+    
+    def bulk_upsert_insights(self):
+        """Bulk upsert insights using DELETE + COPY (composite key)"""
+        if not self.insights_data:
+            logger.warning("No insights to upsert")
+            return
+        
+        logger.info(f"Starting bulk upsert for {len(self.insights_data)} insights...")
+        
+        csv_file = tempfile.NamedTemporaryFile(mode='w', delete=False, newline='', suffix='.csv', encoding='utf-8')
+        
+        try:
+            writer = csv.DictWriter(csv_file, fieldnames=[
+                'date', 'fb_account_currency', 'fb_ad_ad_id', 'spend', 'region', 'brand_id'
+            ])
+            
+            for row in self.insights_data:
+                # Convert None to empty string for CSV
+                csv_row = {k: (v if v is not None else '') for k, v in row.items()}
+                writer.writerow(csv_row)
+            
+            csv_file.close()
+            logger.info(f"✅ Wrote {len(self.insights_data)} insights to CSV: {csv_file.name}")
+            
+            # DELETE existing (composite key: fb_ad_ad_id, date, region)
+            # Build arrays for composite key deletion
+            ad_ids = [i['fb_ad_ad_id'] for i in self.insights_data]
+            dates = [i['date'] for i in self.insights_data]
+            regions = [i['region'] for i in self.insights_data]
+            
+            delete_query = """
+                DELETE FROM core_facebook_ad_ad_insight 
+                WHERE (fb_ad_ad_id, date, region) IN (
+                    SELECT unnest(%s::varchar[]), 
+                           unnest(%s::date[]), 
+                           unnest(%s::varchar[])
+                )
+            """
+            self.db.execute(delete_query, (ad_ids, dates, regions))
+            logger.info(f"✅ Deleted existing insights")
+            
+            # COPY from CSV
+            copy_query = f"""
+                COPY core_facebook_ad_ad_insight (
+                    date, fb_account_currency, fb_ad_ad_id, spend, region, brand_id
+                )
+                FROM STDIN WITH (FORMAT CSV, HEADER FALSE, NULL '')
+            """
+            
+            with open(csv_file.name, 'r', encoding='utf-8') as f:
+                cursor = self.db.conn.cursor()
+                cursor.copy_expert(copy_query, f)
+                self.db.conn.commit()
+                cursor.close()
+            
+            logger.success(f"✅ Bulk inserted {len(self.insights_data)} insights via COPY")
+            
+        finally:
+            if os.path.exists(csv_file.name):
+                os.unlink(csv_file.name)
     
     def run(self):
         """Execute Facebook Ads insights ingestion"""
         logger.info("="*80)
-        logger.info(f"Starting Facebook Ads Insights Ingestion")
+        logger.info(f"Starting Facebook Ads Insights Ingestion (Bulk COPY)")
         logger.info(f"Days for ago: {self.days_for_ago}")
         logger.info("="*80)
         
@@ -155,16 +190,13 @@ class FacebookAdsInsightsIngestion:
             for account in accounts:
                 try:
                     time.sleep(1)
-                    logger.info(f"Processing account: {account['name']} ({account['ad_account_id']})")
-                    
+                    logger.info(f"Fetching account: {account['name']} ({account['ad_account_id']})")
                     self.fetch_insights(account)
-                    
-                    logger.success(f"✅ Completed account: {account['name']}")
-                
                 except Exception as e:
-                    logger.error(f"❌ Failed to process account {account['name']}: {e}")
+                    logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
                     continue
             
+            self.bulk_upsert_insights()
             logger.success("✅ Facebook Ads insights ingestion completed successfully")
         
         except Exception as e:
@@ -177,10 +209,6 @@ class FacebookAdsInsightsIngestion:
 # ============================================================================
 
 if __name__ == "__main__":
-    # Parse command-line arguments (call_functions pattern)
-    # Usage: python facebook_ads_insights_ingestion.py [days_for_ago]
-    
-    # Argument 1: days_for_ago (integer)
     days_for_ago = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else 1
     
     logger.info(f"Raw Arguments: {sys.argv}")

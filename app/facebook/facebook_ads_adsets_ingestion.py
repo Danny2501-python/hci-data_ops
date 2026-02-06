@@ -1,12 +1,14 @@
 """
 Facebook Ads Ad Sets Ingestion
 Migrated from etl_marketing Django app
-Strategy: Call API → Write 1:1 to table (no foreign key dependencies)
+Strategy: Bulk DELETE + COPY (CSV) for maximum performance
 """
 
 import os
 import sys
 import time
+import csv
+import tempfile
 from datetime import datetime
 from typing import Dict, List
 from loguru import logger
@@ -37,59 +39,17 @@ FB_API_VERSION = os.getenv('FB_API_VERSION', 'v18.0')
 class FacebookAdsAdSetsIngestion:
     """
     Facebook Ads Ad Sets Ingestion
-    Strategy: API → Direct write to table (no dependencies)
+    Strategy: Bulk DELETE + COPY from CSV
     """
     
     def __init__(self, db: PostgreSQLHelper, date_preset: str = 'last_90d'):
         self.db = db
         self.date_preset = date_preset
         self.rate_limit_tracker = FacebookRateLimitTracker()
-    
-    def upsert_adset(self, adset_data: Dict, brand_id: int):
-        """
-        Upsert ad set to database
-        
-        Table: core_facebook_ad_set
-        Primary Key: fb_ad_set_id
-        """
-        query = """
-            INSERT INTO core_facebook_ad_set (
-                fb_ad_set_id,
-                name,
-                fb_ad_campaign_id,
-                created_time,
-                updated_time,
-                start_time,
-                status,
-                etl_created,
-                etl_updated
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
-            )
-            ON CONFLICT (fb_ad_set_id) 
-            DO UPDATE SET
-                name = EXCLUDED.name,
-                fb_ad_campaign_id = EXCLUDED.fb_ad_campaign_id,
-                updated_time = EXCLUDED.updated_time,
-                start_time = EXCLUDED.start_time,
-                status = EXCLUDED.status,
-                etl_updated = NOW()
-        """
-        
-        params = (
-            adset_data.get('id'),
-            adset_data.get('name'),
-            adset_data.get('campaign_id'),
-            adset_data.get('created_time'),
-            adset_data.get('updated_time'),
-            adset_data.get('start_time'),
-            adset_data.get('status')
-        )
-        
-        self.db.execute(query, params)
+        self.adsets_data = []  # Collect all ad sets
     
     def fetch_adsets(self, account: Dict):
-        """Fetch ad sets from Facebook API"""
+        """Fetch ad sets from Facebook API and collect to list"""
         ad_account, api = init_facebook_api(account, FB_API_VERSION)
         
         if not ad_account:
@@ -97,6 +57,7 @@ class FacebookAdsAdSetsIngestion:
         
         params = {'date_preset': self.date_preset}
         
+        # Fetch same fields as original code (even if not all saved to DB)
         fields = [
             AdSet.Field.name,
             AdSet.Field.campaign_id,
@@ -104,7 +65,7 @@ class FacebookAdsAdSetsIngestion:
             AdSet.Field.updated_time,
             AdSet.Field.start_time,
             AdSet.Field.status,
-            AdSet.Field.optimization_goal
+            AdSet.Field.optimization_goal  # Fetched but not saved (not in DB schema)
         ]
         
         try:
@@ -113,7 +74,6 @@ class FacebookAdsAdSetsIngestion:
             logger.error(f"Failed to get ad sets: {e}")
             return
         
-        # Reset rate limit tracker for this account
         self.rate_limit_tracker.reset()
         count = 0
         
@@ -121,14 +81,21 @@ class FacebookAdsAdSetsIngestion:
             try:
                 data = adset._json
                 
-                # Direct write to table
-                self.upsert_adset(data, account.get('current_brand_id'))
+                # Collect ad set data
+                self.adsets_data.append({
+                    'fb_ad_set_id': data.get('id'),
+                    'name': data.get('name'),
+                    'fb_ad_campaign_id': data.get('campaign_id'),
+                    'created_time': data.get('created_time'),
+                    'updated_time': data.get('updated_time'),
+                    'start_time': data.get('start_time'),
+                    'status': data.get('status')
+                })
                 count += 1
                 
             except Exception as e:
                 logger.error(f"Error processing ad set: {e}, data: {adset._json}")
             
-            # Check rate limit only when headers change (new API call)
             try:
                 current_headers = adsets.headers()
                 if self.rate_limit_tracker.should_check_limit(current_headers):
@@ -137,34 +104,78 @@ class FacebookAdsAdSetsIngestion:
             except Exception as e:
                 logger.error(f"Error checking limit: {e}")
         
-        logger.success(f"✅ Processed {count} ad sets for account: {account['name']}")
+        logger.success(f"✅ Collected {count} ad sets for account: {account['name']}")
+    
+    def bulk_upsert_adsets(self):
+        """Bulk upsert ad sets using DELETE + COPY"""
+        if not self.adsets_data:
+            logger.warning("No ad sets to upsert")
+            return
+        
+        logger.info(f"Starting bulk upsert for {len(self.adsets_data)} ad sets...")
+        
+        csv_file = tempfile.NamedTemporaryFile(mode='w', delete=False, newline='', suffix='.csv', encoding='utf-8')
+        
+        try:
+            writer = csv.DictWriter(csv_file, fieldnames=[
+                'fb_ad_set_id', 'name', 'fb_ad_campaign_id', 'created_time',
+                'updated_time', 'start_time', 'status'
+            ])
+            
+            for row in self.adsets_data:
+                writer.writerow(row)
+            
+            csv_file.close()
+            logger.info(f"✅ Wrote {len(self.adsets_data)} ad sets to CSV: {csv_file.name}")
+            
+            # DELETE existing
+            adset_ids = [a['fb_ad_set_id'] for a in self.adsets_data]
+            delete_query = "DELETE FROM core_facebook_ad_set WHERE fb_ad_set_id = ANY(%s)"
+            self.db.execute(delete_query, (adset_ids,))
+            logger.info(f"✅ Deleted existing ad sets")
+            
+            # COPY from CSV
+            copy_query = f"""
+                COPY core_facebook_ad_set (
+                    fb_ad_set_id, name, fb_ad_campaign_id, created_time,
+                    updated_time, start_time, status
+                )
+                FROM STDIN WITH (FORMAT CSV, HEADER FALSE, NULL '')
+            """
+            
+            with open(csv_file.name, 'r', encoding='utf-8') as f:
+                cursor = self.db.conn.cursor()
+                cursor.copy_expert(copy_query, f)
+                self.db.conn.commit()
+                cursor.close()
+            
+            logger.success(f"✅ Bulk inserted {len(self.adsets_data)} ad sets via COPY")
+            
+        finally:
+            if os.path.exists(csv_file.name):
+                os.unlink(csv_file.name)
     
     def run(self):
         """Execute Facebook Ads ad sets ingestion"""
         logger.info("="*80)
-        logger.info(f"Starting Facebook Ads Ad Sets Ingestion")
+        logger.info(f"Starting Facebook Ads Ad Sets Ingestion (Bulk COPY)")
         logger.info(f"Date preset: {self.date_preset}")
         logger.info("="*80)
         
         try:
-            # Get active accounts using shared function
             accounts = get_active_facebook_accounts(self.db)
             logger.info(f"Found {len(accounts)} active Facebook Ad accounts")
             
-            # Process each account
             for account in accounts:
                 try:
-                    time.sleep(1)  # Rate limiting between accounts
-                    logger.info(f"Processing account: {account['name']} ({account['ad_account_id']})")
-                    
+                    time.sleep(1)
+                    logger.info(f"Fetching account: {account['name']} ({account['ad_account_id']})")
                     self.fetch_adsets(account)
-                    
-                    logger.success(f"✅ Completed account: {account['name']}")
-                
                 except Exception as e:
-                    logger.error(f"❌ Failed to process account {account['name']}: {e}")
+                    logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
                     continue
             
+            self.bulk_upsert_adsets()
             logger.success("✅ Facebook Ads ad sets ingestion completed successfully")
         
         except Exception as e:
@@ -177,10 +188,6 @@ class FacebookAdsAdSetsIngestion:
 # ============================================================================
 
 if __name__ == "__main__":
-    # Parse command-line arguments (call_functions pattern)
-    # Usage: python facebook_ads_adsets_ingestion.py [date_preset]
-    
-    # Argument 1: date_preset (string)
     date_preset = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else 'last_90d'
     
     logger.info(f"Raw Arguments: {sys.argv}")

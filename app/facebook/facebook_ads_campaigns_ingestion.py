@@ -1,12 +1,14 @@
 """
 Facebook Ads Campaigns Ingestion
 Migrated from etl_marketing Django app
-Strategy: Call API → Write 1:1 to table (no foreign key dependencies)
+Strategy: Bulk DELETE + COPY (CSV) for maximum performance
 """
 
 import os
 import sys
 import time
+import csv
+import tempfile
 from datetime import datetime
 from typing import Dict, List
 from loguru import logger
@@ -37,65 +39,17 @@ FB_API_VERSION = os.getenv('FB_API_VERSION', 'v18.0')
 class FacebookAdsCampaignsIngestion:
     """
     Facebook Ads Campaigns Ingestion
-    Strategy: API → Direct write to table (no dependencies)
+    Strategy: Bulk DELETE + COPY from CSV
     """
     
     def __init__(self, db: PostgreSQLHelper, date_preset: str = 'last_90d'):
         self.db = db
         self.date_preset = date_preset
         self.rate_limit_tracker = FacebookRateLimitTracker()
-    
-    def upsert_campaign(self, campaign_data: Dict, brand_id: int):
-        """
-        Upsert campaign to database
-        
-        Table: core_facebook_ad_campaign
-        Primary Key: fb_ad_campaign_id
-        """
-        query = """
-            INSERT INTO core_facebook_ad_campaign (
-                fb_ad_campaign_id,
-                name,
-                fb_ad_account_id,
-                created_time,
-                updated_time,
-                start_time,
-                stop_time,
-                status,
-                company_id,
-                etl_created,
-                etl_updated
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
-            )
-            ON CONFLICT (fb_ad_campaign_id) 
-            DO UPDATE SET
-                name = EXCLUDED.name,
-                fb_ad_account_id = EXCLUDED.fb_ad_account_id,
-                updated_time = EXCLUDED.updated_time,
-                start_time = EXCLUDED.start_time,
-                stop_time = EXCLUDED.stop_time,
-                status = EXCLUDED.status,
-                company_id = EXCLUDED.company_id,
-                etl_updated = NOW()
-        """
-        
-        params = (
-            campaign_data.get('id'),
-            campaign_data.get('name'),
-            campaign_data.get('account_id'),
-            campaign_data.get('created_time'),
-            campaign_data.get('updated_time'),
-            campaign_data.get('start_time'),
-            campaign_data.get('stop_time'),
-            campaign_data.get('status'),
-            brand_id
-        )
-        
-        self.db.execute(query, params)
+        self.campaigns_data = []  # Collect all campaigns
     
     def fetch_campaigns(self, account: Dict):
-        """Fetch campaigns from Facebook API"""
+        """Fetch campaigns from Facebook API and collect to list"""
         ad_account, api = init_facebook_api(account, FB_API_VERSION)
         
         if not ad_account:
@@ -122,13 +76,24 @@ class FacebookAdsCampaignsIngestion:
         # Reset rate limit tracker for this account
         self.rate_limit_tracker.reset()
         count = 0
+        brand_id = account.get('current_brand_id')
         
         for campaign in campaigns:
             try:
                 data = campaign._json
                 
-                # Direct write to table
-                self.upsert_campaign(data, account.get('current_brand_id'))
+                # Collect campaign data
+                self.campaigns_data.append({
+                    'fb_ad_campaign_id': data.get('id'),
+                    'name': data.get('name'),
+                    'fb_ad_account_id': data.get('account_id'),
+                    'created_time': data.get('created_time'),
+                    'updated_time': data.get('updated_time'),
+                    'start_time': data.get('start_time'),
+                    'stop_time': data.get('stop_time'),
+                    'status': data.get('status'),
+                    'company_id': brand_id
+                })
                 count += 1
                 
             except Exception as e:
@@ -143,12 +108,66 @@ class FacebookAdsCampaignsIngestion:
             except Exception as e:
                 logger.error(f"Error checking limit: {e}")
         
-        logger.success(f"✅ Processed {count} campaigns for account: {account['name']}")
+        logger.success(f"✅ Collected {count} campaigns for account: {account['name']}")
+    
+    def bulk_upsert_campaigns(self):
+        """Bulk upsert campaigns using DELETE + COPY"""
+        if not self.campaigns_data:
+            logger.warning("No campaigns to upsert")
+            return
+        
+        logger.info(f"Starting bulk upsert for {len(self.campaigns_data)} campaigns...")
+        
+        # Step 1: Write data to CSV file
+        csv_file = tempfile.NamedTemporaryFile(mode='w', delete=False, newline='', suffix='.csv', encoding='utf-8')
+        
+        try:
+            writer = csv.DictWriter(csv_file, fieldnames=[
+                'fb_ad_campaign_id', 'name', 'fb_ad_account_id', 'created_time',
+                'updated_time', 'start_time', 'stop_time', 'status', 'company_id'
+            ])
+            
+            for row in self.campaigns_data:
+                writer.writerow(row)
+            
+            csv_file.close()
+            logger.info(f"✅ Wrote {len(self.campaigns_data)} campaigns to CSV: {csv_file.name}")
+            
+            # Step 2: DELETE existing campaigns (by fb_ad_campaign_id)
+            campaign_ids = [c['fb_ad_campaign_id'] for c in self.campaigns_data]
+            delete_query = """
+                DELETE FROM core_facebook_ad_campaign 
+                WHERE fb_ad_campaign_id = ANY(%s)
+            """
+            self.db.execute(delete_query, (campaign_ids,))
+            logger.info(f"✅ Deleted existing campaigns")
+            
+            # Step 3: COPY from CSV to PostgreSQL
+            copy_query = f"""
+                COPY core_facebook_ad_campaign (
+                    fb_ad_campaign_id, name, fb_ad_account_id, created_time,
+                    updated_time, start_time, stop_time, status, company_id
+                )
+                FROM STDIN WITH (FORMAT CSV, HEADER FALSE, NULL '')
+            """
+            
+            with open(csv_file.name, 'r', encoding='utf-8') as f:
+                cursor = self.db.conn.cursor()
+                cursor.copy_expert(copy_query, f)
+                self.db.conn.commit()
+                cursor.close()
+            
+            logger.success(f"✅ Bulk inserted {len(self.campaigns_data)} campaigns via COPY")
+            
+        finally:
+            # Cleanup temp file
+            if os.path.exists(csv_file.name):
+                os.unlink(csv_file.name)
     
     def run(self):
         """Execute Facebook Ads campaigns ingestion"""
         logger.info("="*80)
-        logger.info(f"Starting Facebook Ads Campaigns Ingestion")
+        logger.info(f"Starting Facebook Ads Campaigns Ingestion (Bulk COPY)")
         logger.info(f"Date preset: {self.date_preset}")
         logger.info("="*80)
         
@@ -157,19 +176,20 @@ class FacebookAdsCampaignsIngestion:
             accounts = get_active_facebook_accounts(self.db)
             logger.info(f"Found {len(accounts)} active Facebook Ad accounts")
             
-            # Process each account
+            # Step 1: Fetch all campaigns from all accounts
             for account in accounts:
                 try:
                     time.sleep(1)  # Rate limiting between accounts
-                    logger.info(f"Processing account: {account['name']} ({account['ad_account_id']})")
+                    logger.info(f"Fetching account: {account['name']} ({account['ad_account_id']})")
                     
                     self.fetch_campaigns(account)
                     
-                    logger.success(f"✅ Completed account: {account['name']}")
-                
                 except Exception as e:
-                    logger.error(f"❌ Failed to process account {account['name']}: {e}")
+                    logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
                     continue
+            
+            # Step 2: Bulk upsert all collected campaigns
+            self.bulk_upsert_campaigns()
             
             logger.success("✅ Facebook Ads campaigns ingestion completed successfully")
         
