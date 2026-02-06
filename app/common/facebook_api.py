@@ -74,6 +74,13 @@ class FacebookRateLimitTracker:
         def _lower_keys(d):
             return {k.lower(): v for k, v in d.items()}
         
+        # DEBUG: Log rate limit headers for analysis
+        try:
+            debug_headers = {k: v for k, v in headers.items() if any(x in k.lower() for x in ['usage', 'limit', 'throttle'])}
+            logger.info(f"Rx Headers: {debug_headers}")
+        except Exception:
+            pass
+        
         try:
             h = _lower_keys(headers or {})
             usage_snapshot = {
