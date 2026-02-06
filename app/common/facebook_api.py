@@ -54,6 +54,7 @@ class FacebookRateLimitTracker:
         Parses rate limit information from Facebook API headers:
         - x-business-use-case-usage: Business-level rate limits
         - x-app-usage: App-level rate limits  
+        - x-ad-account-usage: Ad Account-level rate limits
         - x-fb-ads-insights-throttle: Insights API specific throttling
         
         Implements exponential backoff when rate limits are high (>=80%).
@@ -73,13 +74,6 @@ class FacebookRateLimitTracker:
         """
         def _lower_keys(d):
             return {k.lower(): v for k, v in d.items()}
-        
-        # DEBUG: Log rate limit headers for analysis
-        try:
-            debug_headers = {k: v for k, v in headers.items() if any(x in k.lower() for x in ['usage', 'limit', 'throttle'])}
-            logger.info(f"Rx Headers: {debug_headers}")
-        except Exception:
-            pass
         
         try:
             h = _lower_keys(headers or {})
@@ -140,8 +134,13 @@ class FacebookRateLimitTracker:
                 # x-ad-account-usage typically returns {'acc_id_util_pct': float}
                 val = float(entry.get("acc_id_util_pct", 0))
                 update_max("time_pct", val)
+                
+                # Extract access tier if present
+                tier = entry.get("ads_api_access_tier")
+                if tier:
+                    usage_snapshot["tier"] = tier
             
-            # 3) Insights throttle
+            # 4) Insights throttle
             if "x-fb-ads-insights-throttle" in h:
                 thr = json.loads(h["x-fb-ads-insights-throttle"])
                 usage_snapshot["insights_util"] = {
@@ -149,7 +148,9 @@ class FacebookRateLimitTracker:
                     "acc_id_util_pct": thr.get("acc_id_util_pct"),
                     "business_id_util_pct": thr.get("business_id_util_pct"),
                 }
-                usage_snapshot["tier"] = thr.get("ads_api_access_tier")
+                # Check tier in throttle header as fallback/override
+                if thr.get("ads_api_access_tier"):
+                    usage_snapshot["tier"] = thr.get("ads_api_access_tier")
                 
                 if usage_snapshot["eta_sec"] is None:
                     candidates = [
@@ -177,11 +178,16 @@ class FacebookRateLimitTracker:
                 if isinstance(p, (int, float))
             ], default=0)
             
-            # Log usage on every check for visibility
-            logger.info(
+            # Log usage on every check for visibility (DEBUG if 0%, INFO if > 0%)
+            msg = (
                 f"Rate Limit Status: usage={max_pct}% | source={usage_snapshot['source']} | "
-                f"insights_util={usage_snapshot['insights_util']}"
+                f"insights_util={usage_snapshot['insights_util']} | tier={usage_snapshot['tier']}"
             )
+            
+            if max_pct > 0:
+                logger.info(msg)
+            else:
+                logger.debug(msg)
 
             if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 80) or any(
                 (isinstance(v, (int, float)) and v >= 80) for v in usage_snapshot["insights_util"].values() if v is not None
@@ -341,4 +347,3 @@ def init_facebook_api(account: Dict, api_version: str = 'v18.0') -> Tuple[Option
     else:
         logger.error(f"Token expired for account: {account['name']}")
         return None, None
-
