@@ -101,13 +101,18 @@ class FacebookAdsAdSetsIngestion:
             max_retries = 10
             for attempt in range(max_retries):
                 try:
-                    # Call API manually using the SDK's internal call method
-                    # This allows full control over handling exceptions and response headers
-                    response = api.call(
-                        'GET',
-                        url_path,
+                    # Create FacebookRequest object for robust URL handling
+                    from facebook_business.api import FacebookRequest
+                    request = FacebookRequest(
+                        node_id=f"act_{account['ad_account_id']}",
+                        method='GET',
+                        endpoint='/adsets',
+                        api=api,
                         params=current_params
                     )
+                    
+                    # Execute Request
+                    response = request.execute()
                     
                     # Parse Response
                     json_data = response.json()
