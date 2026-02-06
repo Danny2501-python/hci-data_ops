@@ -77,32 +77,61 @@ class FacebookAdsAdSetsIngestion:
         self.rate_limit_tracker.reset()
         count = 0
         
-        for adset in adsets:
-            try:
-                data = adset._json
+        try:
+            for adset in adsets:
+                try:
+                    data = adset._json
+                    
+                    # Collect ad set data
+                    self.adsets_data.append({
+                        'fb_ad_set_id': data.get('id'),
+                        'name': data.get('name'),
+                        'fb_ad_campaign_id': data.get('campaign_id'),
+                        'created_time': data.get('created_time'),
+                        'updated_time': data.get('updated_time'),
+                        'start_time': data.get('start_time'),
+                        'status': data.get('status')
+                    })
+                    count += 1
+                    
+                except Exception as e:
+                    # Check if rate limit error - STOP immediately
+                    error_str = str(e).lower()
+                    if any(keyword in error_str for keyword in [
+                        'rate limit', 
+                        'user request limit',
+                        'code": 17',
+                        'error_subcode": 2446079'
+                    ]):
+                        logger.warning(f"⚠️ Rate limit hit after fetching {count} ad sets")
+                        logger.warning(f"Stopping fetch to avoid further API rejections")
+                        break  # STOP immediately
+                    
+                    # Other errors - log and continue
+                    logger.error(f"Error processing ad set: {e}, data: {adset._json}")
                 
-                # Collect ad set data
-                self.adsets_data.append({
-                    'fb_ad_set_id': data.get('id'),
-                    'name': data.get('name'),
-                    'fb_ad_campaign_id': data.get('campaign_id'),
-                    'created_time': data.get('created_time'),
-                    'updated_time': data.get('updated_time'),
-                    'start_time': data.get('start_time'),
-                    'status': data.get('status')
-                })
-                count += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing ad set: {e}, data: {adset._json}")
-            
-            try:
-                current_headers = adsets.headers()
-                if self.rate_limit_tracker.should_check_limit(current_headers):
-                    logger.debug(f"Headers changed, checking rate limit (processed {count} ad sets so far)")
-                    self.rate_limit_tracker.check_limit(current_headers)
-            except Exception as e:
-                logger.error(f"Error checking limit: {e}")
+                try:
+                    current_headers = adsets.headers()
+                    if self.rate_limit_tracker.should_check_limit(current_headers):
+                        logger.debug(f"Headers changed, checking rate limit (processed {count} ad sets so far)")
+                        self.rate_limit_tracker.check_limit(current_headers)
+                except Exception as e:
+                    logger.error(f"Error checking limit: {e}")
+        
+        except Exception as e:
+            # Catch iterator exceptions (e.g., rate limit when fetching next batch)
+            error_str = str(e).lower()
+            if any(keyword in error_str for keyword in [
+                'rate limit', 
+                'user request limit',
+                'code": 17',
+                'error_subcode": 2446079'
+            ]):
+                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} ad sets)")
+                logger.warning(f"Iterator exception: {e}")
+            else:
+                logger.error(f"Error during iteration: {e}")
+                raise  # Re-raise if not rate limit
         
         logger.success(f"✅ Collected {count} ad sets for account: {account['name']}")
     
