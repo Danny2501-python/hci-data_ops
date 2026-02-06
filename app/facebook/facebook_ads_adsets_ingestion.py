@@ -15,6 +15,9 @@ from loguru import logger
 
 # Facebook Business SDK
 from facebook_business.adobjects.adset import AdSet
+from facebook_business.exceptions import FacebookRequestError
+
+import random
 
 # Common utilities
 from common.facebook_api import (
@@ -49,86 +52,140 @@ class FacebookAdsAdSetsIngestion:
         self.adsets_data = []  # Collect all ad sets
     
     def fetch_adsets(self, account: Dict):
-        """Fetch ad sets from Facebook API and collect to list"""
+        """Fetch ad sets from Facebook API using manual pagination and retry logic"""
         ad_account, api = init_facebook_api(account, FB_API_VERSION)
         
         if not ad_account:
             return
         
-        params = {'date_preset': self.date_preset}
-        
-        # Fetch same fields as original code (even if not all saved to DB)
+        # Explicitly define fields requested
         fields = [
-            AdSet.Field.name,
-            AdSet.Field.campaign_id,
-            AdSet.Field.created_time,
-            AdSet.Field.updated_time,
-            AdSet.Field.start_time,
-            AdSet.Field.status,
-            AdSet.Field.optimization_goal  # Fetched but not saved (not in DB schema)
+            'id',
+            'name',
+            'campaign_id',
+            'created_time',
+            'updated_time',
+            'start_time',
+            'status',
+            'optimization_goal'
         ]
         
-        try:
-            adsets = ad_account.get_ad_sets(params=params, fields=fields)
-        except Exception as e:
-            logger.error(f"Failed to get ad sets: {e}")
-            return
+        # Parameters for the API call
+        params = {
+            'date_preset': self.date_preset,
+            'fields': ",".join(fields),
+            'limit': 100, # Explicit batch size
+            'summary': True,
+        }
         
         self.rate_limit_tracker.reset()
         count = 0
         
-        try:
-            for adset in adsets:
+        # Build API path: act_<AD_ACCOUNT_ID>/adsets
+        # Note: ad_account_id in DB is raw number, so we add prefix
+        url_path = f"act_{account['ad_account_id']}/adsets"
+        after_cursor = None
+        
+        logger.info(f"Starting fetch loop for account {account['name']} (ID: {account['ad_account_id']})")
+        
+        while True:
+            # 1. Prepare current batch params
+            current_params = params.copy()
+            if after_cursor:
+                current_params['after'] = after_cursor
+            
+            batch_data = None
+            paging = None
+            
+            # 2. Retry Loop for Rate Limiting
+            max_retries = 10
+            for attempt in range(max_retries):
                 try:
-                    data = adset._json
+                    # Call API manually using the SDK's internal call method
+                    # This allows full control over handling exceptions and response headers
+                    response = api.call(
+                        'GET',
+                        url_path,
+                        params=current_params
+                    )
                     
-                    # Collect ad set data
+                    # Parse Response
+                    json_data = response.json()
+                    batch_data = json_data.get('data', [])
+                    paging = json_data.get('paging', {})
+                    
+                    # Check Headers for Rate Limiting (Passive)
+                    headers = response.headers()
+                    if self.rate_limit_tracker.should_check_limit(headers):
+                         self.rate_limit_tracker.check_limit(headers)
+                    
+                    # If successful, break validation loop
+                    break 
+                    
+                except FacebookRequestError as e:
+                    # Capture actual error codes
+                    error_code = e.api_error_code()
+                    
+                    # Code 17: User request limit reached
+                    # Code 4: App request limit reached
+                    # Code 613: Custom rate limit
+                    is_rate_limit = error_code in [17, 4, 613]
+                    
+                    if is_rate_limit:
+                        # Exponential Backoff with Jitter: 60s -> 120s ... -> Max 10 mins
+                        # Base wait increases with attempts
+                        base_wait = (2 ** attempt) * 60 
+                        sleep_time = min(base_wait, 600) + random.randint(5, 30)
+                        
+                        logger.warning(
+                            f"⚠️ Rate limit hit (Code {error_code}). "
+                            f"Sleeping {sleep_time}s before retry {attempt+1}/{max_retries}..."
+                        )
+                        time.sleep(sleep_time)
+                        continue # Retry the loop
+                    else:
+                        logger.error(f"Facebook API Error: {e}")
+                        raise e # Non-rate-limit errors break the flow (or we could choose to skip)
+                        
+                except Exception as e:
+                    # Generic network or parsing errors
+                    sleep_time = 30
+                    logger.warning(f"Unexpected error fetching ad sets: {e}. Retry in {sleep_time}s. Attempt {attempt+1}/{max_retries}")
+                    time.sleep(sleep_time)
+                    continue
+
+            # 3. Process Batch
+            if batch_data is None:
+                 logger.error("Failed to fetch batch after max retries. Stopping collection.")
+                 break
+            
+            for item in batch_data:
+                try:
                     self.adsets_data.append({
-                        'fb_ad_set_id': data.get('id'),
-                        'name': data.get('name'),
-                        'fb_ad_campaign_id': data.get('campaign_id'),
-                        'created_time': data.get('created_time'),
-                        'updated_time': data.get('updated_time'),
-                        'start_time': data.get('start_time'),
-                        'status': data.get('status')
+                        'fb_ad_set_id': item.get('id'),
+                        'name': item.get('name'),
+                        'fb_ad_campaign_id': item.get('campaign_id'),
+                        'created_time': item.get('created_time'),
+                        'updated_time': item.get('updated_time'),
+                        'start_time': item.get('start_time'),
+                        'status': item.get('status')
                     })
                     count += 1
-                    
                 except Exception as e:
-                    # Log data processing errors and continue
-                    # (Rate limit errors will be caught by outer try/except)
-                    logger.error(f"Error processing ad set: {e}")
-                    continue
-                
-                try:
-                    current_headers = adsets.headers()
-                    if self.rate_limit_tracker.should_check_limit(current_headers):
-                        logger.debug(f"Headers changed, checking rate limit (processed {count} ad sets so far)")
-                        self.rate_limit_tracker.check_limit(current_headers)
-                        
-                        if self.rate_limit_tracker.time_await_limit >= 5:
-                            logger.warning(f"🛑 Stopping account {account['name']} due to 5x rate limit hits.")
-                            break
-                            
-                except Exception as e:
-                    logger.error(f"Error checking limit: {e}")
+                    logger.error(f"Error processing item: {e}")
+            
+            # 4. Advance Cursor
+            cursors = paging.get('cursors', {})
+            after_cursor = cursors.get('after')
+            
+            # Log progress periodically
+            if count % 500 == 0:
+                logger.info(f"Collected {count} ad sets so far...")
+            
+            if not after_cursor:
+                break
         
-        except Exception as e:
-            # Catch iterator exceptions (e.g., rate limit when fetching next batch)
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in [
-                'rate limit', 
-                'user request limit',
-                'code": 17',
-                'error_subcode": 2446079'
-            ]):
-                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} ad sets)")
-                logger.warning(f"Iterator exception: {e}")
-            else:
-                logger.error(f"Error during iteration: {e}")
-                raise  # Re-raise if not rate limit
-        
-        logger.success(f"✅ Collected {count} ad sets for account: {account['name']}")
+        logger.success(f"✅ Collected total {count} ad sets for account: {account['name']}")
     
     def bulk_upsert_adsets(self):
         """Bulk upsert ad sets using DELETE + COPY"""
