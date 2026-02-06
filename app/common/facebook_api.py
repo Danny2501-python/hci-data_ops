@@ -116,6 +116,14 @@ class FacebookRateLimitTracker:
                     "cpu_pct": float(entry.get("total_cputime", 0)),
                     "time_pct": float(entry.get("total_time", 0)),
                 })
+
+            # 3) Ad Account Level (Specific for Ad Account Rate Limits)
+            elif "x-ad-account-usage" in h:
+                usage_snapshot["source"] = "x-ad-account-usage"
+                entry = json.loads(h["x-ad-account-usage"])
+                # x-ad-account-usage typically returns {'acc_id_util_pct': float}
+                val = float(entry.get("acc_id_util_pct", 0))
+                usage_snapshot["time_pct"] = val  # Map to time_pct for threshold check
             
             # 3) Insights throttle
             if "x-fb-ads-insights-throttle" in h:
@@ -159,8 +167,8 @@ class FacebookRateLimitTracker:
                 f"insights_util={usage_snapshot['insights_util']}"
             )
 
-            if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 70) or any(
-                (isinstance(v, (int, float)) and v >= 70) for v in usage_snapshot["insights_util"].values() if v is not None
+            if (usage_snapshot["eta_sec"] and usage_snapshot["eta_sec"] > 0) or (max_pct >= 80) or any(
+                (isinstance(v, (int, float)) and v >= 80) for v in usage_snapshot["insights_util"].values() if v is not None
             ):
                 if usage_snapshot["eta_sec"]:
                     wait_time = usage_snapshot["eta_sec"]
