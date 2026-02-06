@@ -77,7 +77,6 @@ class FacebookAdsMessageInsightsIngestion:
             AdsInsights.Field.date_start,
             AdsInsights.Field.date_stop,       # Fetched but not saved (not in DB schema)
             AdsInsights.Field.account_currency,
-            AdsInsights.Field.region,
             AdsInsights.Field.unique_actions
         ]
         
