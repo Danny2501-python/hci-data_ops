@@ -105,6 +105,11 @@ class FacebookAdsAdSetsIngestion:
                     if self.rate_limit_tracker.should_check_limit(current_headers):
                         logger.debug(f"Headers changed, checking rate limit (processed {count} ad sets so far)")
                         self.rate_limit_tracker.check_limit(current_headers)
+                        
+                        if self.rate_limit_tracker.time_await_limit >= 5:
+                            logger.warning(f"🛑 Stopping account {account['name']} due to 5x rate limit hits.")
+                            break
+                            
                 except Exception as e:
                     logger.error(f"Error checking limit: {e}")
         
