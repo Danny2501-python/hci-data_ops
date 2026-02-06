@@ -15,6 +15,7 @@ from loguru import logger
 
 # Facebook Business SDK
 from facebook_business.adobjects.adset import AdSet
+from facebook_business.adobjects.adreportrun import AdReportRun
 
 # Common utilities
 from common.facebook_api import (
@@ -55,7 +56,17 @@ class FacebookAdsAdSetsIngestion:
         if not ad_account:
             return
         
-        params = {'date_preset': self.date_preset}
+        # Convert string date_preset to Enum to suppress SDK warning
+        date_preset_enum = self.date_preset
+        try:
+            for preset in AdReportRun.DatePreset:
+                if preset.value == self.date_preset:
+                    date_preset_enum = preset
+                    break
+        except Exception:
+            pass
+
+        params = {'date_preset': date_preset_enum}
         
         # Fetch same fields as original code (even if not all saved to DB)
         fields = [
