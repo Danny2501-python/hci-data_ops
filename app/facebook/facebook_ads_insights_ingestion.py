@@ -15,6 +15,10 @@ from loguru import logger
 
 # Facebook Business SDK
 from facebook_business.adobjects.adsinsights import AdsInsights
+from facebook_business.adobjects.campaign import Campaign
+from facebook_business.adobjects.adset import AdSet
+from facebook_business.adobjects.ad import Ad
+from facebook_business.adobjects.adcreative import AdCreative
 
 # Common utilities
 from common.facebook_api import (
@@ -87,10 +91,23 @@ class FacebookAdsInsightsIngestion:
         count = 0
         brand_id = account.get('current_brand_id')
         
+        # Dependency Sets
+        campaign_ids = set()
+        adset_ids = set()
+        ad_ids = set()
+        
         try:
             for insight in insights:
                 try:
                     data = insight._json
+                    
+                    # Collect Dependencies
+                    if data.get('campaign_id'):
+                        campaign_ids.add(data.get('campaign_id'))
+                    if data.get('adset_id'):
+                        adset_ids.add(data.get('adset_id'))
+                    if data.get('ad_id'):
+                        ad_ids.add(data.get('ad_id'))
                     
                     # Collect insight data
                     self.insights_data.append({
@@ -135,6 +152,268 @@ class FacebookAdsInsightsIngestion:
                 raise
         
         logger.success(f"✅ Collected {count} insights for account: {account['name']}")
+        
+        # Process Dependencies (Campaigns, AdSets, Ads)
+        logger.info(f"Processing dependencies: {len(campaign_ids)} Campaigns, {len(adset_ids)} AdSets, {len(ad_ids)} Ads")
+        self.process_dependencies(api, campaign_ids, adset_ids, ad_ids, brand_id)
+
+    def process_dependencies(self, api, campaign_ids, adset_ids, ad_ids, brand_id):
+        """Fetch and bulk upsert dependencies (Campaign, AdSet, Ad, Creative)"""
+        
+        # 1. Campaigns
+        if campaign_ids:
+            logger.info(f"Fetching {len(campaign_ids)} Campaigns...")
+            campaigns_data = self.fetch_campaigns_data(api, campaign_ids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_campaign', 
+                'id', 
+                campaigns_data,
+                ['id', 'name', 'fb_ad_campaign_id', 'created_time', 'updated_time', 'start_time', 'stop_time', 'status', 'fb_ad_account_id', 'etl_updated', 'company_id']
+            )
+
+        # 2. AdSets
+        if adset_ids:
+            logger.info(f"Fetching {len(adset_ids)} AdSets...")
+            adsets_data = self.fetch_adsets_data(api, adset_ids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_set',
+                'id',
+                adsets_data,
+                ['id', 'name', 'fb_ad_set_id', 'created_time', 'updated_time', 'start_time', 'status', 'fb_ad_campaign_id', 'etl_updated']
+            )
+
+        # 3. Ads (and collect Creative IDs)
+        creative_ids = set()
+        if ad_ids:
+            logger.info(f"Fetching {len(ad_ids)} Ads...")
+            ads_data = self.fetch_ads_data(api, ad_ids, creative_ids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_ad',
+                'id',
+                ads_data,
+                ['id', 'name', 'fb_ad_ad_id', 'fb_ad_set_id', 'fb_creative_id', 'created_time', 'updated_time', 'status', 'brand_id', 'etl_updated']
+            )
+
+        # 4. Creatives
+        if creative_ids:
+            logger.info(f"Fetching {len(creative_ids)} Creatives...")
+            creatives_data = self.fetch_creatives_data(api, creative_ids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_creative',
+                'id',
+                creatives_data,
+                ['id', 'name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
+            )
+
+    def _check_limit(self, headers):
+        """Check rate limit using headers and sleep if necessary"""
+        try:
+            if self.rate_limit_tracker.should_check_limit(headers):
+                self.rate_limit_tracker.check_limit(headers)
+                if self.rate_limit_tracker.time_await_limit >= 5:
+                    logger.warning("🛑 5x Rate Limit Hit. Sleeping 300s...")
+                    time.sleep(300)
+        except Exception as e:
+            logger.error(f"Error checking limit: {e}")
+
+    def fetch_campaigns_data(self, api, ids, brand_id):
+        """Fetch Campaign details"""
+        data_list = []
+        for i, cid in enumerate(ids):
+            time.sleep(0.05) # Rate limit: ~20 req/s
+            try:
+                obj = Campaign(cid, api=api)
+                fields = [
+                    Campaign.Field.name,
+                    Campaign.Field.account_id,
+                    Campaign.Field.created_time,
+                    Campaign.Field.updated_time,
+                    Campaign.Field.start_time,
+                    Campaign.Field.stop_time,
+                    Campaign.Field.status
+                ]
+                d = obj.api_get(fields=fields)._json
+                if hasattr(obj, 'headers'):
+                    self._check_limit(obj.headers())
+                
+                data_list.append({
+                    'id': d.get('id'),
+                    'name': d.get('name'),
+                    'fb_ad_campaign_id': d.get('id'),
+                    'created_time': d.get('created_time'),
+                    'updated_time': d.get('updated_time'),
+                    'start_time': d.get('start_time'),
+                    'stop_time': d.get('stop_time'),
+                    'status': d.get('status'),
+                    'fb_ad_account_id': d.get('account_id'),
+                    'etl_updated': datetime.now(),
+                    'company_id': brand_id 
+                })
+            except Exception as e:
+                logger.error(f"Failed to fetch Campaign {cid}: {e}")
+        return data_list
+
+    def fetch_adsets_data(self, api, ids, brand_id):
+        """Fetch AdSet details"""
+        data_list = []
+        for i, aid in enumerate(ids):
+            time.sleep(0.05) # Rate limit: ~20 req/s
+            try:
+                obj = AdSet(aid, api=api)
+                fields = [
+                    AdSet.Field.name,
+                    AdSet.Field.campaign_id,
+                    AdSet.Field.created_time,
+                    AdSet.Field.updated_time,
+                    AdSet.Field.start_time,
+                    AdSet.Field.status
+                ]
+                d = obj.api_get(fields=fields)._json
+                if hasattr(obj, 'headers'):
+                    self._check_limit(obj.headers())
+                
+                data_list.append({
+                    'id': d.get('id'),
+                    'name': d.get('name'),
+                    'fb_ad_set_id': d.get('id'),
+                    'created_time': d.get('created_time'),
+                    'updated_time': d.get('updated_time'),
+                    'start_time': d.get('start_time'),
+                    'status': d.get('status'),
+                    'fb_ad_campaign_id': d.get('campaign_id'),
+                    'etl_updated': datetime.now()
+                })
+            except Exception as e:
+                logger.error(f"Failed to fetch AdSet {aid}: {e}")
+        return data_list
+
+    def fetch_ads_data(self, api, ids, creative_ids_out, brand_id):
+        """Fetch Ad details and collect Creative IDs"""
+        data_list = []
+        for i, aid in enumerate(ids):
+            time.sleep(0.05) # Rate limit: ~20 req/s
+            try:
+                obj = Ad(aid, api=api)
+                fields = [
+                    Ad.Field.account_id,
+                    Ad.Field.name,
+                    Ad.Field.campaign_id,
+                    Ad.Field.adset_id,
+                    Ad.Field.creative,
+                    Ad.Field.created_time,
+                    Ad.Field.updated_time,
+                    Ad.Field.status
+                ]
+                d = obj.api_get(fields=fields)._json
+                if hasattr(obj, 'headers'):
+                    self._check_limit(obj.headers())
+                
+                # Extract Creative ID
+                creative = d.get('creative', {})
+                cid = creative.get('id') if isinstance(creative, dict) else creative
+                if cid:
+                    creative_ids_out.add(cid)
+                
+                data_list.append({
+                    'id': d.get('id'),
+                    'name': d.get('name'),
+                    'fb_ad_ad_id': d.get('id'),
+                    'fb_ad_set_id': d.get('adset_id'),
+                    'fb_creative_id': cid,
+                    'created_time': d.get('created_time'),
+                    'updated_time': d.get('updated_time'),
+                    'status': d.get('status'),
+                    'brand_id': brand_id,
+                    'etl_updated': datetime.now()
+                })
+            except Exception as e:
+                logger.error(f"Failed to fetch Ad {aid}: {e}")
+        return data_list
+
+    def fetch_creatives_data(self, api, ids, brand_id):
+        """Fetch Creative details"""
+        data_list = []
+        for i, cid in enumerate(ids):
+            time.sleep(0.05) # Rate limit: ~20 req/s
+            try:
+                obj = AdCreative(cid, api=api)
+                fields = [
+                    AdCreative.Field.name,
+                    AdCreative.Field.account_id,
+                    AdCreative.Field.object_id,
+                    AdCreative.Field.object_story_id,
+                    AdCreative.Field.link_url, 
+                    AdCreative.Field.status,
+                    
+                ]
+                d = obj.api_get(fields=fields)._json
+                if hasattr(obj, 'headers'):
+                    self._check_limit(obj.headers())
+                
+                data_list.append({
+                    'id': d.get('id'),
+                    'name': d.get('name'),
+                    'fb_ad_creative_id': d.get('id'),
+                    'fb_object_id': d.get('object_id'),
+                    'fb_object_story_id': d.get('object_story_id'),
+                    'fb_link_url': d.get('link_url'),
+                    'status': d.get('status'),
+                    'fb_ad_account_id': d.get('account_id'),
+                    'brand_id': brand_id,
+                    'etl_updated': datetime.now()
+                })
+            except Exception as e:
+                logger.error(f"Failed to fetch Creative {cid}: {e}")
+        return data_list
+
+    def bulk_insert_data(self, table_name, pk_col, data, columns):
+        """Generic Bulk DELETE + COPY"""
+        if not data:
+            return
+
+        logger.info(f"Bulk inserting {len(data)} records into {table_name}")
+        
+        # 1. DELETE existing
+        ids = [str(item[pk_col]) for item in data]
+        if ids:
+            delete_sql = f"DELETE FROM {table_name} WHERE {pk_col} IN (SELECT unnest(%s::varchar[])::int8)"
+            # Note: Casting to varchar[] then int8 to handle big integers safely if passed as strings
+            try:
+                self.db.execute(delete_sql, (ids,))
+                logger.info(f"Deleted existing records in {table_name}")
+            except Exception as e:
+                logger.error(f"Failed to delete from {table_name}: {e}")
+                # Continue to try insert? risky.
+                raise e
+
+        # 2. COPY new data
+        csv_file = tempfile.NamedTemporaryFile(mode='w', delete=False, newline='', suffix='.csv', encoding='utf-8')
+        try:
+            writer = csv.DictWriter(csv_file, fieldnames=columns)
+            for row in data:
+                # Filter row to only have columns we want
+                filtered_row = {k: (row.get(k) if row.get(k) is not None else '') for k in columns}
+                writer.writerow(filtered_row)
+            
+            csv_file.close()
+            
+            columns_str = ", ".join(columns)
+            copy_sql = f"COPY {table_name} ({columns_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE, NULL '')"
+            
+            with open(csv_file.name, 'r', encoding='utf-8') as f:
+                cursor = self.db.conn.cursor()
+                cursor.copy_expert(copy_sql, f)
+                self.db.conn.commit()
+                cursor.close()
+            
+            logger.success(f"✅ Upserted {len(data)} records to {table_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to copy to {table_name}: {e}")
+            raise e
+        finally:
+            if os.path.exists(csv_file.name):
+                os.unlink(csv_file.name)
     
     def bulk_upsert_insights(self):
         """Bulk upsert insights using DELETE + COPY (composite key)"""
