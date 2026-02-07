@@ -19,6 +19,7 @@ from facebook_business.adobjects.campaign import Campaign
 from facebook_business.adobjects.adset import AdSet
 from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adcreative import AdCreative
+from common.utils import get_current_timestamp_naive
 
 # Common utilities
 from common.facebook_api import (
@@ -59,7 +60,7 @@ class FacebookAdsInsightsIngestion:
         if not ad_account:
             return
         
-        now = datetime.now()
+        now = get_current_timestamp_naive()
         this_day = now - timedelta(days=self.days_for_ago)
         this_day_str = this_day.strftime("%Y-%m-%d")
         
@@ -116,7 +117,8 @@ class FacebookAdsInsightsIngestion:
                         'fb_ad_ad_id': data.get('ad_id'),
                         'spend': float(data.get('spend', 0)),
                         'region': data.get('region', 'unknown'),
-                        'brand_id': brand_id
+                        'brand_id': brand_id,
+                        'etl_updated': get_current_timestamp_naive()
                     })
                     count += 1
                     
@@ -247,7 +249,7 @@ class FacebookAdsInsightsIngestion:
                     'stop_time': d.get('stop_time'),
                     'status': d.get('status'),
                     'fb_ad_account_id': d.get('account_id'),
-                    'etl_updated': datetime.now(),
+                    'etl_updated': get_current_timestamp_naive(),
                     'company_id': brand_id 
                 })
             except Exception as e:
@@ -282,7 +284,7 @@ class FacebookAdsInsightsIngestion:
                     'start_time': d.get('start_time'),
                     'status': d.get('status'),
                     'fb_ad_campaign_id': d.get('campaign_id'),
-                    'etl_updated': datetime.now()
+                    'etl_updated': get_current_timestamp_naive()
                 })
             except Exception as e:
                 logger.error(f"Failed to fetch AdSet {aid}: {e}")
@@ -325,7 +327,7 @@ class FacebookAdsInsightsIngestion:
                     'updated_time': d.get('updated_time'),
                     'status': d.get('status'),
                     'brand_id': brand_id,
-                    'etl_updated': datetime.now()
+                    'etl_updated': get_current_timestamp_naive()
                 })
             except Exception as e:
                 logger.error(f"Failed to fetch Ad {aid}: {e}")
@@ -361,7 +363,7 @@ class FacebookAdsInsightsIngestion:
                     'status': d.get('status'),
                     'fb_ad_account_id': d.get('account_id'),
                     'brand_id': brand_id,
-                    'etl_updated': datetime.now()
+                    'etl_updated': get_current_timestamp_naive()
                 })
             except Exception as e:
                 logger.error(f"Failed to fetch Creative {cid}: {e}")
@@ -428,7 +430,7 @@ class FacebookAdsInsightsIngestion:
         
         try:
             writer = csv.DictWriter(csv_file, fieldnames=[
-                'date', 'fb_account_currency', 'fb_ad_ad_id', 'spend', 'region', 'brand_id'
+                'date', 'fb_account_currency', 'fb_ad_ad_id', 'spend', 'region', 'brand_id', 'etl_updated'
             ])
             
             for row in self.insights_data:
@@ -459,7 +461,7 @@ class FacebookAdsInsightsIngestion:
             # COPY from CSV
             copy_query = f"""
                 COPY core_facebook_ad_ad_insight (
-                    date, fb_account_currency, fb_ad_ad_id, spend, region, brand_id
+                    date, fb_account_currency, fb_ad_ad_id, spend, region, brand_id, etl_updated
                 )
                 FROM STDIN WITH (FORMAT CSV, HEADER FALSE, NULL '')
             """
