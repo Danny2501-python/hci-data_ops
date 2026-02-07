@@ -377,8 +377,8 @@ class FacebookAdsInsightsIngestion:
         # 1. DELETE existing
         ids = [str(item[pk_col]) for item in data]
         if ids:
-            delete_sql = f"DELETE FROM {table_name} WHERE {pk_col} IN (SELECT unnest(%s::varchar[])::int8)"
-            # Note: Casting to varchar[] then int8 to handle big integers safely if passed as strings
+            # Note: pk_col (e.g., fb_ad_campaign_id) is varchar in DB, so we cast input to varchar
+            delete_sql = f"DELETE FROM {table_name} WHERE {pk_col} IN (SELECT unnest(%s::varchar[]))"
             try:
                 self.db.execute(delete_sql, (ids,))
                 logger.info(f"Deleted existing records in {table_name}")
