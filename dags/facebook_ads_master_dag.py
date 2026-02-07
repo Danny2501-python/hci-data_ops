@@ -39,7 +39,7 @@ dag = DAG(
     'facebook_ads_master_etl',
     default_args=default_args,
     description='Master DAG: Triggers Base Entities → Ads → Insights (Sequential)',
-    schedule_interval='0 2 * * *',  # Run daily at 2 AM
+    schedule_interval=None,
     start_date=datetime(2026, 2, 6, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
