@@ -166,9 +166,9 @@ class FacebookAdsInsightsIngestion:
             campaigns_data = self.fetch_campaigns_data(api, campaign_ids, brand_id)
             self.bulk_insert_data(
                 'core_facebook_ad_campaign', 
-                'id', 
+                'fb_ad_campaign_id', 
                 campaigns_data,
-                ['id', 'name', 'fb_ad_campaign_id', 'created_time', 'updated_time', 'start_time', 'stop_time', 'status', 'fb_ad_account_id', 'etl_updated', 'company_id']
+                ['name', 'fb_ad_campaign_id', 'created_time', 'updated_time', 'start_time', 'stop_time', 'status', 'fb_ad_account_id', 'etl_updated', 'company_id']
             )
 
         # 2. AdSets
@@ -177,9 +177,9 @@ class FacebookAdsInsightsIngestion:
             adsets_data = self.fetch_adsets_data(api, adset_ids, brand_id)
             self.bulk_insert_data(
                 'core_facebook_ad_set',
-                'id',
+                'fb_ad_set_id',
                 adsets_data,
-                ['id', 'name', 'fb_ad_set_id', 'created_time', 'updated_time', 'start_time', 'status', 'fb_ad_campaign_id', 'etl_updated']
+                ['name', 'fb_ad_set_id', 'created_time', 'updated_time', 'start_time', 'status', 'fb_ad_campaign_id', 'etl_updated']
             )
 
         # 3. Ads (and collect Creative IDs)
@@ -189,9 +189,9 @@ class FacebookAdsInsightsIngestion:
             ads_data = self.fetch_ads_data(api, ad_ids, creative_ids, brand_id)
             self.bulk_insert_data(
                 'core_facebook_ad_ad',
-                'id',
+                'fb_ad_ad_id',
                 ads_data,
-                ['id', 'name', 'fb_ad_ad_id', 'fb_ad_set_id', 'fb_creative_id', 'created_time', 'updated_time', 'status', 'brand_id', 'etl_updated']
+                ['name', 'fb_ad_ad_id', 'fb_ad_set_id', 'fb_creative_id', 'created_time', 'updated_time', 'status', 'brand_id', 'etl_updated']
             )
 
         # 4. Creatives
@@ -200,13 +200,14 @@ class FacebookAdsInsightsIngestion:
             creatives_data = self.fetch_creatives_data(api, creative_ids, brand_id)
             self.bulk_insert_data(
                 'core_facebook_ad_creative',
-                'id',
+                'fb_ad_creative_id',
                 creatives_data,
-                ['id', 'name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
+                ['name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
             )
 
     def _check_limit(self, headers):
         """Check rate limit using headers and sleep if necessary"""
+        logger.debug("Checking rate limit...")
         try:
             if self.rate_limit_tracker.should_check_limit(headers):
                 self.rate_limit_tracker.check_limit(headers)
@@ -237,7 +238,7 @@ class FacebookAdsInsightsIngestion:
                     self._check_limit(obj.headers())
                 
                 data_list.append({
-                    'id': d.get('id'),
+                    'id': d.get('id'), # Still needed for business logic if any, but not for COPY
                     'name': d.get('name'),
                     'fb_ad_campaign_id': d.get('id'),
                     'created_time': d.get('created_time'),
