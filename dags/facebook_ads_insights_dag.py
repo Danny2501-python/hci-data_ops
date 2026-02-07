@@ -125,30 +125,30 @@ facebook_ads_insights = KubernetesPodOperator(
     dag=dag,
 )
 
-# Task 2: Message Insights
-facebook_ads_message_insights = KubernetesPodOperator(
-    task_id='facebook_ads_message_insights',
-    name='facebook-ads-message-insights',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/facebook/facebook_ads_message_insights_ingestion.py',
-        '{{ params.days_for_ago }}',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
+# # Task 2: Message Insights
+# facebook_ads_message_insights = KubernetesPodOperator(
+#     task_id='facebook_ads_message_insights',
+#     name='facebook-ads-message-insights',
+#     namespace=NAMESPACE,
+#     image=PYTHON_ETL_IMAGE,
+#     image_pull_policy='IfNotPresent',
+#     cmds=['python'],
+#     arguments=[
+#         '/app/facebook/facebook_ads_message_insights_ingestion.py',
+#         '{{ params.days_for_ago }}',
+#     ],
+#     volumes=[nfs_volume],
+#     volume_mounts=[nfs_mount],
+#     env_vars=common_env_vars,
+#     container_resources=resource_requirements,
+#     is_delete_operator_pod=True,
+#     get_logs=True,
+#     dag=dag,
+# )
 
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
 # Wait for ads DAG, then run both insights tasks in parallel
-facebook_ads_insights >> facebook_ads_message_insights
+facebook_ads_insights
