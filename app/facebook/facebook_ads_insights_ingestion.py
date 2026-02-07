@@ -204,7 +204,7 @@ class FacebookAdsInsightsIngestion:
                 'core_facebook_ad_creative',
                 'fb_ad_creative_id',
                 creatives_data,
-                ['name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
+                ['name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_effective_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
             )
 
     def _check_limit(self, headers):
@@ -345,6 +345,7 @@ class FacebookAdsInsightsIngestion:
                     AdCreative.Field.account_id,
                     AdCreative.Field.object_id,
                     AdCreative.Field.object_story_id,
+                    AdCreative.Field.effective_object_story_id,
                     AdCreative.Field.link_url, 
                     AdCreative.Field.status,
                     
@@ -359,6 +360,7 @@ class FacebookAdsInsightsIngestion:
                     'fb_ad_creative_id': d.get('id'),
                     'fb_object_id': d.get('object_id'),
                     'fb_object_story_id': d.get('object_story_id'),
+                    'fb_effective_object_story_id': d.get('effective_object_story_id'),
                     'fb_link_url': d.get('link_url'),
                     'status': d.get('status'),
                     'fb_ad_account_id': d.get('account_id'),
