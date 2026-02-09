@@ -74,10 +74,18 @@ class IcebergRetention:
             logger.error(f"Failed to list tables in namespace {namespace}: {e}")
             return []
 
-    def run_trino_query(self, sql: str):
+    def run_trino_query(self, sql: str, session_props: dict = None):
         """Execute SQL query via Trino REST API"""
         url = f"http://{TRINO_HOST}:{TRINO_PORT}/v1/statement"
-        headers = {"X-Trino-User": TRINO_USER}
+        headers = {
+            "X-Trino-User": TRINO_USER,
+        }
+        
+        # Add session properties if provided
+        if session_props:
+            # Format: 'key=value,key2=value2'
+            session_str = ",".join([f"{k}={v}" for k, v in session_props.items()])
+            headers["X-Trino-Session"] = session_str
         
         try:
             # Submit query
@@ -98,9 +106,13 @@ class IcebergRetention:
                     raise Exception(f"Trino Query Error: {data['error']['message']}")
                 
                 next_uri = data.get('nextUri')
-                # Wait a bit to avoid hammering
-                time.sleep(0.1)
+                # Wait a bit to avoid hammering during polling
+                time.sleep(0.5)
                 
+            # Rate limiting after successful query
+            logger.info("Sleeping 2s to respect Trino API rate limits...")
+            time.sleep(2)
+            
             return True
         except Exception as e:
             logger.error(f"Trino API Execution Failed: {e}")
@@ -161,14 +173,14 @@ class IcebergRetention:
                 expire_sql = f"ALTER TABLE {trino_table_name} EXECUTE expire_snapshots(retention_threshold => {retention_threshold})"
                 logger.info(f"Executing Trino: {expire_sql}")
                 
-                if self.run_trino_query(expire_sql):
+                if self.run_trino_query(expire_sql, session_props={'iceberg.expire_snapshots_min_retention': '0d'}):
                     logger.success(f"✅ Expired snapshots via Trino for {table_name}")
                 
                 # B. Remove Orphan Files (Optional but good for cleanup)
                 orphan_sql = f"ALTER TABLE {trino_table_name} EXECUTE remove_orphan_files(retention_threshold => '{self.retention_days + 1}d')"
                 logger.info(f"Executing Trino: {orphan_sql}")
                 
-                if self.run_trino_query(orphan_sql):
+                if self.run_trino_query(orphan_sql, session_props={'iceberg.remove_orphan_files_min_retention': '0d'}):
                     logger.success(f"✅ Removed orphan files via Trino for {table_name}")
 
             except Exception as e:
@@ -190,6 +202,7 @@ class IcebergRetention:
         
         for identifier in identifiers:
             self.process_table(identifier)
+            time.sleep(1) # Extra buffer between tables
             
         logger.success("✅ Iceberg Retention Cleanup Completed")
 
