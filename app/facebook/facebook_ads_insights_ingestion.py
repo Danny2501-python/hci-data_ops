@@ -499,8 +499,10 @@ class FacebookAdsInsightsIngestion:
                 except Exception as e:
                     logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
                     continue
-            
-            self.bulk_upsert_insights()
+                
+                # Save insights immediately after each account
+                self.bulk_upsert_insights()
+                self.insights_data = [] # Clear memory for next account
             logger.success("✅ Facebook Ads insights ingestion completed successfully")
         
         except Exception as e:

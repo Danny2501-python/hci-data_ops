@@ -201,7 +201,7 @@ class FacebookRateLimitTracker:
                 wait_time = int(wait_time * (1 + random.random() * 0.2))
                 
                 logger.warning(
-                    f"Rate limit high. Cooling {wait_time}s | "
+                    f"Rate limit high. Cooling {wait_time}s | LimitCount={self.time_await_limit} | "
                     f"source={usage_snapshot['source']} | usage={max_pct}% | "
                     f"insights_util={usage_snapshot['insights_util']} | tier={usage_snapshot['tier']}"
                 )
