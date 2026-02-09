@@ -140,8 +140,21 @@ class IcebergRetention:
                     else:
                         logger.warning(f"⚠️ 'expire_snapshots' returned unknown pattern for {table_name}. Skipping expiration.")
                         pass
+                elif hasattr(table, 'manage_snapshots'):
+                    # Option B: manage_snapshots() API (Newer PyIceberg)
+                    logger.info(f"Attempting manage_snapshots() for {table_name}...")
+                    try:
+                        ms = table.manage_snapshots()
+                        # Check available methods on the returned object to be sure
+                        if hasattr(ms, 'expire_older_than'):
+                            ms.expire_older_than(cutoff_ts_ms).commit()
+                            logger.success(f"✅ Expired snapshots via manage_snapshots for {table_name}")
+                        else:
+                            logger.warning(f"⚠️ manage_snapshots object has no 'expire_older_than'. Methods: {[m for m in dir(ms) if not m.startswith('_')]}")
+                    except Exception as e:
+                         logger.error(f"❌ Failed to expire snapshots via manage_snapshots: {e}") 
                 else:
-                    logger.warning(f"⚠️ Table object for {table_name} has no 'expire_snapshots' method.")
+                    logger.warning(f"⚠️ Table object for {table_name} has no 'expire_snapshots' or 'manage_snapshots' method.")
                     logger.warning(f"Available methods: {[m for m in dir(table) if not m.startswith('_')]}")
 
             except Exception as e:
