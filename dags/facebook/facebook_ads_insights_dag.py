@@ -65,7 +65,7 @@ except Exception as e:
 
 common_env_vars = {
     'POSTGRES_URI': dwh_product_uri,
-    'FB_API_VERSION': 'v18.0',
+    'FB_API_VERSION': 'v22.0',
 }
 
 # K8s Resources - Higher for Insights (creates dependencies + processes data)
