@@ -266,7 +266,6 @@ def get_active_facebook_accounts(db) -> List[Dict]:
             - app_secret: Facebook App Secret
             - access_token: Facebook Access Token
             - access_token_expires: Token expiration datetime
-            - script_type_to_run: Script type configuration
             - current_brand_id: Associated brand ID
             
     Example:
@@ -280,7 +279,7 @@ def get_active_facebook_accounts(db) -> List[Dict]:
     """
     query = """
         SELECT id, name, ad_account_id, app_id, app_secret, 
-               access_token, access_token_expires, script_type_to_run, current_brand_id
+               access_token, access_token_expires, current_brand_id
         FROM core_facebook_ad_account
         WHERE is_active = TRUE
     """
@@ -296,8 +295,7 @@ def get_active_facebook_accounts(db) -> List[Dict]:
             'app_secret': row[4],
             'access_token': row[5],
             'access_token_expires': row[6],
-            'script_type_to_run': row[7],
-            'current_brand_id': row[8],
+            'current_brand_id': row[7],
         })
     
     return accounts
