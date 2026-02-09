@@ -305,7 +305,7 @@ def main():
     source_table = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else 'ty_gia_techcombank'
     
     # Argument 3: target_table (optional)
-    target_table = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else 'ty_gia_techcombank_v1'
+    target_table = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else 'ty_gia_techcombank'
     
     logger.info(f"Arguments -> Snapshot Date: {snapshot_date}, Source: {source_table}, Target: {target_table}")
     
