@@ -189,13 +189,74 @@ class IcebergRetention:
         except Exception as e:
             logger.error(f"❌ Failed to process table {identifier}: {e}")
 
+    def fetch_trino_data(self, sql: str) -> List[list]:
+        """Execute SQL and fetch all result rows"""
+        url = f"http://{TRINO_HOST}:{TRINO_PORT}/v1/statement"
+        headers = {"X-Trino-User": TRINO_USER}
+        
+        logger.debug(f"Fetching Trino data: {sql}")
+        results = []
+        
+        try:
+            # Submit query
+            response = requests.post(url, data=sql, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Loop to follow nextUri
+            while True:
+                # Check for errors in response body
+                if 'error' in data:
+                     raise Exception(f"Trino Query Error: {data['error']['message']}")
+                
+                # Accumulate data rows if present
+                if 'data' in data:
+                    results.extend(data['data'])
+                
+                # Get next link
+                next_uri = data.get('nextUri')
+                if not next_uri:
+                    break
+                    
+                # Poll next link
+                response = requests.get(next_uri, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+            
+            return results
+        except Exception as e:
+            logger.error(f"Trino Fetch Failed: {e}")
+            return []
+
+    def check_trino_catalogs(self):
+        """List and verify Trino catalogs"""
+        try:
+            logger.info("Checking Trino catalogs...")
+            rows = self.fetch_trino_data("SHOW CATALOGS")
+            # Rows are lists of values, e.g. [['bronze'], ['system']]
+            catalogs = [r[0] for r in rows]
+            logger.info(f"Available Trino Catalogs: {catalogs}")
+            
+            if self.catalog_name not in catalogs:
+                logger.warning(f"⚠️ configured catalog '{self.catalog_name}' NOT FOUND in Trino catalogs!")
+                # Fallback credential check or mapping logic could go here
+            else:
+                logger.info(f"✅ Target catalog '{self.catalog_name}' confirmed in Trino.")
+                
+        except Exception as e:
+            logger.warning(f"Could not verify Trino catalogs: {e}")
+
     def run(self, namespace: str = "call_functions"):
         """Run retention for all tables in namespace"""
         logger.info("="*80)
         logger.info(f"Starting Iceberg Retention Cleanup")
         logger.info(f"Retention: {self.retention_days} days")
         logger.info(f"Namespace: {namespace}")
+        logger.info(f"Trino Catalog: {self.catalog_name}")
         logger.info("="*80)
+        
+        # Check Trino connectivity and catalogs first
+        self.check_trino_catalogs()
         
         identifiers = self.get_tables(namespace)
         logger.info(f"Found {len(identifiers)} tables in namespace '{namespace}'")
