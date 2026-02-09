@@ -82,6 +82,10 @@ env_vars = {
     'AWS_ACCESS_KEY_ID': 'admin',
     'AWS_SECRET_ACCESS_KEY': 'password',
     'AWS_REGION': 'us-east-1',
+    # Trino Connection
+    'TRINO_HOST': 'trino.lakehouse.com',
+    'TRINO_PORT': '80',
+    'TRINO_USER': 'admin',
 }
 
 # Modest resources for metadata operations
@@ -121,6 +125,13 @@ iceberg_retention_task = KubernetesPodOperator(
     volume_mounts=[nfs_mount],
     env_vars=env_vars,
     container_resources=resource_requirements,
+    # Add Host Alias for internal Trino resolution
+    host_aliases=[
+        k8s.V1HostAlias(
+            ip='10.10.10.200',
+            hostnames=['trino.lakehouse.com']
+        )
+    ],
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
