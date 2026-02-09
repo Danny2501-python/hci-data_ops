@@ -38,7 +38,7 @@ dag = DAG(
     'maintenance_iceberg_retention',
     default_args=default_args,
     description='Delete Iceberg data older than X days and clean up snapshots/files',
-    schedule_interval='0 22 * * *',  # Daily at 10:00 PM (after ETLs)
+    schedule_interval='0 19 * * *',  # Daily at 7:00 PM (after ETLs)
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
