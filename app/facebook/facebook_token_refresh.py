@@ -41,7 +41,7 @@ class FacebookTokenRefresher:
         """Lấy App ID và App Secret từ database"""
         sql = """
             SELECT app_id, app_secret, name
-            FROM public.core_facebook_ad_account_v1
+            FROM public.core_facebook_ad_account
             WHERE ad_account_id = %s
         """
         result = self.db.fetchall(sql, (self.ad_account_id,))
@@ -93,7 +93,7 @@ class FacebookTokenRefresher:
             expires_at = datetime(9999, 12, 31, 23, 59, 59)
         
         sql = """
-            UPDATE public.core_facebook_ad_account_v1
+            UPDATE public.core_facebook_ad_account
             SET access_token = %s,
                 access_token_expires = %s,
                 updated = NOW()
