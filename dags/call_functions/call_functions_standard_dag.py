@@ -49,7 +49,7 @@ dag = DAG(
     'call_functions_standard_etl',
     default_args=default_args,
     description='ETL Staging SCI: Source DBs → Bronze Iceberg',
-    schedule_interval='0 1 * * *',  # Daily at 01:00 AM
+    schedule_interval='30 3 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

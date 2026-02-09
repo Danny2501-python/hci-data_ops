@@ -46,7 +46,7 @@ dag = DAG(
     'call_functions_erp_etl',
     default_args=default_args,
     description='ERP Multi-Source Ingestion: SCI, KN, PR, HH -> Bronze -> Serving',
-    schedule_interval='15 1 * * *',  
+    schedule_interval='0 4 * * *',  
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

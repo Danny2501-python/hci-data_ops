@@ -58,7 +58,7 @@ dag = DAG(
     'call_functions_ty_gia_techcombank_etl',
     default_args=default_args,
     description='Ty Gia Techcombank Ingestion: Techcombank API → Bronze Iceberg → Serving PostgreSQL',
-    schedule_interval='0 2 * * *',  # Run daily at 2 AM
+    schedule_interval='0 3 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

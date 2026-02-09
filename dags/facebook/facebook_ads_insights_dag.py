@@ -147,10 +147,10 @@ def create_dag(dag_id, schedule, days_for_ago):
 
 # Generate DAGs for 1 to 4 days ago with staggered schedules
 dag_configs = [
-    (1, '0 4 * * *'),   # days_for_ago=1 -> 04:00
-    (2, '15 4 * * *'),  # days_for_ago=2 -> 04:15
-    (3, '30 4 * * *'),  # days_for_ago=3 -> 04:30
-    (4, '45 4 * * *'),  # days_for_ago=4 -> 04:45
+    (1, '0 6 * * *'),   # days_for_ago=1 -> 06:00
+    (2, '10 6 * * *'),  # days_for_ago=2 -> 06:10
+    (3, '20 6 * * *'),  # days_for_ago=3 -> 06:20
+    (4, '30 6 * * *'),  # days_for_ago=4 -> 06:30
 ]
 
 for days, schedule in dag_configs:

@@ -51,7 +51,7 @@ dag = DAG(
     'call_functions_ggs_etl',
     default_args=default_args,
     description='Google Sheet Ingestion: Google Sheets -> Bronze -> Serving',
-    schedule_interval='0 1 * * *',  # Run daily at 1 AM
+    schedule_interval='15 3 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
