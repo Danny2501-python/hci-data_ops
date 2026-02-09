@@ -49,6 +49,21 @@ dag = DAG(
             type='integer',
             description='Retention period in days (delete data strictly older than this)',
         ),
+        'target_uri': Param(
+            default=None,
+            type=['null', 'string'],
+            description='Iceberg REST URI (Optional). Defaults to Env Var.',
+        ),
+        'catalog_name': Param(
+            default=None,
+            type=['null', 'string'],
+            description='Catalog Name (Optional). Defaults to Env Var.',
+        ),
+        'namespace': Param(
+            default='call_functions',
+            type='string',
+            description='Target Namespace to clean up.',
+        ),
     },
 )
 
@@ -98,6 +113,9 @@ iceberg_retention_task = KubernetesPodOperator(
     arguments=[
         '/app/maintenance/iceberg_retention.py',
         '{{ params.retention_days }}',
+        '{{ params.target_uri or "" }}',
+        '{{ params.catalog_name or "" }}',
+        '{{ params.namespace }}',
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_mount],

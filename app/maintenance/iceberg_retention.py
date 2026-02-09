@@ -27,9 +27,17 @@ class IcebergRetention:
     Deletes data older than X days and performs cleanup.
     """
     
-    def __init__(self, retention_days: int = 3):
+    
+    def __init__(self, retention_days: int = 3, target_uri: str = None, catalog_name: str = None):
         self.retention_days = retention_days
         
+        # Use provided URI/Catalog or fallback to env vars
+        self.target_uri = target_uri or ICEBERG_REST_URI_BRONZE
+        self.catalog_name = catalog_name or CATALOG_NAME_BRONZE
+        
+        if not self.target_uri or not self.catalog_name:
+             raise ValueError("Iceberg REST URI and Catalog Name must be provided either via arguments or environment variables.")
+
         # Initialize catalog
         catalog_config = {
             "s3.endpoint": S3_ENDPOINT,
@@ -39,12 +47,13 @@ class IcebergRetention:
         }
         
         self.catalog = load_catalog(
-            CATALOG_NAME_BRONZE,
-            uri=ICEBERG_REST_URI_BRONZE,
+            self.catalog_name,
+            uri=self.target_uri,
             **catalog_config
         )
         
         logger.info(f"Initialized IcebergRetention (Retention: {self.retention_days} days)")
+        logger.info(f"Target Catalog: {self.catalog_name} at {self.target_uri}")
         
     
     def get_tables(self, namespace: str = "call_functions") -> List[tuple]:
@@ -141,7 +150,9 @@ class IcebergRetention:
     def run(self, namespace: str = "call_functions"):
         """Run retention for all tables in namespace"""
         logger.info("="*80)
-        logger.info(f"Starting Iceberg Retention Cleanup (Retention: {self.retention_days} days)")
+        logger.info(f"Starting Iceberg Retention Cleanup")
+        logger.info(f"Retention: {self.retention_days} days")
+        logger.info(f"Namespace: {namespace}")
         logger.info("="*80)
         
         identifiers = self.get_tables(namespace)
@@ -153,12 +164,17 @@ class IcebergRetention:
         logger.success("✅ Iceberg Retention Cleanup Completed")
 
 if __name__ == "__main__":
-    # Default to 3 days if not specified
+    # Args: 1=retention_days, 2=target_uri, 3=catalog_name, 4=namespace
     retention_days = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else 3
+    target_uri = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
+    catalog_name = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+    namespace = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "call_functions"
+    
+    logger.info(f"Arguments: Days={retention_days}, URI={target_uri}, Catalog={catalog_name}, Namespace={namespace}")
     
     try:
-        job = IcebergRetention(retention_days)
-        job.run()
+        job = IcebergRetention(retention_days, target_uri, catalog_name)
+        job.run(namespace=namespace)
     except Exception as e:
         logger.error(f"Retention job failed: {e}")
         sys.exit(1)
