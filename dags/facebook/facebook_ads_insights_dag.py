@@ -41,23 +41,6 @@ default_args = {
 
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
-dag = DAG(
-    'facebook_ads_insights_etl',
-    default_args=default_args,
-    description='Facebook Ads Insights: Insights + Message Insights (with dependency creation)',
-    schedule_interval=None,  # Triggered by Master DAG or manually (was: '0 5 * * *')
-    start_date=datetime(2026, 2, 5, tzinfo=local_tz),
-    catchup=False,
-    max_active_runs=1,
-    tags=['etl', 'facebook_ads', 'insights', 'marketing'],
-    params={
-        'days_for_ago': Param(
-            default=1,
-            type='integer',
-            description='Number of days ago to fetch data for (1 = yesterday)',
-        ),
-    },
-)
 
 # ============================================================================
 # LOAD POSTGRES CONNECTION
@@ -100,55 +83,76 @@ nfs_mount = k8s.V1VolumeMount(
     name='nfs-scripts', mount_path='/app', read_only=True
 )
 
-# ============================================================================
-# TASKS - INSIGHTS (WITH DEPENDENCY CREATION)
-# ============================================================================
+def create_dag(dag_id, schedule, days_for_ago):
+    dag = DAG(
+        dag_id,
+        default_args=default_args,
+        description=f'Facebook Ads Insights (days_for_ago={days_for_ago})',
+        schedule_interval=schedule,
+        start_date=datetime(2026, 2, 5, tzinfo=local_tz),
+        catchup=False,
+        max_active_runs=1,
+        tags=['etl', 'facebook_ads', 'insights', 'marketing'],
+        params={
+            'days_for_ago': Param(
+                default=days_for_ago,
+                type='integer',
+                description='Number of days ago to fetch data for (1 = yesterday)',
+            ),
+        },
+    )
 
-# Task 1: Regular Insights
-facebook_ads_insights = KubernetesPodOperator(
-    task_id='facebook_ads_insights',
-    name='facebook-ads-insights',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/facebook/facebook_ads_insights_ingestion.py',
-        '{{ params.days_for_ago }}',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
+    with dag:
+        # Task 1: Regular Insights
+        facebook_ads_insights = KubernetesPodOperator(
+            task_id='facebook_ads_insights',
+            name='facebook-ads-insights',
+            namespace=NAMESPACE,
+            image=PYTHON_ETL_IMAGE,
+            image_pull_policy='IfNotPresent',
+            cmds=['python'],
+            arguments=[
+                '/app/facebook/facebook_ads_insights_ingestion.py',
+                '{{ params.days_for_ago }}',
+            ],
+            volumes=[nfs_volume],
+            volume_mounts=[nfs_mount],
+            env_vars=common_env_vars,
+            container_resources=resource_requirements,
+            is_delete_operator_pod=True,
+            get_logs=True,
+        )
 
-# # Task 2: Message Insights
-# facebook_ads_message_insights = KubernetesPodOperator(
-#     task_id='facebook_ads_message_insights',
-#     name='facebook-ads-message-insights',
-#     namespace=NAMESPACE,
-#     image=PYTHON_ETL_IMAGE,
-#     image_pull_policy='IfNotPresent',
-#     cmds=['python'],
-#     arguments=[
-#         '/app/facebook/facebook_ads_message_insights_ingestion.py',
-#         '{{ params.days_for_ago }}',
-#     ],
-#     volumes=[nfs_volume],
-#     volume_mounts=[nfs_mount],
-#     env_vars=common_env_vars,
-#     container_resources=resource_requirements,
-#     is_delete_operator_pod=True,
-#     get_logs=True,
-#     dag=dag,
-# )
+        # # Task 2: Message Insights
+        # facebook_ads_message_insights = KubernetesPodOperator(
+        #     task_id='facebook_ads_message_insights',
+        #     name='facebook-ads-message-insights',
+        #     namespace=NAMESPACE,
+        #     image=PYTHON_ETL_IMAGE,
+        #     image_pull_policy='IfNotPresent',
+        #     cmds=['python'],
+        #     arguments=[
+        #         '/app/facebook/facebook_ads_message_insights_ingestion.py',
+        #         '{{ params.days_for_ago }}',
+        #     ],
+        #     volumes=[nfs_volume],
+        #     volume_mounts=[nfs_mount],
+        #     env_vars=common_env_vars,
+        #     container_resources=resource_requirements,
+        #     is_delete_operator_pod=True,
+        #     get_logs=True,
+        # )
 
-# ============================================================================
-# TASK DEPENDENCIES
-# ============================================================================
+    return dag
 
-# Wait for ads DAG, then run both insights tasks in parallel
-facebook_ads_insights
+# Generate DAGs for 1 to 4 days ago with staggered schedules
+dag_configs = [
+    (1, '0 4 * * *'),   # days_for_ago=1 -> 04:00
+    (2, '15 4 * * *'),  # days_for_ago=2 -> 04:15
+    (3, '30 4 * * *'),  # days_for_ago=3 -> 04:30
+    (4, '45 4 * * *'),  # days_for_ago=4 -> 04:45
+]
+
+for days, schedule in dag_configs:
+    dag_id = f'facebook_ads_insights_etl_{days}d_ago'
+    globals()[dag_id] = create_dag(dag_id, schedule, days)
