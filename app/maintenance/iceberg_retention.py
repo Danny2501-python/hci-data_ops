@@ -121,6 +121,9 @@ class IcebergRetention:
                 # Attempting standard specific cleanup.
                 
                 # Option A: Direct method if available (newer versions)
+                # Option A: Direct method if available (newer versions)
+                logger.info(f"Attempting to expire snapshots for {table_name}...")
+                
                 if hasattr(table, 'expire_snapshots'):
                     # Using a safe approach for potentially different versions
                     # Some versions accept older_than_ms as arg, some return builder
@@ -129,6 +132,7 @@ class IcebergRetention:
                     action = table.expire_snapshots()
                     if hasattr(action, 'expire_older_than'):
                          action.expire_older_than(cutoff_ts_ms).commit()
+                         logger.success(f"✅ Expired snapshots for {table_name}")
                     elif callable(action): 
                         # If it's the method itself that does the work (older style?)
                         # But pyiceberg typically uses builder pattern for actions
@@ -136,8 +140,9 @@ class IcebergRetention:
                     else:
                         logger.warning(f"⚠️ 'expire_snapshots' returned unknown pattern for {table_name}. Skipping expiration.")
                         pass
-                        
-                    logger.success(f"✅ Expired snapshots for {table_name}")
+                else:
+                    logger.warning(f"⚠️ Table object for {table_name} has no 'expire_snapshots' method.")
+                    logger.warning(f"Available methods: {[m for m in dir(table) if not m.startswith('_')]}")
 
             except Exception as e:
                 # Only log error if strictly necessary, clean up is secondary to data deletion
