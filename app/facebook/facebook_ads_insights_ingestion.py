@@ -34,7 +34,7 @@ from common.database import PostgreSQLHelper
 # ============================================================================
 
 POSTGRES_URI = os.getenv('POSTGRES_URI')
-FB_API_VERSION = os.getenv('FB_API_VERSION', 'v22.0')
+FB_API_VERSION = os.getenv('FB_API_VERSION')
 
 
 # ============================================================================
