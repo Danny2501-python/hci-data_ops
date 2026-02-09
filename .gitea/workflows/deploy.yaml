@@ -16,9 +16,11 @@ jobs:
           echo "🚀 Deploying DAGs to NFS..."
           # Sync dags, delete file thừa, nhưng GIỮ LẠI __pycache__
           rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' dags/ /mnt/nfs_share/airflow/dags/
-          # Fix quyền cho Airflow đọc được
-          chown -R 50000:0 /mnt/nfs_share/airflow/dags
-          chmod -R 755 /mnt/nfs_share/airflow/dags
+          
+          # Fix quyền cho Airflow đọc được (Skip __pycache__ to avoid race conditions with running processes)
+          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -exec chown 50000:0 {} + || true
+          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -exec chmod 755 {} + || true
+          
           echo "✅ DAGs deployed successfully!"
 
       - name: Deploy App
