@@ -1,6 +1,8 @@
 
 import os
 import sys
+import requests
+import json
 import time
 from datetime import datetime, date, timedelta
 from typing import List
@@ -20,6 +22,11 @@ S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
+
+# Trino Configuration
+TRINO_HOST = os.getenv('TRINO_HOST', 'trino.lakehouse.com')
+TRINO_PORT = os.getenv('TRINO_PORT', '80')
+TRINO_USER = os.getenv('TRINO_USER', 'admin')
 
 class IcebergRetention:
     """
@@ -54,6 +61,7 @@ class IcebergRetention:
         
         logger.info(f"Initialized IcebergRetention (Retention: {self.retention_days} days)")
         logger.info(f"Target Catalog: {self.catalog_name} at {self.target_uri}")
+        logger.info(f"Trino Connection: http://{TRINO_HOST}:{TRINO_PORT} (User: {TRINO_USER})")
         
     
     def get_tables(self, namespace: str = "call_functions") -> List[tuple]:
@@ -66,11 +74,43 @@ class IcebergRetention:
             logger.error(f"Failed to list tables in namespace {namespace}: {e}")
             return []
 
+    def run_trino_query(self, sql: str):
+        """Execute SQL query via Trino REST API"""
+        url = f"http://{TRINO_HOST}:{TRINO_PORT}/v1/statement"
+        headers = {"X-Trino-User": TRINO_USER}
+        
+        try:
+            # Submit query
+            response = requests.post(url, data=sql, headers=headers)
+            response.raise_for_status()
+            
+            # Get query status link
+            next_uri = response.json().get('nextUri')
+            
+            # Poll for completion
+            while next_uri:
+                res = requests.get(next_uri, headers=headers)
+                res.raise_for_status()
+                data = res.json()
+                
+                # Check for errors
+                if 'error' in data:
+                    raise Exception(f"Trino Query Error: {data['error']['message']}")
+                
+                next_uri = data.get('nextUri')
+                # Wait a bit to avoid hammering
+                time.sleep(0.1)
+                
+            return True
+        except Exception as e:
+            logger.error(f"Trino API Execution Failed: {e}")
+            return False
+
     def process_table(self, identifier: tuple):
         """
         Apply retention policy to a single table
-        1. Delete data where snapshot_date < cutoff
-        2. Expire snapshots older than cutoff
+        1. Delete data where snapshot_date < cutoff (via PyIceberg)
+        2. Expire snapshots & Remove orphan files (via Trino)
         """
         try:
             table_name = ".".join(identifier)
@@ -95,72 +135,44 @@ class IcebergRetention:
             today_naive = get_current_timestamp_naive().date()
             cutoff_date = today_naive - timedelta(days=self.retention_days)
             
-            # For expire_snapshots, we need timestamp in milliseconds
-            # We use midnight of the cutoff date based on naive timestamp
-            cutoff_datetime = datetime.combine(cutoff_date, datetime.min.time())
-            cutoff_ts_ms = int(cutoff_datetime.timestamp() * 1000)
-            
             logger.info(f"Applying retention for {table_name}: deleting data before {cutoff_date}")
             
-            # 1. Delete Query (Row-level delete)
+            # 1. Delete Query (Row-level delete - Logical)
             # This creates a delete file, effectively verifying the data is "gone" from query view
             try:
                 # Comparison: snapshot_date < cutoff_date
                 # Note: Assuming snapshot_date column is DateType
                 delete_filter = LessThan("snapshot_date", cutoff_date)
                 table.delete(delete_filter=delete_filter)
-                logger.success(f"✅ Deleted old data from {table_name}")
+                logger.success(f"✅ Deleted old data (Logical) from {table_name}")
             except Exception as e:
                 logger.error(f"❌ Failed to delete data from {table_name}: {e}")
                 
-            # 2. Expire Snapshots
-            # This removes old snapshots and their associated data files if no longer trusted
+            # 2. Expire Snapshots & Optimize (Physical Cleanup via Trino)
+            # We use Trino because PyIceberg currently lacks full maintenance support
             try:
-                # Use expire_snapshots() which creates an action, then use specific expiry method
-                # Support varies by pyiceberg version. 
-                # Attempting standard specific cleanup.
+                # Construct full table name for Trino (catalog.schema.table)
+                # Ensure catalog name matches Trino's catalog name (usually 'iceberg' or same as self.catalog_name)
+                # Here we assume self.catalog_name maps correctly to Trino catalog
+                trino_table_name = f"{self.catalog_name}.{identifier[0]}.{identifier[1]}"
                 
-                # Option A: Direct method if available (newer versions)
-                # Option A: Direct method if available (newer versions)
-                logger.info(f"Attempting to expire snapshots for {table_name}...")
+                # A. Expire Snapshots
+                retention_threshold = f"'{self.retention_days}d'"
+                expire_sql = f"ALTER TABLE {trino_table_name} EXECUTE expire_snapshots(retention_threshold => {retention_threshold})"
+                logger.info(f"Executing Trino: {expire_sql}")
                 
-                if hasattr(table, 'expire_snapshots'):
-                    # Using a safe approach for potentially different versions
-                    # Some versions accept older_than_ms as arg, some return builder
-                    # We'll try the builder pattern first if it returns an object with expire_older_than
-                    
-                    action = table.expire_snapshots()
-                    if hasattr(action, 'expire_older_than'):
-                         action.expire_older_than(cutoff_ts_ms).commit()
-                         logger.success(f"✅ Expired snapshots for {table_name}")
-                    elif callable(action): 
-                        # If it's the method itself that does the work (older style?)
-                        # But pyiceberg typically uses builder pattern for actions
-                         logger.warning(f"⚠️ 'expire_snapshots' signature uncertain for {table_name}")
-                    else:
-                        logger.warning(f"⚠️ 'expire_snapshots' returned unknown pattern for {table_name}. Skipping expiration.")
-                        pass
-                elif hasattr(table, 'manage_snapshots'):
-                    # Option B: manage_snapshots() API (Newer PyIceberg)
-                    logger.info(f"Attempting manage_snapshots() for {table_name}...")
-                    try:
-                        ms = table.manage_snapshots()
-                        # Check available methods on the returned object to be sure
-                        if hasattr(ms, 'expire_older_than'):
-                            ms.expire_older_than(cutoff_ts_ms).commit()
-                            logger.success(f"✅ Expired snapshots via manage_snapshots for {table_name}")
-                        else:
-                            logger.warning(f"⚠️ manage_snapshots object has no 'expire_older_than'. Methods: {[m for m in dir(ms) if not m.startswith('_')]}")
-                    except Exception as e:
-                         logger.error(f"❌ Failed to expire snapshots via manage_snapshots: {e}") 
-                else:
-                    logger.warning(f"⚠️ Table object for {table_name} has no 'expire_snapshots' or 'manage_snapshots' method.")
-                    logger.warning(f"Available methods: {[m for m in dir(table) if not m.startswith('_')]}")
+                if self.run_trino_query(expire_sql):
+                    logger.success(f"✅ Expired snapshots via Trino for {table_name}")
+                
+                # B. Remove Orphan Files (Optional but good for cleanup)
+                orphan_sql = f"ALTER TABLE {trino_table_name} EXECUTE remove_orphan_files(retention_threshold => '{self.retention_days + 1}d')"
+                logger.info(f"Executing Trino: {orphan_sql}")
+                
+                if self.run_trino_query(orphan_sql):
+                    logger.success(f"✅ Removed orphan files via Trino for {table_name}")
 
             except Exception as e:
-                # Only log error if strictly necessary, clean up is secondary to data deletion
-                logger.warning(f"⚠️ Snapshot expiration info for {table_name}: {e}")
-                # Fallback attempts could go here
+                logger.error(f"⚠️ Physical cleanup failed for {table_name}: {e}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to process table {identifier}: {e}")
