@@ -327,10 +327,13 @@ def init_facebook_api(account: Dict, api_version: str = 'v18.0') -> Tuple[Option
     from facebook_business.api import FacebookAdsApi
     from facebook_business.adobjects.adaccount import AdAccount
     
-    now = datetime.now(timezone.utc)  # Use timezone-aware datetime
+    now = datetime.now(timezone.utc)
     
-    if (account.get('access_token_expires') and 
-        account['access_token_expires'] > now):
+    expires_at = account.get('access_token_expires')
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+    if (expires_at and expires_at > now):
         
         api = FacebookAdsApi.init(
             app_id=account['app_id'],
