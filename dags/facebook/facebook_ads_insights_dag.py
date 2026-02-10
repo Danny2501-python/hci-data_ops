@@ -99,6 +99,11 @@ def create_dag(dag_id, schedule, days_for_ago):
                 type='integer',
                 description='Number of days ago to fetch data for (1 = yesterday)',
             ),
+            'account_id': Param(
+                default=None,
+                type=['string', 'null'],
+                description='Optional: Run for specific Facebook Ad Account ID',
+            ),
         },
     )
 
@@ -114,6 +119,7 @@ def create_dag(dag_id, schedule, days_for_ago):
             arguments=[
                 '/app/facebook/facebook_ads_insights_ingestion.py',
                 '{{ params.days_for_ago }}',
+                '{{ params.account_id or "None" }}',
             ],
             volumes=[nfs_volume],
             volume_mounts=[nfs_mount],

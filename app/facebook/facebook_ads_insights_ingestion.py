@@ -50,6 +50,7 @@ class FacebookAdsInsightsIngestion:
     def __init__(self, db: PostgreSQLHelper, days_for_ago: int = 1):
         self.db = db
         self.days_for_ago = days_for_ago
+        self.account_id = None
         self.rate_limit_tracker = FacebookRateLimitTracker()
         self.insights_data = []  # Collect all insights
     
@@ -489,7 +490,16 @@ class FacebookAdsInsightsIngestion:
         
         try:
             accounts = get_active_facebook_accounts(self.db)
-            logger.info(f"Found {len(accounts)} active Facebook Ad accounts")
+            logger.info(f"Found {len(accounts)} total active Facebook Ad accounts")
+            
+            if self.account_id:
+                logger.info(f"Filtering for Account ID: {self.account_id}")
+                accounts = [a for a in accounts if str(a.get('ad_account_id')) == str(self.account_id)]
+                if not accounts:
+                    logger.warning(f"⚠️ No account found with ID {self.account_id}")
+                    return
+
+            logger.info(f"Processing {len(accounts)} accounts")
             
             for account in accounts:
                 try:
@@ -516,10 +526,14 @@ class FacebookAdsInsightsIngestion:
 
 if __name__ == "__main__":
     days_for_ago = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else 1
+    # Check for optional account_id argument
+    account_id = str(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] and sys.argv[2] != 'None' else None
     
     logger.info(f"Raw Arguments: {sys.argv}")
     logger.info(f"Starting Facebook Ads Insights Ingestion")
     logger.info(f"Arguments -> Days for ago: {days_for_ago}")
+    if account_id:
+        logger.info(f"Arguments -> Account ID: {account_id}")
     
     try:
         if not POSTGRES_URI:
@@ -529,6 +543,7 @@ if __name__ == "__main__":
         logger.info("Connected to PostgreSQL")
         
         job = FacebookAdsInsightsIngestion(db, days_for_ago)
+        job.account_id = account_id 
         job.run()
         
         db.close()
