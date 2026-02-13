@@ -74,7 +74,7 @@ dbt_run_task = KubernetesPodOperator(
     name='dbt-data-serving-run',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent', # Always pull to get latest dbt version/deps
+    image_pull_policy='IfNotPresent',
     cmds=['dbt'],
     arguments=[
         'run',
