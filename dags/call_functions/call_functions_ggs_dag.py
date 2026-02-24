@@ -101,18 +101,18 @@ common_env_vars = {
 }
 
 # DWH Product Connection (for serving layer - future use)
-dwh_product_uri = ''
+dwh_product_new_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product')
-    conn = hook.get_connection('dwh_product')
-    dwh_product_uri = conn.get_uri()
+    hook = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn = hook.get_connection('dwh_product_new')
+    dwh_product_new_uri = conn.get_uri()
     
-    if '?__extra__=' in dwh_product_uri:
-        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    if '?__extra__=' in dwh_product_new_uri:
+        dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
     
-    logger.info("✅ Loaded connection URI for dwh_product")
+    logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
 
 # K8s Resources
 resource_requirements_bronze = k8s.V1ResourceRequirements(
@@ -172,7 +172,7 @@ googlesheet_serving_layer = KubernetesPodOperator(
     volume_mounts=[nfs_mount],
     env_vars={
         **common_env_vars,
-        'POSTGRES_URI': dwh_product_uri,
+        'POSTGRES_URI': dwh_product_new_uri,
     },
     container_resources=resource_requirements_bronze,
     is_delete_operator_pod=True,
