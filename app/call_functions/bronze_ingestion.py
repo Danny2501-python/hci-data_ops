@@ -291,55 +291,31 @@ class BronzeIngestion:
         logger.info(f"Generated Query: {query_str}")
         query = text(query_str)
         
-        BATCH_SIZE = 20000
+        BATCH_SIZE = 5000
         total_ingested = 0
         
         logger.info(f"Starting STREAM ingestion for {config['table_name']}")
         
         try:
-             # Get columns first to handle mapping and types
-            with engine.connect() as conn:
-                # Get one row to determine schema and columns
-                limit_query = text(f"SELECT * FROM {table_source} WHERE {where_clause} LIMIT 0")
-                result_proxy = conn.execute(limit_query)
-                source_columns = list(result_proxy.keys())
-                
-            # Prepare column mapping
-            rename_map = {}
-            if config.get('rename_column'):
-                try:
-                    rename_map = json.loads(config['rename_column'])
-                except Exception as e:
-                    logger.warning(f"Failed to parse rename_column: {e}")
-
-            # Define target schema based on Iceberg table
+            # 1. Prepare Column Mapping
             target_schema = schema_to_pyarrow(table.schema())
+            with engine.connect() as conn:
+                source_cols = list(conn.execute(text(f"SELECT * FROM {table_source} LIMIT 0")).keys())
             
-            # --- PRE-COMPUTE Column Mapping to avoid overhead in batch loop ---
-            # Mapping from target field name to source index
-            target_to_source_idx = {}
-            col_to_idx = {name: i for i, name in enumerate(source_columns)}
-            
+            rename_map = json.loads(config.get('rename_column') or '{}')
+            mapping = {}
             for field in target_schema:
-                field_name = field.name
-                if field_name in ['snapshot_date', 'ingestion_timestamp', 'source_server', 'brand_etl']:
-                    continue
-                
-                # Find source index
-                source_field_name = None
-                if field_name in source_columns:
-                    source_field_name = field_name
+                name = field.name
+                if name in source_cols:
+                    mapping[name] = source_cols.index(name)
                 else:
-                    # Check reverse mapping: rename_map is {source: target}
-                    for s, t in rename_map.items():
-                        if t == field_name and s in source_columns:
-                            source_field_name = s
+                    # Check reverse mapping
+                    for src, tgt in rename_map.items():
+                        if tgt == name and src in source_cols:
+                            mapping[name] = source_cols.index(src)
                             break
-                
-                if source_field_name:
-                    target_to_source_idx[field_name] = col_to_idx[source_field_name]
 
-            # --- Start Streaming ---
+            # 2. Extract and Load in Batches
             with engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 
@@ -348,70 +324,46 @@ class BronzeIngestion:
                     if not rows:
                         break
                         
-                    batch_size = len(rows)
-                    logger.info(f"Processing batch of {batch_size} records...")
+                    logger.info(f"Processing batch of {len(rows)} records...")
+                    batch_dict = {}
                     
-                    arrow_arrays = []
-                    
-                    # Iterate through target schema fields to build arrays
                     for field in target_schema:
-                        field_name = field.name
+                        name = field.name
                         
                         # Handle metadata columns
-                        if field_name == 'snapshot_date':
-                            arrow_arrays.append(pa.array([self.snapshot_date] * batch_size, type=pa.date32()))
-                            continue
-                        if field_name == 'ingestion_timestamp':
-                            arrow_arrays.append(pa.array([get_current_timestamp_naive()] * batch_size, type=pa.timestamp('us')))
-                            continue
-                        if field_name == 'source_server':
-                            srv_val = source_name if source_name else config['server']
-                            arrow_arrays.append(pa.array([srv_val] * batch_size, type=pa.string()))
-                            continue
-                        if field_name == 'brand_etl':
-                            arrow_arrays.append(pa.array([brand_etl] * batch_size, type=pa.int32()))
-                            continue
+                        if name == 'snapshot_date':
+                            batch_dict[name] = [self.snapshot_date] * len(rows)
+                        elif name == 'ingestion_timestamp':
+                            batch_dict[name] = [get_current_timestamp_naive()] * len(rows)
+                        elif name == 'source_server':
+                            batch_dict[name] = [source_name or config['server']] * len(rows)
+                        elif name == 'brand_etl':
+                            batch_dict[name] = [brand_etl] * len(rows)
+                        
+                        # Handle SQL data columns
+                        elif name in mapping:
+                            idx = mapping[name]
+                            is_str = pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
                             
-                        # Handle data columns
-                        if field_name in target_to_source_idx:
-                            idx = target_to_source_idx[field_name]
-                            
-                            # Extract data for this column only - Avoiding zip(*rows)
-                            col_data = [row[idx] for row in rows]
-                            
-                            # Sanitize data
-                            first_val = next((x for x in col_data if x is not None), None)
-                            if isinstance(first_val, (datetime, date)):
-                                target_is_string = pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
-                                cleaned_data = []
-                                for val in col_data:
-                                    if val is None:
-                                        cleaned_data.append(None)
-                                    else:
-                                        if isinstance(val, datetime):
-                                            val = val.replace(tzinfo=None)
-                                        cleaned_data.append(str(val) if target_is_string else val)
-                                col_data = cleaned_data
-
-                            try:
-                                arrow_arrays.append(pa.array(col_data, type=field.type))
-                            except Exception:
-                                try:
-                                    arrow_arrays.append(pa.array(col_data).cast(field.type))
-                                except Exception as e:
-                                    logger.error(f"Failed to convert column {field_name}: {e}")
-                                    arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
+                            col_data = []
+                            for r in rows:
+                                val = r[idx]
+                                if isinstance(val, (datetime, date)):
+                                    if isinstance(val, datetime):
+                                        val = val.replace(tzinfo=None)
+                                    if is_str:
+                                        val = str(val)
+                                col_data.append(val)
+                            batch_dict[name] = col_data
                         else:
-                            arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
+                            batch_dict[name] = [None] * len(rows)
 
-                    batch_table = pa.Table.from_arrays(arrow_arrays, schema=target_schema)
-                    table.append(batch_table)
-                    total_ingested += batch_size
+                    # Append to Iceberg
+                    table.append(pa.Table.from_pydict(batch_dict, schema=target_schema))
+                    total_ingested += len(rows)
                     
-                    # Force cleanup
                     del rows
-                    del arrow_arrays
-                    del batch_table
+                    del batch_dict
                     gc.collect()
                     
             return total_ingested
