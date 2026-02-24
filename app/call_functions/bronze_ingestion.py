@@ -12,6 +12,7 @@ Architecture:
 import os
 import sys
 import json
+from decimal import Decimal
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 import pyarrow as pa
@@ -353,25 +354,28 @@ class BronzeIngestion:
                                 if isinstance(val, (datetime, date)):
                                     if isinstance(val, datetime):
                                         val = val.replace(tzinfo=None)
-                                    if is_str:
-                                        val = str(val)
                                 
-                                # 2. Handle Binary/Memoryview (The fix for the current error)
+                                # 2. Handle Binary/Memoryview
                                 elif isinstance(val, (bytes, memoryview)):
+                                    if isinstance(val, memoryview):
+                                        val = val.tobytes()
                                     if is_str:
                                         try:
-                                            # Try to decode if it's text-in-binary
-                                            if isinstance(val, memoryview):
-                                                val = val.tobytes()
                                             val = val.decode('utf-8', errors='ignore')
                                         except:
                                             val = str(val)
-                                    elif isinstance(val, memoryview):
-                                        val = val.tobytes()
                                 
-                                # 3. Force string conversion for other types if required
-                                elif is_str and val is not None:
-                                    val = str(val)
+                                # 3. Handle Decimal (Prevent Arrow conversion error to double)
+                                elif isinstance(val, Decimal):
+                                    if not is_str:
+                                        # Convert to float to avoid "tried to convert to double" error
+                                        val = float(val)
+
+                                # 4. Convert to string if target requires it and sanitize
+                                if is_str and val is not None:
+                                    if not isinstance(val, str):
+                                        val = str(val)
+                                    val = val.replace('\x00', '')
 
                                 col_data.append(val)
                             batch_dict[name] = col_data
