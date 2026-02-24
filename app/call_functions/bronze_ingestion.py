@@ -302,11 +302,11 @@ class BronzeIngestion:
                 # Get one row to determine schema and columns
                 limit_query = text(f"SELECT * FROM {table_source} WHERE {where_clause} LIMIT 0")
                 result_proxy = conn.execute(limit_query)
-                source_columns = result_proxy.keys()
+                source_columns = list(result_proxy.keys())
                 
             # Prepare column mapping
             rename_map = {}
-            if config['rename_column']:
+            if config.get('rename_column'):
                 try:
                     rename_map = json.loads(config['rename_column'])
                 except Exception as e:
@@ -315,6 +315,31 @@ class BronzeIngestion:
             # Define target schema based on Iceberg table
             target_schema = schema_to_pyarrow(table.schema())
             
+            # --- PRE-COMPUTE Column Mapping to avoid overhead in batch loop ---
+            # Mapping from target field name to source index
+            target_to_source_idx = {}
+            col_to_idx = {name: i for i, name in enumerate(source_columns)}
+            
+            for field in target_schema:
+                field_name = field.name
+                if field_name in ['snapshot_date', 'ingestion_timestamp', 'source_server', 'brand_etl']:
+                    continue
+                
+                # Find source index
+                source_field_name = None
+                if field_name in source_columns:
+                    source_field_name = field_name
+                else:
+                    # Check reverse mapping: rename_map is {source: target}
+                    for s, t in rename_map.items():
+                        if t == field_name and s in source_columns:
+                            source_field_name = s
+                            break
+                
+                if source_field_name:
+                    target_to_source_idx[field_name] = col_to_idx[source_field_name]
+
+            # --- Start Streaming ---
             with engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 
@@ -326,17 +351,9 @@ class BronzeIngestion:
                     batch_size = len(rows)
                     logger.info(f"Processing batch of {batch_size} records...")
                     
-                    # Convert to PyArrow Table directly from rows
-                    # We create a dictionary of arrays
-                    columns_data = list(zip(*rows))
                     arrow_arrays = []
                     
                     # Iterate through target schema fields to build arrays
-                    # This logic aligns source columns with target schema
-                    
-                    # Create a map of source col name -> data index
-                    col_to_idx = {name: i for i, name in enumerate(source_columns)}
-                    
                     for field in target_schema:
                         field_name = field.name
                         
@@ -351,89 +368,49 @@ class BronzeIngestion:
                             srv_val = source_name if source_name else config['server']
                             arrow_arrays.append(pa.array([srv_val] * batch_size, type=pa.string()))
                             continue
-                        
                         if field_name == 'brand_etl':
                             arrow_arrays.append(pa.array([brand_etl] * batch_size, type=pa.int32()))
                             continue
                             
-                        # Find source column name (reverse default mapping)
-                        # We need to find which source column maps to this target field
-                        # If renamed: target = rename_map[source] -> source?
-                        # Inefficient to search every time, but ok for now. 
-                        # Better: compute source_field_name for each target field once outside loop
-                        
-                        source_field_name = None
-                        
-                        # Check direct match
-                        if field_name in source_columns:
-                            source_field_name = field_name
-                        
-                        # Check reverse mapping
-                        # rename_map is {source: target}
-                        if not source_field_name:
-                            for s, t in rename_map.items():
-                                if t == field_name and s in source_columns:
-                                    source_field_name = s
-                                    break
-                                    
-                        if source_field_name and source_field_name in col_to_idx:
-                            idx = col_to_idx[source_field_name]
-                            data = columns_data[idx]
+                        # Handle data columns
+                        if field_name in target_to_source_idx:
+                            idx = target_to_source_idx[field_name]
                             
-                            # Sanitize data to fix PyArrow timezone issues and type mismatches
-                            # Problem 1: Postgres returns "+07:00" offset which PyArrow doesn't recognize as a valid timezone name
-                            # Problem 2: Target schema might be String but data is Datetime
+                            # Extract data for this column only - Avoiding zip(*rows)
+                            col_data = [row[idx] for row in rows]
                             
-                            cleaned_data = None
-                            first_val = next((x for x in data if x is not None), None)
-                            
+                            # Sanitize data
+                            first_val = next((x for x in col_data if x is not None), None)
                             if isinstance(first_val, (datetime, date)):
-                                cleaned_data = []
-                                # Determine if we need string conversion
                                 target_is_string = pa.types.is_string(field.type) or pa.types.is_large_string(field.type)
-                                
-                                for item in data:
-                                    if item is None:
+                                cleaned_data = []
+                                for val in col_data:
+                                    if val is None:
                                         cleaned_data.append(None)
-                                        continue
-                                        
-                                    val = item
-                                    # Handle datetime/date objects
-                                    if isinstance(val, datetime):
-                                        # Remove timezone info (make naive) to satisfy PyArrow
-                                        val = val.replace(tzinfo=None)
-                                    
-                                    # Convert to string if target requires it
-                                    if target_is_string:
-                                        cleaned_data.append(str(val))
                                     else:
-                                        cleaned_data.append(val)
-                                        
-                                data = cleaned_data
+                                        if isinstance(val, datetime):
+                                            val = val.replace(tzinfo=None)
+                                        cleaned_data.append(str(val) if target_is_string else val)
+                                col_data = cleaned_data
 
                             try:
-                                arrow_arrays.append(pa.array(data, type=field.type))
+                                arrow_arrays.append(pa.array(col_data, type=field.type))
                             except Exception:
-                                # Fallback: let PyArrow infer then cast
                                 try:
-                                    arrow_arrays.append(pa.array(data).cast(field.type))
+                                    arrow_arrays.append(pa.array(col_data).cast(field.type))
                                 except Exception as e:
-                                    logger.error(f"Failed to convert column {field_name} (Source: {source_field_name}): {e}")
-                                    # Last resort: append nulls to avoid crushing the whole batch
+                                    logger.error(f"Failed to convert column {field_name}: {e}")
                                     arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
                         else:
-                            # Column missing in source or not mapped
-                            # logger.warning(f"Column {field_name} not found in source")
                             arrow_arrays.append(pa.array([None] * batch_size, type=field.type))
 
                     batch_table = pa.Table.from_arrays(arrow_arrays, schema=target_schema)
-                    
-                    # Append to Iceberg
                     table.append(batch_table)
                     total_ingested += batch_size
                     
+                    # Force cleanup
                     del rows
-                    del columns_data
+                    del arrow_arrays
                     del batch_table
                     gc.collect()
                     
