@@ -25,7 +25,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_contact_api'
-TARGET_TABLE = 'cs_contact_api_v1'
+TARGET_TABLE = 'cs_contact_api'
 
 
 class ContactDetailServingLayer:

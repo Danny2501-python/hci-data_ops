@@ -3,7 +3,7 @@ Ticket Source Metadata Serving Layer
 Architecture: Iceberg Bronze → PostgreSQL Serving Layer
 
 Read from: Bronze → cs_ticket_source_metadata
-Write to: PostgreSQL → cs_ticket_source_detail_api_v1
+Write to: PostgreSQL → cs_ticket_source_detail_api
 
 UPSERT Strategy:
 - Read ONLY today's partition (all brands)
@@ -34,7 +34,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Source and target
 SOURCE_TABLE = 'caresoft.cs_ticket_source_detail_api'
-TARGET_TABLE = 'cs_ticket_source_detail_api_v1'
+TARGET_TABLE = 'cs_ticket_source_detail_api'
 
 
 class TicketSourceMetadataServingLayer:

@@ -24,7 +24,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_agents_api'
-TARGET_TABLE = 'cs_agents_api_v1'
+TARGET_TABLE = 'cs_agents_api'
 
 class AgentServingLayer:
     """Refresh Agent serving layer from Bronze (Simple API Flow)"""

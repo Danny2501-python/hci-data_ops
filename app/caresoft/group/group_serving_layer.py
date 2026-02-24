@@ -24,7 +24,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_groups_api'
-TARGET_TABLE = 'cs_groups_v1'
+TARGET_TABLE = 'cs_groups'
 
 class GroupServingLayer:
     """Refresh Group serving layer from Bronze (Simple API Flow)"""

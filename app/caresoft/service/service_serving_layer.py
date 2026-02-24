@@ -28,7 +28,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_services_api'
-TARGET_TABLE = 'cs_services_api_v1'
+TARGET_TABLE = 'cs_services_api'
 
 class ServiceServingLayer:
     """Refresh Service serving layer from Bronze"""

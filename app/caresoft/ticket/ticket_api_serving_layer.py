@@ -40,7 +40,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_ticket_api'  # Bronze Iceberg
-TARGET_TABLE = 'cs_ticket_api_v1'        # PostgreSQL serving
+TARGET_TABLE = 'cs_ticket_api'        # PostgreSQL serving
 
 
 class TicketApiServingLayer:

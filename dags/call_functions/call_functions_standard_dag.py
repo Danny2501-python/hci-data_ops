@@ -204,14 +204,14 @@ except Exception as e:
 
 # Resource requirements
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '2000m', 'memory': '4Gi'},
-    limits={'cpu': '3000m', 'memory': '6Gi'}
+    requests={'cpu': '1000m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
 # Serving Layer Resource requirements (Higher memory for large efficient loads)
 resource_requirements_serving = k8s.V1ResourceRequirements(
-    requests={'cpu': '2000m', 'memory': '4Gi'},
-    limits={'cpu': '3000m', 'memory': '6Gi'}
+    requests={'cpu': '1000m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
 # NFS Volume (for scripts)

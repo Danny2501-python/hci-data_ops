@@ -24,7 +24,7 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 # Table names
 SOURCE_TABLE = 'caresoft.cs_call_api'
-TARGET_TABLE = 'cs_call_api_v1'
+TARGET_TABLE = 'cs_call_api'
 
 class CallServingLayer:
     """Refresh Call serving layer from Bronze (Simple API Flow)"""

@@ -43,9 +43,9 @@ class CustomFieldServingLayer:
         
         # Determine target table based on field_type
         if field_type == 'contact':
-            self.target_table = 'cs_custom_fields_kh_v1'
+            self.target_table = 'cs_custom_fields_kh'
         else:  # 'ticket'
-            self.target_table = 'cs_custom_fields_v1'
+            self.target_table = 'cs_custom_fields'
         
         self.bronze_catalog = None
         self.pg_conn = None
