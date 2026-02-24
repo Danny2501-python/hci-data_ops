@@ -348,11 +348,31 @@ class BronzeIngestion:
                             col_data = []
                             for r in rows:
                                 val = r[idx]
+                                
+                                # 1. Handle Datetime/Date
                                 if isinstance(val, (datetime, date)):
                                     if isinstance(val, datetime):
                                         val = val.replace(tzinfo=None)
                                     if is_str:
                                         val = str(val)
+                                
+                                # 2. Handle Binary/Memoryview (The fix for the current error)
+                                elif isinstance(val, (bytes, memoryview)):
+                                    if is_str:
+                                        try:
+                                            # Try to decode if it's text-in-binary
+                                            if isinstance(val, memoryview):
+                                                val = val.tobytes()
+                                            val = val.decode('utf-8', errors='ignore')
+                                        except:
+                                            val = str(val)
+                                    elif isinstance(val, memoryview):
+                                        val = val.tobytes()
+                                
+                                # 3. Force string conversion for other types if required
+                                elif is_str and val is not None:
+                                    val = str(val)
+
                                 col_data.append(val)
                             batch_dict[name] = col_data
                         else:
