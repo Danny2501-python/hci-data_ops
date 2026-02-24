@@ -306,23 +306,30 @@ class ServingIngestion:
                 if len(batch) == 0:
                     continue
                 
-                # Check types and cast if necessary (e.g. Timestamp to generic string if issues arise)
-                # For now rely on PyArrow's default CSV serialization which is ISO8601
+                # Sanitize: Remove NULL bytes (\x00) from string columns
+                # PostgreSQL's COPY command fails if it encounters \x00 in a TEXT field.
+                sanitized_columns = []
+                for i, field in enumerate(batch.schema):
+                    col = batch.column(i)
+                    if pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
+                        # Convert to python strings, replace \x00, and back to arrow (expensive but safe)
+                        # Or use pc.replace_substring if available in current pyarrow version
+                        import pyarrow.compute as pc
+                        col = pc.replace_substring(col, pattern="\x00", replacement="")
+                    sanitized_columns.append(col)
+                
+                batch = pa.RecordBatch.from_arrays(sanitized_columns, schema=batch.schema)
+
                 columns = batch.schema.names
                 cols_str = ', '.join([f'"{c}"' for c in columns])
                 
-                # Manual slicing for large batches to avoid huge CSV buffers
                 num_rows = len(batch)
                 
                 for i in range(0, num_rows, CHUNK_SIZE):
-                    # Slice the batch (view, zero-copy usually)
                     chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
-                    
-                    # Buffer for CSV data
                     csv_buffer = io.BytesIO()
                     
                     try:
-                        # Write chunk to CSV buffer
                         pv.write_csv(chunk, csv_buffer, write_options=csv_write_options)
                         csv_buffer.seek(0)
                         
@@ -333,12 +340,10 @@ class ServingIngestion:
                         logger.debug(f"Streamed chunk {len(chunk)} rows to staging (Total: {total_rows})")
                         
                     finally:
-                        # Explicit cleanup
                         csv_buffer.close()
                         del csv_buffer
                         del chunk
                 
-                # Force GC after each big batch
                 del batch
                 gc.collect()
 
