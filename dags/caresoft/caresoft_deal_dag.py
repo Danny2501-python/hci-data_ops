@@ -386,7 +386,7 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         'POSTGRES_URI': dwh_product_uri,
-        'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments_v1',
+        'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments',
     },
     
     container_resources=resource_requirements,
