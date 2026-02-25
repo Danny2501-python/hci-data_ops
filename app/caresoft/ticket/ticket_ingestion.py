@@ -228,8 +228,9 @@ class TicketIngestion:
         ticket_table = self.ensure_ticket_bronze_table_exists()
         
         # Calculate date ranges
-        today = self.snapshot_date
-        yesterday = today - timedelta(days=days_ago)
+        # User requested: today = snapshot_date + 1
+        today = self.snapshot_date + timedelta(days=1)
+        yesterday = today - timedelta(days=days_ago) # If days_ago=1, this is snapshot_date
         day_before_yesterday = yesterday - timedelta(days=1)
         
         # Format dates for API

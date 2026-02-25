@@ -123,7 +123,7 @@ class ChatIngestion:
         Fetch chats from API
         Logic matches cs_extract.py: 
         - start_time_since = (snapshot_date - 3 days) 00:00:00
-        - start_time_to = snapshot_date 00:00:00
+        - start_time_to = (snapshot_date + 1 day) 00:00:00
         - conversation_type = '1'
         """
         # Calculate date range
@@ -137,10 +137,10 @@ class ChatIngestion:
         anchor_date = datetime.combine(self.snapshot_date, datetime.min.time())
         
         # In cs_extract: 
-        # start_time_since = T-3 00:00:00
-        # start_time_to = T 00:00:00
-        start_time_to = anchor_date
-        start_time_since = anchor_date - timedelta(days=days_ago)
+        # start_time_to = T+1 00:00:00
+        # start_time_since = start_time_to - days_ago
+        start_time_to = anchor_date + timedelta(days=1)
+        start_time_since = start_time_to - timedelta(days=days_ago)
         
         start_time_since_str = start_time_since.strftime('%Y-%m-%dT%H:%M:%SZ')
         start_time_to_str = start_time_to.strftime('%Y-%m-%dT%H:%M:%SZ')
