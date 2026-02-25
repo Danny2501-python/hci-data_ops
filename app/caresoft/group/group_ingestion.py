@@ -112,14 +112,14 @@ class GroupIngestion:
         """
         Fetch groups from API
         Logic matches cs_extract.py: 
-        - updated_since = (snapshot_date - 3 days) 00:00:00
-        - updated_to = snapshot_date 00:00:00
+        - updated_to = (snapshot_date + 1 day) 00:00:00
+        - updated_since = (updated_to - 3 days) 00:00:00
         - Only fetch page 1 (all groups fit in one page)
         """
         anchor_date = datetime.combine(self.snapshot_date, datetime.min.time())
         
-        updated_to = anchor_date
-        updated_since = anchor_date - timedelta(days=days_ago)
+        updated_to = anchor_date + timedelta(days=1)
+        updated_since = updated_to - timedelta(days=days_ago)
         
         updated_since_str = updated_since.strftime('%Y-%m-%dT%H:%M:%SZ')
         updated_to_str = updated_to.strftime('%Y-%m-%dT%H:%M:%SZ')

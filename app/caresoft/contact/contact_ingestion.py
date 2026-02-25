@@ -125,25 +125,24 @@ class ContactIngestion:
         
         # Calculate date range based on snapshot_date (not current time)
         # This allows backfilling historical data
-        this_day = datetime.combine(self.snapshot_date, datetime.min.time())
-        this_day_ago = this_day - timedelta(days=days_ago)
+        anchor_date = datetime.combine(self.snapshot_date, datetime.min.time())
         
-        updated_since = this_day_ago.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
-        updated_to = this_day.replace(hour=0, minute=0, second=0, microsecond=0).isoformat() + 'Z'
+        updated_to = anchor_date + timedelta(days=1)
+        updated_since = updated_to - timedelta(days=days_ago)
         
         # Normalize to YYYY-MM-DDTHH:MM:SSZ format
-        updated_since = updated_since[:10] + 'T00:00:00Z'
-        updated_to = updated_to[:10] + 'T00:00:00Z'
+        updated_since_str = updated_since.strftime('%Y-%m-%dT%H:%M:%SZ')
+        updated_to_str = updated_to.strftime('%Y-%m-%dT%H:%M:%SZ')
         
-        logger.info(f"Fetching contacts for brand {brand['name']} from {updated_since} to {updated_to}")
+        logger.info(f"Fetching contacts for brand {brand['name']} from {updated_since_str} to {updated_to_str}")
         
         page = 1
         contacts_data = []
         
         while True:
             params = {
-                'updated_since': updated_since,
-                'updated_to': updated_to,
+                'updated_since': updated_since_str,
+                'updated_to': updated_to_str,
                 'page': page,
                 'count': CARESOFT_PAGE_SIZE
             }
