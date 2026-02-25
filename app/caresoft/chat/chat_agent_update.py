@@ -173,8 +173,11 @@ class ChatAgentUpdate:
                  # Fallback
                  anchor_date = self.snapshot_date
 
-        start_time_since_str = anchor_date.strftime('%Y-%m-%dT00:00:00Z')
-        start_time_to_str = anchor_date.strftime('%Y-%m-%dT23:59:59Z')
+        start_time_since = anchor_date + timedelta(days=1)
+        start_time_to = anchor_date + timedelta(days=1)
+        
+        start_time_since_str = start_time_since.strftime('%Y-%m-%dT00:00:00Z')
+        start_time_to_str = start_time_to.strftime('%Y-%m-%dT23:59:59Z')
         
         # logger.info(f"Refetching chats for Ticket {ticket_id} (Window: {start_time_since_str})")
         
