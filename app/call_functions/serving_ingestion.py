@@ -310,7 +310,7 @@ class ServingIngestion:
 
             # 4. Stream and process batch-by-batch
             total_rows = 0
-            CHUNK_SIZE = 5000 # Reduced chunk size to lower Peak RAM from io.BytesIO
+            CHUNK_SIZE = 2000 # Further reduced to survive narrow RAM limits (4GB) 
             csv_write_options = pv.WriteOptions(include_header=False)
 
             import tempfile
