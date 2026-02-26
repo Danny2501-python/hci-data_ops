@@ -68,7 +68,7 @@ class DirectPostgresToPostgres:
                          host=config['host'], port=int(config.get('port', 5432)), database=config['dbname'])
         return create_engine(url)
 
-    def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, pk_columns: List[str], rename_map: Dict[str, str] = {}):
+    def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, rename_map: Dict[str, str] = {}):
         """Fetch schema from source and create exactly the same table in target if not exists"""
         logger.info(f"Ensuring target table {target_table} exists based on source {source_table}")
         
@@ -104,7 +104,6 @@ class DirectPostgresToPostgres:
             elif dtype == 'numeric' and num_prec: sql_type = f"NUMERIC({num_prec}, {num_scale or 0})"
             
             col_def = f'"{target_name}" {sql_type}'
-            if is_null == 'NO': col_def += " NOT NULL"
             col_defs.append(col_def)
             
         # Add metadata columns (consistent with our ETL standards)
@@ -120,73 +119,49 @@ class DirectPostgresToPostgres:
         else:
             metadata_cols.append('"brand_etl" INTEGER')
         
-        if pk_columns:
-            pk_list = [f'"{c}"' for c in pk_columns]
-            pk_clause = f", PRIMARY KEY ({', '.join(pk_list)})"
-        else:
-            pk_clause = ""
-            
-        create_sql = f"CREATE TABLE IF NOT EXISTS {target_table} ({', '.join(col_defs + metadata_cols)}{pk_clause})"
+        create_sql = f"CREATE TABLE IF NOT EXISTS {target_table} ({', '.join(col_defs + metadata_cols)})"
         
         with self.target_conn.cursor() as cur:
             cur.execute(create_sql)
             self.target_conn.commit()
         logger.success(f"Target table {target_table} is ready.")
 
-    def stream_and_upsert(self, source_engine, config: Dict, target_table: str, brand_etl: int = None, source_name: str = None):
+    def stream_and_upsert(self, source_engine, config: Dict, target_table: str, brand_etl: int = None, source_name: str = None, load_type: str = 'incremental'):
+        # 1. Config & Mapping
         source_table = config['table_name_source']
         pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
+        rename_map = json.loads(config.get('rename_column') or '{}')
+        keyword, consider = config.get('keyword'), (config.get('consider') or '1=1')
+        cutoff_str = (self.snapshot_date - timedelta(days=10)).strftime('%Y-%m-%d')
         
-        # Build query
-        cutoff_date = (self.snapshot_date - timedelta(days=10)).strftime('%Y-%m-%d')
-        keyword = config.get('keyword')
-        consider = config.get('consider') or '1=1'
-        
-        if keyword and keyword.lower() != 'none':
-            where = f"({keyword} + interval '7 hour')::date >= '{cutoff_date}' AND {consider}"
-        else:
-            where = consider
-        
+        where = f"({keyword} + interval '7 hour')::date >= '{cutoff_str}' AND {consider}" if load_type == 'incremental' and keyword and keyword.lower() != 'none' else consider
         query = text(f"SELECT * FROM {source_table} WHERE {where}")
         staging_table = f"{target_table}_staging_{uuid.uuid4().hex[:8]}"
         
-        BATCH_SIZE = 5000
-        total_rows = 0
-        temp_dir = os.getenv('TEMP_DIR', '/tmp')
-        
         with self.target_conn.cursor() as cur:
-            # 1. Get columns from Target for mapping and cleanup check
             cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table}' ORDER BY ordinal_position")
             target_cols = [r[0] for r in cur.fetchall()]
             cols_str = ", ".join([f'"{c}"' for c in target_cols])
 
-            # 2. Cleanup target based on config
             if config.get('truncate'):
-                logger.info(f"Truncating target table {target_table} (Full Overwrite)")
+                logger.info(f"Truncating {target_table}")
                 cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
-            elif not pk_columns and keyword and keyword.lower() != 'none' and keyword in target_cols:
-                # Idempotent incremental load for non-PK tables: Delete matching range first
-                logger.info(f"Cleanup {target_table} based on {keyword} >= {cutoff_date} (Delete + Insert mode)")
-                # Use the same logic as the source query condition
-                delete_where = f"({keyword} + interval '7 hour')::date >= '{cutoff_date}'"
-                cur.execute(f"DELETE FROM {target_table} WHERE {delete_where}")
             
-            # 3. Create staging table
             cur.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table} INCLUDING DEFAULTS)")
             self.target_conn.commit()
 
+        # 2. Streaming Loop
+        BATCH_SIZE, total_rows = 20000, 0
+        temp_dir = os.getenv('TEMP_DIR', '/tmp')
+        
         try:
             with source_engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 source_cols = list(result.keys())
-                
-                rename_map = json.loads(config.get('rename_column') or '{}')
                 mapping = {}
                 for col in target_cols:
-                    if col in source_cols:
-                        mapping[col] = source_cols.index(col)
+                    if col in source_cols: mapping[col] = source_cols.index(col)
                     else:
-                        # Check if a source column was renamed to this target column
                         for src, tgt in rename_map.items():
                             if tgt == col and src in source_cols:
                                 mapping[col] = source_cols.index(src)
@@ -196,7 +171,6 @@ class DirectPostgresToPostgres:
                     rows = result.fetchmany(BATCH_SIZE)
                     if not rows: break
                     
-                    # Convert to processed list for CSV
                     batch_data = {col: [] for col in target_cols}
                     for r in rows:
                         for col in target_cols:
@@ -213,56 +187,50 @@ class DirectPostgresToPostgres:
                             elif col == 'ingestion_timestamp': batch_data[col].append(str(get_current_timestamp_naive()))
                             elif col == 'source_server': batch_data[col].append(str(source_name or config['server']))
                             elif col in ('brand_etl', 'brand_etl_new'):
-                                # Only fill if col is NOT mapping (meaning it was added by us as metadata)
-                                if col not in mapping:
-                                    batch_data[col].append(str(brand_etl) if brand_etl is not None else None)
-                                else:
-                                    # This should not happen due to mapping logic, but just in case
-                                    val = r[mapping[col]]
-                                    batch_data[col].append(str(val) if val is not None else None)
+                                # Metadata: if not in source, use brand_etl. If in source, use mapping.
+                                if col not in mapping: batch_data[col].append(str(brand_etl) if brand_etl is not None else None)
+                                else: batch_data[col].append(str(r[mapping[col]]) if r[mapping[col]] is not None else None)
                             else: batch_data[col].append(None)
                     
-                    # Convert to Arrow -> CSV -> COPY
                     pa_table = pa.Table.from_pydict(batch_data, schema=pa.schema([(c, pa.string()) for c in target_cols]))
-                    
                     with tempfile.TemporaryFile(mode='wb+', dir=temp_dir) as tmp:
                         pv.write_csv(pa_table, tmp, write_options=pv.WriteOptions(include_header=False))
                         tmp.seek(0)
                         with self.target_conn.cursor() as cur:
                             cur.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", tmp)
-                    
-                    # Merge from staging to target
-                    with self.target_conn.cursor() as cur:
-                        if pk_columns:
-                            pk_str = ", ".join([f'"{c}"' for c in pk_columns])
-                            update_cols = [c for c in target_cols if c not in pk_columns]
-                            if update_cols:
-                                update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-                                cur.execute(f"INSERT INTO {target_table} ({cols_str}) SELECT {cols_str} FROM {staging_table} ON CONFLICT ({pk_str}) DO UPDATE SET {update_set}")
-                            else:
-                                cur.execute(f"INSERT INTO {target_table} ({cols_str}) SELECT {cols_str} FROM {staging_table} ON CONFLICT ({pk_str}) DO NOTHING")
-                        else:
+                            if pk_columns:
+                                pk_match = " AND ".join([f'dest."{c}" = src."{c}"' for c in pk_columns])
+                                cur.execute(f'DELETE FROM {target_table} AS dest USING {staging_table} AS src WHERE {pk_match}')
                             cur.execute(f"INSERT INTO {target_table} ({cols_str}) SELECT {cols_str} FROM {staging_table}")
-                        
-                        cur.execute(f"TRUNCATE TABLE {staging_table}")
-                        self.target_conn.commit()
+                            cur.execute(f"TRUNCATE TABLE {staging_table}")
+                            self.target_conn.commit()
                     
                     total_rows += len(rows)
-                    logger.info(f"Ingested {len(rows)} rows into {target_table}. Total: {total_rows}")
+                    logger.info(f"Ingested {len(rows)} into {target_table}. Total: {total_rows}")
                     del pa_table, batch_data
                     gc.collect()
                     pa.default_memory_pool().release_unused()
-
             return total_rows
         finally:
             with self.target_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
                 self.target_conn.commit()
+            
+    def prepare_target(self, engine, config: Dict, drop_table: bool):
+        target_table, source_table = config['table_name'], config['table_name_source']
+        rename_map = json.loads(config.get('rename_column') or '{}')
+        
+        if drop_table:
+            with self.target_conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
+                self.target_conn.commit()
+        self.ensure_target_table_exists_from_source(engine, source_table, target_table, rename_map=rename_map)
 
-    def process_erp(self, config: Dict, drop_table: bool = False):
+    def process_erp(self, config: Dict, drop_table: bool, load_type: str):
         target_table = config['table_name']
         source_table = config['table_name_source']
         pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
+        rename_map = json.loads(config.get('rename_column') or '{}')
         
         total = 0
         initialized = False
@@ -273,23 +241,16 @@ class DirectPostgresToPostgres:
             if uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
             engine = create_engine(uri)
             try:
-                # Mirror schema from the FIRST available ERP source
                 if not initialized:
-                    if drop_table:
-                        with self.target_conn.cursor() as cur:
-                            cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
-                            self.target_conn.commit()
-                    
-                    rename_map = json.loads(config.get('rename_column') or '{}')
-                    self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns, rename_map=rename_map)
+                    self.prepare_target(engine, config, drop_table)
                     initialized = True
                 
-                total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name)
+                total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
             finally:
                 engine.dispose()
         return total
 
-    def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None, drop_table: bool = False):
+    def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None, drop_table: bool = False, load_type: str = 'incremental'):
         self.connect_target()
         
         # Flexibility: Normalize 'standard' or empty string to None for the config loader
@@ -305,7 +266,7 @@ class DirectPostgresToPostgres:
 
                 # Use ERP logic if the METADATA says it's an ERP table
                 if str(config.get('source')).upper() == 'ERP':
-                    self.process_erp(config, drop_table=drop_table)
+                    self.process_erp(config, drop_table=drop_table, load_type=load_type)
                 else:
                     # Single source logic
                     engine = self.create_source_engine(config['server'])
@@ -313,16 +274,8 @@ class DirectPostgresToPostgres:
                         logger.warning(f"No connection found for server {config['server']} (Table: {target_table})")
                         continue
                     try:
-                        if drop_table:
-                            with self.target_conn.cursor() as cur:
-                                cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
-                                self.target_conn.commit()
-                        
-                        # Ensure Target mirrors Source (including renames)
-                        rename_map = json.loads(config.get('rename_column') or '{}')
-                        self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns, rename_map=rename_map)
-                        
-                        self.stream_and_upsert(engine, config, target_table)
+                        self.prepare_target(engine, config, drop_table)
+                        self.stream_and_upsert(engine, config, config['table_name'], load_type=load_type)
                     finally:
                         engine.dispose()
             except Exception as e:
@@ -335,8 +288,11 @@ if __name__ == "__main__":
     t_id = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
     s_type = sys.argv[3] if len(sys.argv) > 3 else None
     
-    # Arg 4: drop_table flag
-    drop_table_arg = sys.argv[4] if len(sys.argv) > 4 else 'false'
+    # Arg 4: load_type (incremental/full)
+    l_type = sys.argv[4] if len(sys.argv) > 4 else 'incremental'
+    
+    # Arg 5: drop_table flag
+    drop_table_arg = sys.argv[5] if len(sys.argv) > 5 else 'false'
     drop_table = drop_table_arg.lower() in ('true', '1', 'yes')
     
-    DirectPostgresToPostgres(s_date).run(table_id=t_id, source_type=s_type, drop_table=drop_table)
+    DirectPostgresToPostgres(s_date).run(table_id=t_id, source_type=s_type, drop_table=drop_table, load_type=l_type)

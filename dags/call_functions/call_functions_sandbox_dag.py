@@ -265,6 +265,7 @@ direct_ingestion = KubernetesPodOperator(
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}',
         '{{ params.source }}',
+        '{{ dag_run.conf.get("load_type") or "incremental" }}',
         '{{ params.drop_table }}'
     ],
     volumes=[nfs_volume, temp_disk_volume],
