@@ -478,12 +478,12 @@ class ServingIngestion:
             # Fallback if 'id' exists in actual data schema
             if 'id' in column_names:
                  logger.warning(f"No primary_keyword for {table_name}, defaulting to 'id'")
-                 primary_keyword = 'id'
+                 pk_columns = ['id']
             else:
-                 logger.warning(f"Skipping {table_name}: No primary_keyword configured and no 'id' column found")
-                 return
-
-        pk_columns = [k.strip() for k in primary_keyword.split(',')]
+                 logger.warning(f"No primary_keyword for {table_name} and no 'id' column found. Proceeding with simple INSERT (Append only)")
+                 pk_columns = []
+        else:
+            pk_columns = [k.strip() for k in primary_keyword.split(',')]
         target_table_name = table_name
         
         logger.info(f"Processing {table_name} -> {target_table_name} (PK: {pk_columns})")
