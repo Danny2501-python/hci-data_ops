@@ -161,12 +161,13 @@ nfs_mount = k8s.V1VolumeMount(
     name='nfs-scripts', mount_path='/app', read_only=True
 )
 
-duckdb_volume = k8s.V1Volume(
-    name='duckdb-temp',
-    empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='5Gi')
+# Temp Disk Volume (for large files, preventing OOM)
+temp_disk_volume = k8s.V1Volume(
+    name='temp-disk',
+    empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='10Gi')
 )
-duckdb_mount = k8s.V1VolumeMount(
-    name='duckdb-temp', mount_path='/tmp/duckdb', read_only=False
+temp_disk_mount = k8s.V1VolumeMount(
+    name='temp-disk', mount_path='/tmp', read_only=False
 )
 
 # ============================================================================
@@ -188,12 +189,12 @@ erp_bronze_ingestion = KubernetesPodOperator(
         '{{ params.load_type }}',
         'ERP'  # ARG4: Source Type
     ],
-    volumes=[nfs_volume, duckdb_volume],
-    volume_mounts=[nfs_mount, duckdb_mount],
+    volumes=[nfs_volume, temp_disk_volume],
+    volume_mounts=[nfs_mount, temp_disk_mount],
     env_vars={
         **common_env_vars,
         **erp_configs,  # Inject all 4 ERP configs
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
+        'TEMP_DIR': '/tmp',
     },
     container_resources=resource_requirements,
     is_delete_operator_pod=True,
@@ -216,12 +217,12 @@ erp_serving_layer = KubernetesPodOperator(
         'ERP', # ARG3: Source Type
         '{{ params.drop_table }}' # ARG4: drop_table flag
     ],
-    volumes=[nfs_volume, duckdb_volume],
-    volume_mounts=[nfs_mount, duckdb_mount],
+    volumes=[nfs_volume, temp_disk_volume],
+    volume_mounts=[nfs_mount, temp_disk_mount],
     env_vars={
         **common_env_vars,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_product_new_uri,
+        'TEMP_DIR': '/tmp',
     },
     container_resources=resource_requirements_serving,
     is_delete_operator_pod=True,

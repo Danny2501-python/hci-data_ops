@@ -313,11 +313,18 @@ class ServingIngestion:
             CHUNK_SIZE = 5000 # Reduced chunk size to lower Peak RAM from io.BytesIO
             csv_write_options = pv.WriteOptions(include_header=False)
 
-            for batch in reader:
+            import tempfile
+            
+            while True:
+                try:
+                    batch = reader.read_next_batch()
+                except StopIteration:
+                    break
+                
                 if len(batch) == 0: continue
                 
                 num_rows = len(batch)
-                logger.debug(f"Source batch fetched: {num_rows} rows.")
+                logger.debug(f"Source batch fetched: {num_rows} rows. Processing chunks...")
 
                 for i in range(0, num_rows, CHUNK_SIZE):
                     # Zero-copy slice
@@ -336,18 +343,17 @@ class ServingIngestion:
                     # 2. Convert to RecordBatch for CSV writing
                     tmp_chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=orig_chunk.schema)
                     
-                    # 3. Use a context manager for the buffer
-                    with io.BytesIO() as csv_buffer:
-                        pv.write_csv(tmp_chunk, csv_buffer, write_options=csv_write_options)
-                        csv_buffer.seek(0)
+                    # 3. Use DISK-BASED TEMPORARY FILE instead of RAM buffer
+                    # Explicitly use configured temp directory if available
+                    temp_dir = os.getenv('TEMP_DIR', '/tmp')
+                    with tempfile.TemporaryFile(mode='wb+', dir=temp_dir) as tmp_file:
+                        pv.write_csv(tmp_chunk, tmp_file, write_options=csv_write_options)
+                        tmp_file.seek(0)
                         
-                        # Streaming COPY to Postgres
-                        cursor.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", csv_buffer)
+                        # Streaming COPY to Postgres from DISK
+                        cursor.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", tmp_file)
                         cursor.execute(exec_sql)
                         cursor.execute(f"TRUNCATE TABLE {staging_table}")
-                        
-                        # Clear buffer data early
-                        csv_buffer.truncate(0)
                     
                     total_rows += len(tmp_chunk)
                     
