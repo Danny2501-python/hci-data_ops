@@ -310,7 +310,7 @@ class ServingIngestion:
 
             # 4. Stream and process batch-by-batch
             total_rows = 0
-            CHUNK_SIZE = 2000 # Further reduced to survive narrow RAM limits (4GB) 
+            CHUNK_SIZE = 5000 # Matching reader batch size
             csv_write_options = pv.WriteOptions(include_header=False)
 
             import tempfile
@@ -327,21 +327,8 @@ class ServingIngestion:
                 logger.debug(f"Source batch fetched: {num_rows} rows. Processing chunks...")
 
                 for i in range(0, num_rows, CHUNK_SIZE):
-                    # Zero-copy slice
-                    orig_chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
-                    
-                    # 1. Sanitize column by column to avoid keeping multiple copies
-                    sanitized_cols = []
-                    for col_idx, field in enumerate(orig_chunk.schema):
-                        c = orig_chunk.column(col_idx)
-                        if pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
-                            # pc.replace_substring creates a new buffer
-                            c = pc.replace_substring(c, pattern="\x00", replacement="")
-                        sanitized_cols.append(c)
-                        del c # Clear reference immediately
-                    
-                    # 2. Convert to RecordBatch for CSV writing
-                    tmp_chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=orig_chunk.schema)
+                    # Zero-copy slice. Using directly since Bronze is already sanitized.
+                    tmp_chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
                     
                     # 3. Use DISK-BASED TEMPORARY FILE instead of RAM buffer
                     # Explicitly use configured temp directory if available
@@ -358,9 +345,7 @@ class ServingIngestion:
                     total_rows += len(tmp_chunk)
                     
                     # 4. Aggressive cleanup for EVERY chunk
-                    del sanitized_cols
                     del tmp_chunk
-                    del orig_chunk
                     gc.collect()
                     pa.default_memory_pool().release_unused() # Return memory to OS
                 
