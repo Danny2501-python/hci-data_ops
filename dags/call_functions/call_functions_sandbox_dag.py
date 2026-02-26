@@ -184,7 +184,7 @@ common_env_vars = {
 }
 
 # ============================================================================
-# LOAD AIRFLOW CONNECTIONS
+# LOAD DATABASE CONNECTIONS (Dynamic - Target & ERP Sources)
 # ============================================================================
 
 dwh_product_new_uri = ''
@@ -192,13 +192,32 @@ try:
     hook = PostgresHook(postgres_conn_id='dwh_product_new')
     conn = hook.get_connection('dwh_product_new')
     dwh_product_new_uri = conn.get_uri()
-    
     if '?__extra__=' in dwh_product_new_uri:
         dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
-    
     logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
+
+erp_configs = {}
+erp_conn_mapping = {
+    'ERP_SCI_URI': 'sci_erp_sci',
+    'ERP_KN_URI': 'sci_erp_kn',  
+    'ERP_PR_URI': 'sci_erp_pr',
+    'ERP_HH_URI': 'sci_erp_hh',
+}
+
+for env_var_name, conn_id in erp_conn_mapping.items():
+    try:
+        hook = PostgresHook(postgres_conn_id=conn_id)
+        conn = hook.get_connection(conn_id)
+        uri = conn.get_uri()
+        if '?__extra__=' in uri:
+            uri = uri.split('?__extra__=')[0]
+        erp_configs[env_var_name] = uri
+        logger.info(f"✅ Loaded ERP URI for {env_var_name} from {conn_id}")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not load {env_var_name} from {conn_id}: {e}")
+        erp_configs[env_var_name] = ""
 
 # Resource requirements
 resource_requirements = k8s.V1ResourceRequirements(
@@ -233,52 +252,26 @@ temp_disk_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
-# Task 1: Bronze Ingestion
-bronze_ingestion = KubernetesPodOperator(
-    task_id='bronze_ingestion',
-    name='etl-sandbox-sci-bronze-ingestion',
+# Task: Direct 1:1 Postgres to Postgres Ingestion (Bypassing Iceberg)
+direct_ingestion = KubernetesPodOperator(
+    task_id='direct_ingestion',
+    name='etl-sandbox-sci-direct-ingestion',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/call_functions/bronze_ingestion.py',
+        '/app/call_functions/direct_postgres_ingestion.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}',
-        '{{ params.load_type }}',
-        '{{ params.source }}'  # Arg 4: source_type
+        '{{ params.source }}',
+        '{{ params.drop_table }}'
     ],
     volumes=[nfs_volume, temp_disk_volume],
     volume_mounts=[nfs_mount, temp_disk_mount],
     env_vars={
         **common_env_vars,
-        'TEMP_DIR': '/tmp',
-    },
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# Task 2: Serving Layer Ingestion (PostgreSQL)
-serving_layer = KubernetesPodOperator(
-    task_id='serving_layer',
-    name='etl-sandbox-sci-serving-layer',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/call_functions/serving_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("table_id") | default("", true) }}',
-        '{{ params.source }}',  # Arg 3: source_type
-        '{{ params.drop_table }}'  # Arg 4: drop_table
-    ],
-    volumes=[nfs_volume, temp_disk_volume],
-    volume_mounts=[nfs_mount, temp_disk_mount],
-    env_vars={
-        **common_env_vars,
+        **erp_configs,
         'POSTGRES_URI': dwh_product_new_uri,
         'TEMP_DIR': '/tmp',
     },
@@ -288,8 +281,4 @@ serving_layer = KubernetesPodOperator(
     dag=dag,
 )
 
-# ============================================================================
-# TASK DEPENDENCIES
-# ============================================================================
-
-bronze_ingestion >> serving_layer
+direct_ingestion
