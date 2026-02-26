@@ -224,11 +224,18 @@ class BronzeIngestion:
                 field_id += 1
             
             # Add metadata columns
+            # Check for name conflicts
+            existing_col_names = [f.name for f in fields]
+            brand_etl_meta_name = "brand_etl"
+            if "brand_etl" in existing_col_names:
+                logger.info(f"Conflict detected: source table has 'brand_etl'. Renaming metadata field to 'brand_etl_new'")
+                brand_etl_meta_name = "brand_etl_new"
+
             fields.extend([
                 NestedField(field_id, "snapshot_date", DateType(), required=True),
                 NestedField(field_id + 1, "ingestion_timestamp", TimestampType(), required=True),
                 NestedField(field_id + 2, "source_server", StringType(), required=False),
-                NestedField(field_id + 3, "brand_etl", IntegerType(), required=False),
+                NestedField(field_id + 3, brand_etl_meta_name, IntegerType(), required=False),
             ])
             
             schema = Schema(*fields)
@@ -338,7 +345,8 @@ class BronzeIngestion:
                             batch_dict[name] = [get_current_timestamp_naive()] * len(rows)
                         elif name == 'source_server':
                             batch_dict[name] = [source_name or config['server']] * len(rows)
-                        elif name == 'brand_etl':
+                        elif name in ('brand_etl', 'brand_etl_new') and name not in mapping:
+                            # This is our metadata column (either original or renamed)
                             batch_dict[name] = [brand_etl] * len(rows)
                         
                         # Handle SQL data columns
