@@ -68,7 +68,7 @@ class DirectPostgresToPostgres:
                          host=config['host'], port=int(config.get('port', 5432)), database=config['dbname'])
         return create_engine(url)
 
-    def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, pk_columns: List[str]):
+    def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, pk_columns: List[str], rename_map: Dict[str, str] = {}):
         """Fetch schema from source and create exactly the same table in target if not exists"""
         logger.info(f"Ensuring target table {target_table} exists based on source {source_table}")
         
@@ -93,14 +93,14 @@ class DirectPostgresToPostgres:
         # 2. Build CREATE TABLE SQL
         col_defs = []
         for col in columns:
-            name, dtype, char_len, num_prec, num_scale, is_null = col
-            sql_type = dtype.upper()
+            # Apply rename
+            target_name = rename_map.get(name, name)
             
             # Refine types for 1:1 parity
             if dtype == 'character varying' and char_len: sql_type = f"VARCHAR({char_len})"
             elif dtype == 'numeric' and num_prec: sql_type = f"NUMERIC({num_prec}, {num_scale or 0})"
             
-            col_def = f'"{name}" {sql_type}'
+            col_def = f'"{target_name}" {sql_type}'
             if is_null == 'NO': col_def += " NOT NULL"
             col_defs.append(col_def)
             
@@ -169,7 +169,18 @@ class DirectPostgresToPostgres:
             with source_engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 source_cols = list(result.keys())
-                mapping = {col: source_cols.index(col) for col in target_cols if col in source_cols}
+                
+                rename_map = json.loads(config.get('rename_column') or '{}')
+                mapping = {}
+                for col in target_cols:
+                    if col in source_cols:
+                        mapping[col] = source_cols.index(col)
+                    else:
+                        # Check if a source column was renamed to this target column
+                        for src, tgt in rename_map.items():
+                            if tgt == col and src in source_cols:
+                                mapping[col] = source_cols.index(src)
+                                break
                 
                 while True:
                     rows = result.fetchmany(BATCH_SIZE)
@@ -183,19 +194,22 @@ class DirectPostgresToPostgres:
                                 val = r[mapping[col]]
                                 if isinstance(val, (datetime, date)): 
                                     if isinstance(val, datetime): val = val.replace(tzinfo=None)
-                                elif isinstance(val, Decimal): val = float(val)
+                                    val = val.isoformat()
+                                elif isinstance(val, Decimal): val = str(val)
                                 elif isinstance(val, str): val = val.replace('\x00', '')
+                                else: val = str(val) if val is not None else None
                                 batch_data[col].append(val)
-                            elif col == 'snapshot_date': batch_data[col].append(self.snapshot_date)
-                            elif col == 'ingestion_timestamp': batch_data[col].append(get_current_timestamp_naive())
-                            elif col == 'source_server': batch_data[col].append(source_name or config['server'])
+                            elif col == 'snapshot_date': batch_data[col].append(str(self.snapshot_date))
+                            elif col == 'ingestion_timestamp': batch_data[col].append(str(get_current_timestamp_naive()))
+                            elif col == 'source_server': batch_data[col].append(str(source_name or config['server']))
                             elif col in ('brand_etl', 'brand_etl_new'):
                                 # Only fill if col is NOT mapping (meaning it was added by us as metadata)
                                 if col not in mapping:
-                                    batch_data[col].append(brand_etl)
+                                    batch_data[col].append(str(brand_etl) if brand_etl is not None else None)
                                 else:
                                     # This should not happen due to mapping logic, but just in case
-                                    batch_data[col].append(r[mapping[col]])
+                                    val = r[mapping[col]]
+                                    batch_data[col].append(str(val) if val is not None else None)
                             else: batch_data[col].append(None)
                     
                     # Convert to Arrow -> CSV -> COPY
@@ -255,7 +269,9 @@ class DirectPostgresToPostgres:
                         with self.target_conn.cursor() as cur:
                             cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
                             self.target_conn.commit()
-                    self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns)
+                    
+                    rename_map = json.loads(config.get('rename_column') or '{}')
+                    self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns, rename_map=rename_map)
                     initialized = True
                 
                 total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name)
@@ -292,8 +308,9 @@ class DirectPostgresToPostgres:
                                 cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
                                 self.target_conn.commit()
                         
-                        # Ensure Target mirrors Source
-                        self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns)
+                        # Ensure Target mirrors Source (including renames)
+                        rename_map = json.loads(config.get('rename_column') or '{}')
+                        self.ensure_target_table_exists_from_source(engine, source_table, target_table, pk_columns, rename_map=rename_map)
                         
                         self.stream_and_upsert(engine, config, target_table)
                     finally:
