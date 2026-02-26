@@ -343,12 +343,5 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
 # ============================================================================
 
 # Main Ticket Pipeline:
-# 1. Ingestion finished -> Run Enrichment AND API Serving (parallel)
-task_ticket_ingestion >> [task_ticket_enrichment, task_ticket_api_serving]
+task_ticket_ingestion >> task_ticket_api_serving >> task_ticket_enrichment >> task_ticket_source_serving >> task_ticket_source_metadata >> task_ticket_source_metadata_serving
 
-# 2. Enrichment finished -> Run Source Serving
-task_ticket_enrichment >> task_ticket_source_serving >> task_ticket_source_metadata >> task_ticket_source_metadata_serving
-
-# Metadata Pipeline (runs in parallel with main pipeline):
-# 3. Metadata ingestion -> Metadata serving
-# task_ticket_source_metadata >> task_ticket_source_metadata_serving
