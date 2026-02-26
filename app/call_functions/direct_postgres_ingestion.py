@@ -221,6 +221,7 @@ class DirectPostgresToPostgres:
         rename_map = json.loads(config.get('rename_column') or '{}')
         
         if drop_table:
+            logger.warning(f"Dropping target table {target_table} (CASCADE) as requested.")
             with self.target_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
                 self.target_conn.commit()
