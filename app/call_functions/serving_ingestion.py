@@ -273,178 +273,93 @@ class ServingIngestion:
 
     def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str], truncate: bool = False):
         """
-        Upsert data into Postgres using Staging Table + COPY protocol
-        This avoids OOM by not creating Python objects for every row.
+        Upsert data into Postgres using an Incremental Batch-wise Staging protocol.
+        This keeps Python RAM and Database temporary storage (disk) minimal and constant.
         """
         if not reader:
             return
 
-        # Generate a unique staging table name
+        import gc
+        import pyarrow.compute as pc
+
+        # 1. Prepare Column Info
+        columns = reader.schema.names
+        cols_str = ', '.join([f'"{c}"' for c in columns])
         staging_table = f"{target_table_name}_staging_{uuid.uuid4().hex[:8]}"
         
+        # 2. Prepare UPSERT/INSERT SQL
+        if pk_columns:
+            pk_str = ", ".join([f'"{c}"' for c in pk_columns])
+            update_cols = [c for c in columns if c not in pk_columns]
+            if update_cols:
+                update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+                exec_sql = f"""
+                INSERT INTO {target_table_name} ({cols_str})
+                SELECT {cols_str} FROM {staging_table}
+                ON CONFLICT ({pk_str}) 
+                DO UPDATE SET {update_set}
+                """
+            else:
+                exec_sql = f"INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table} ON CONFLICT ({pk_str}) DO NOTHING"
+        else:
+            exec_sql = f"INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table}"
+
         cursor = self.pg_conn.cursor()
-        
         try:
-            # 1. Create Staging Table (Unlogged for speed)
-            # clone structure from target_table
+            # 3. Initialize Staging and Truncate target if needed
             cursor.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table_name} INCLUDING DEFAULTS)")
-            
-            # 2. Stream Data into Staging using COPY
-            # CSV format options for PyArrow
-            csv_write_options = pv.WriteOptions(include_header=False)
-            # Adjust timestamp format if needed, but ISO8601 usually works for Postgres
-            
+            if truncate:
+                logger.warning(f"Truncating table {target_table_name}...")
+                cursor.execute(f"TRUNCATE TABLE {target_table_name}")
+            self.pg_conn.commit()
+
+            # 4. Stream and process batch-by-batch
             total_rows = 0
-            
-            # Iterate through batches
-            # Iterate through batches
-            CHUNK_SIZE = 10000 # Process max 10k rows at a time to control RAM peak
-            
-            import gc # Ensure gc is available
+            CHUNK_SIZE = 10000 
+            csv_write_options = pv.WriteOptions(include_header=False)
 
             for batch in reader:
-                if len(batch) == 0:
-                    continue
-                
-                # Sanitize: Remove NULL bytes (\x00) from string columns
-                # PostgreSQL's COPY command fails if it encounters \x00 in a TEXT field.
-                sanitized_columns = []
-                for i, field in enumerate(batch.schema):
-                    col = batch.column(i)
-                    if pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
-                        # Convert to python strings, replace \x00, and back to arrow (expensive but safe)
-                        # Or use pc.replace_substring if available in current pyarrow version
-                        import pyarrow.compute as pc
-                        col = pc.replace_substring(col, pattern="\x00", replacement="")
-                    sanitized_columns.append(col)
-                
-                batch = pa.RecordBatch.from_arrays(sanitized_columns, schema=batch.schema)
-
-                columns = batch.schema.names
-                cols_str = ', '.join([f'"{c}"' for c in columns])
+                if len(batch) == 0: continue
                 
                 num_rows = len(batch)
-                
                 for i in range(0, num_rows, CHUNK_SIZE):
                     chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
-                    csv_buffer = io.BytesIO()
                     
-                    try:
+                    # Sanitize ONLY the chunk (Best for Peak RAM)
+                    sanitized_cols = []
+                    for col_idx, field in enumerate(chunk.schema):
+                        c = chunk.column(col_idx)
+                        if pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
+                            c = pc.replace_substring(c, pattern="\x00", replacement="")
+                        sanitized_cols.append(c)
+                    
+                    chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=chunk.schema)
+                    
+                    with io.BytesIO() as csv_buffer:
                         pv.write_csv(chunk, csv_buffer, write_options=csv_write_options)
                         csv_buffer.seek(0)
                         
+                        # A. Copy to staging
                         sql_copy = f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)"
                         cursor.copy_expert(sql_copy, csv_buffer)
                         
-                        total_rows += len(chunk)
-                        logger.debug(f"Streamed chunk {len(chunk)} rows to staging (Total: {total_rows})")
+                        # B. Upsert from staging to target
+                        cursor.execute(exec_sql)
                         
-                    finally:
-                        csv_buffer.close()
-                        del csv_buffer
-                        del chunk
+                        # C. Clear staging for the NEXT chunk
+                        cursor.execute(f"TRUNCATE TABLE {staging_table}")
+                    
+                    total_rows += len(chunk)
+                    del chunk
+                
+                # Commit after processing a whole Iceberg batch
+                self.pg_conn.commit()
+                logger.info(f"Ingested {total_rows} rows so far...")
                 
                 del batch
                 gc.collect()
 
-            # 2.5. Analyze Staging Table
-            # Crucial for Postgres to know the row count/distribution in the temporary staging table
-            # so it can choose the optimal join plan for the MERGE step.
-            logger.debug("Analyzing staging table...")
-            cursor.execute(f"ANALYZE {staging_table}")
-            
-            # COMMIT here to persist the staging table.
-            # If the subsequent MERGE fails and we rollback, we don't want to lose the staging table 
-            # because we need it for the Fallback strategy (Delete+Insert).
-            self.pg_conn.commit()
-
-            # 3. Perform Merge/Upsert from Staging to Target
-            cols_str = ', '.join([f'"{c}"' for c in reader.schema.names])
-            
-            if truncate:
-                logger.warning(f"Truncating table {target_table_name} as requested before loading")
-                cursor.execute(f"TRUNCATE TABLE {target_table_name}")
-                
-                sql_insert = f"""
-                INSERT INTO {target_table_name} ({cols_str})
-                SELECT {cols_str} FROM {staging_table}
-                """
-                logger.info("Inserting data from staging to target table (Truncate mode)...")
-                cursor.execute(sql_insert)
-                self.pg_conn.commit()
-                logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name} (Truncate & Load)")
-                return
-
-            if pk_columns:
-                pk_str = ", ".join([f'"{c}"' for c in pk_columns])
-                columns = reader.schema.names
-                update_cols = [c for c in columns if c not in pk_columns]
-
-                if update_cols:
-                    update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-                    sql_merge = f"""
-                    INSERT INTO {target_table_name} ({cols_str})
-                    SELECT {cols_str} FROM {staging_table}
-                    ON CONFLICT ({pk_str}) 
-                    DO UPDATE SET {update_set}
-                    """
-                else:
-                    # PK only case
-                    sql_merge = f"""
-                    INSERT INTO {target_table_name} ({cols_str})
-                    SELECT {cols_str} FROM {staging_table}
-                    ON CONFLICT ({pk_str}) DO NOTHING
-                    """
-            else:
-                # No PK, just append (though this shouldn't happen based on logic)
-                sql_merge = f"""
-                INSERT INTO {target_table_name} ({cols_str})
-                SELECT {cols_str} FROM {staging_table}
-                """
-            
-            logger.info("Merging data from staging to target table...")
-            try:
-                cursor.execute(sql_merge)
-                self.pg_conn.commit()
-                logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
-            except Exception as e:
-                self.pg_conn.rollback()
-                logger.warning(f"Standard UPSERT failed: {e}. Attempting fallback (Drop PK -> Delete -> Insert)")
-                
-                if not pk_columns:
-                    # If no PK, we can't really "Delete by key", so re-raise
-                    raise e
-                
-                # Renew cursor
-                cursor.close()
-                cursor = self.pg_conn.cursor()
-                
-                try:
-                    # 1. Drop PK Constraint
-                    # Assumption: Default Postgres naming convention: table_name + _pkey
-                    constraint_name = f"{target_table_name}_pkey"
-                    logger.info(f"Fallback: Dropping constraint {constraint_name} if exists")
-                    cursor.execute(f"ALTER TABLE {target_table_name} DROP CONSTRAINT IF EXISTS {constraint_name}")
-                    
-                    # 2. Delete existing rows (DELETE ... USING ...)
-                    # Use aliases to safely handle table names (even with schemas) inside the WHERE clause
-                    pk_match = " AND ".join([f'dest."{c}" = src."{c}"' for c in pk_columns])
-                    sql_delete = f'DELETE FROM {target_table_name} AS dest USING {staging_table} AS src WHERE {pk_match}'
-                    logger.info("Fallback: Deleting existing rows matching keys")
-                    cursor.execute(sql_delete)
-                    
-                    # 3. Insert new rows
-                    sql_insert = f'INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table}'
-                    logger.info("Fallback: Inserting new rows")
-                    cursor.execute(sql_insert)
-                    
-                    self.pg_conn.commit()
-                    logger.success(f"✅ Fallback successful: Loaded {total_rows} rows via DELETE+INSERT")
-                    
-                except Exception as fallback_e:
-                    self.pg_conn.rollback()
-                    logger.error(f"Fallback failed: {fallback_e}")
-                    raise fallback_e  # Raise the secondary error
+            logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
 
         except Exception as e:
             self.pg_conn.rollback()
