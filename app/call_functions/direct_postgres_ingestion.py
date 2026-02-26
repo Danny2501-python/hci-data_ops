@@ -93,6 +93,9 @@ class DirectPostgresToPostgres:
         # 2. Build CREATE TABLE SQL
         col_defs = []
         for col in columns:
+            name, dtype, char_len, num_prec, num_scale, is_null = col
+            sql_type = dtype.upper()
+            
             # Apply rename
             target_name = rename_map.get(name, name)
             
@@ -147,25 +150,32 @@ class DirectPostgresToPostgres:
         query = text(f"SELECT * FROM {source_table} WHERE {where}")
         staging_table = f"{target_table}_staging_{uuid.uuid4().hex[:8]}"
         
-        with self.target_conn.cursor() as cur:
-            # Recreate Target if requested (1:1 schema assumption starts here)
-            # Actually, we should probably check if target exists, but we'll assume it's created or we create it.
-            # For 1:1, we use CREATE TABLE LIKE if we want to be safe, but here we just ensure staging matches target.
-            cur.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table} INCLUDING DEFAULTS)")
-            self.target_conn.commit()
-
         BATCH_SIZE = 5000
         total_rows = 0
         temp_dir = os.getenv('TEMP_DIR', '/tmp')
         
-        try:
-            # Get columns from Target for mapping
-            with self.target_conn.cursor() as cur:
-                cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table}' ORDER BY ordinal_position")
-                target_cols = [r[0] for r in cur.fetchall()]
-            
+        with self.target_conn.cursor() as cur:
+            # 1. Get columns from Target for mapping and cleanup check
+            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table}' ORDER BY ordinal_position")
+            target_cols = [r[0] for r in cur.fetchall()]
             cols_str = ", ".join([f'"{c}"' for c in target_cols])
+
+            # 2. Cleanup target based on config
+            if config.get('truncate'):
+                logger.info(f"Truncating target table {target_table} (Full Overwrite)")
+                cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
+            elif not pk_columns and keyword and keyword.lower() != 'none' and keyword in target_cols:
+                # Idempotent incremental load for non-PK tables: Delete matching range first
+                logger.info(f"Cleanup {target_table} based on {keyword} >= {cutoff_date} (Delete + Insert mode)")
+                # Use the same logic as the source query condition
+                delete_where = f"({keyword} + interval '7 hour')::date >= '{cutoff_date}'"
+                cur.execute(f"DELETE FROM {target_table} WHERE {delete_where}")
             
+            # 3. Create staging table
+            cur.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table} INCLUDING DEFAULTS)")
+            self.target_conn.commit()
+
+        try:
             with source_engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 source_cols = list(result.keys())
