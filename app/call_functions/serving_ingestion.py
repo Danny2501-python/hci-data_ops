@@ -317,13 +317,13 @@ class ServingIngestion:
                 if len(batch) == 0: continue
                 
                 num_rows = len(batch)
-                logger.debug(f"Processing source batch of {num_rows} rows...")
+                logger.debug(f"Source batch fetched: {num_rows} rows.")
 
                 for i in range(0, num_rows, CHUNK_SIZE):
-                    # Slice is zero-copy
+                    # Zero-copy slice
                     orig_chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
                     
-                    # Sanitize (Only for string columns)
+                    # 1. Sanitize column by column to avoid keeping multiple copies
                     sanitized_cols = []
                     for col_idx, field in enumerate(orig_chunk.schema):
                         c = orig_chunk.column(col_idx)
@@ -331,36 +331,40 @@ class ServingIngestion:
                             # pc.replace_substring creates a new buffer
                             c = pc.replace_substring(c, pattern="\x00", replacement="")
                         sanitized_cols.append(c)
+                        del c # Clear reference immediately
                     
-                    # Create a truly smaller RecordBatch for this chunk
+                    # 2. Convert to RecordBatch for CSV writing
                     tmp_chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=orig_chunk.schema)
                     
+                    # 3. Use a context manager for the buffer
                     with io.BytesIO() as csv_buffer:
                         pv.write_csv(tmp_chunk, csv_buffer, write_options=csv_write_options)
                         csv_buffer.seek(0)
                         
+                        # Streaming COPY to Postgres
                         cursor.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", csv_buffer)
                         cursor.execute(exec_sql)
                         cursor.execute(f"TRUNCATE TABLE {staging_table}")
+                        
+                        # Clear buffer data early
+                        csv_buffer.truncate(0)
                     
                     total_rows += len(tmp_chunk)
                     
-                    # Proactive cleanup inside the inner loop
+                    # 4. Aggressive cleanup for EVERY chunk
                     del sanitized_cols
                     del tmp_chunk
                     del orig_chunk
-                    
-                    # Force garbage collection frequently if rows are chunky
-                    if i % 10000 == 0:
-                        gc.collect()
+                    gc.collect()
+                    pa.default_memory_pool().release_unused() # Return memory to OS
                 
-                # Commit after processing a whole Iceberg batch
                 self.pg_conn.commit()
-                logger.info(f"Progress: {total_rows} rows ingested")
+                logger.info(f"Ingested {total_rows} rows total.")
                 
-                # Explicitly delete the large source batch
+                # Final cleanup for the big batch
                 del batch
                 gc.collect()
+                pa.default_memory_pool().release_unused()
 
             logger.success(f"✅ Successfully loaded {total_rows} rows into {target_table_name}")
 
