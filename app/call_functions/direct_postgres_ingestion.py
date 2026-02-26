@@ -117,7 +117,12 @@ class DirectPostgresToPostgres:
         else:
             metadata_cols.append('"brand_etl" INTEGER')
         
-        pk_clause = f", PRIMARY KEY ({', '.join([f'\"{c}\"' for c in pk_columns])})" if pk_columns else ""
+        if pk_columns:
+            pk_list = [f'"{c}"' for c in pk_columns]
+            pk_clause = f", PRIMARY KEY ({', '.join(pk_list)})"
+        else:
+            pk_clause = ""
+            
         create_sql = f"CREATE TABLE IF NOT EXISTS {target_table} ({', '.join(col_defs + metadata_cols)}{pk_clause})"
         
         with self.target_conn.cursor() as cur:
