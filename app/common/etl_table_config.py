@@ -98,10 +98,8 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
         EqualTo("active", True),
     ]
     
-    # Standard flow usually implies is_transfrom=True, but ERP might not.
-    # Keep behavior consistent: if source is NOT specified (standard flow), enforce is_transfrom.
-    # If source IS specified (custom flow like ERP), trust the source filter + active.
-    if not source:
+    # If neither table_id nor source is provided, it's a "Standard" run -> enforce is_transfrom=True
+    if not source and not table_id:
         filters.append(EqualTo("is_transfrom", True))
         
     if table_id:
