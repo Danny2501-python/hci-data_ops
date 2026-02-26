@@ -274,7 +274,7 @@ class ServingIngestion:
     def upsert_data(self, target_table_name: str, reader: pa.RecordBatchReader, pk_columns: List[str], truncate: bool = False):
         """
         Upsert data into Postgres using an Incremental Batch-wise Staging protocol.
-        This keeps Python RAM and Database temporary storage (disk) minimal and constant.
+        Optimized for minimum Peak RAM.
         """
         if not reader:
             return
@@ -293,12 +293,7 @@ class ServingIngestion:
             update_cols = [c for c in columns if c not in pk_columns]
             if update_cols:
                 update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-                exec_sql = f"""
-                INSERT INTO {target_table_name} ({cols_str})
-                SELECT {cols_str} FROM {staging_table}
-                ON CONFLICT ({pk_str}) 
-                DO UPDATE SET {update_set}
-                """
+                exec_sql = f"INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table} ON CONFLICT ({pk_str}) DO UPDATE SET {update_set}"
             else:
                 exec_sql = f"INSERT INTO {target_table_name} ({cols_str}) SELECT {cols_str} FROM {staging_table} ON CONFLICT ({pk_str}) DO NOTHING"
         else:
@@ -315,47 +310,55 @@ class ServingIngestion:
 
             # 4. Stream and process batch-by-batch
             total_rows = 0
-            CHUNK_SIZE = 10000 
+            CHUNK_SIZE = 5000 # Reduced chunk size to lower Peak RAM from io.BytesIO
             csv_write_options = pv.WriteOptions(include_header=False)
 
             for batch in reader:
                 if len(batch) == 0: continue
                 
                 num_rows = len(batch)
+                logger.debug(f"Processing source batch of {num_rows} rows...")
+
                 for i in range(0, num_rows, CHUNK_SIZE):
-                    chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
+                    # Slice is zero-copy
+                    orig_chunk = batch.slice(offset=i, length=min(CHUNK_SIZE, num_rows - i))
                     
-                    # Sanitize ONLY the chunk (Best for Peak RAM)
+                    # Sanitize (Only for string columns)
                     sanitized_cols = []
-                    for col_idx, field in enumerate(chunk.schema):
-                        c = chunk.column(col_idx)
+                    for col_idx, field in enumerate(orig_chunk.schema):
+                        c = orig_chunk.column(col_idx)
                         if pa.types.is_string(field.type) or pa.types.is_large_string(field.type):
+                            # pc.replace_substring creates a new buffer
                             c = pc.replace_substring(c, pattern="\x00", replacement="")
                         sanitized_cols.append(c)
                     
-                    chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=chunk.schema)
+                    # Create a truly smaller RecordBatch for this chunk
+                    tmp_chunk = pa.RecordBatch.from_arrays(sanitized_cols, schema=orig_chunk.schema)
                     
                     with io.BytesIO() as csv_buffer:
-                        pv.write_csv(chunk, csv_buffer, write_options=csv_write_options)
+                        pv.write_csv(tmp_chunk, csv_buffer, write_options=csv_write_options)
                         csv_buffer.seek(0)
                         
-                        # A. Copy to staging
-                        sql_copy = f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)"
-                        cursor.copy_expert(sql_copy, csv_buffer)
-                        
-                        # B. Upsert from staging to target
+                        cursor.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", csv_buffer)
                         cursor.execute(exec_sql)
-                        
-                        # C. Clear staging for the NEXT chunk
                         cursor.execute(f"TRUNCATE TABLE {staging_table}")
                     
-                    total_rows += len(chunk)
-                    del chunk
+                    total_rows += len(tmp_chunk)
+                    
+                    # Proactive cleanup inside the inner loop
+                    del sanitized_cols
+                    del tmp_chunk
+                    del orig_chunk
+                    
+                    # Force garbage collection frequently if rows are chunky
+                    if i % 10000 == 0:
+                        gc.collect()
                 
                 # Commit after processing a whole Iceberg batch
                 self.pg_conn.commit()
-                logger.info(f"Ingested {total_rows} rows so far...")
+                logger.info(f"Progress: {total_rows} rows ingested")
                 
+                # Explicitly delete the large source batch
                 del batch
                 gc.collect()
 
