@@ -474,16 +474,11 @@ class ServingIngestion:
         # Use reader.schema.names instead of arrow_table.column_names
         column_names = reader.schema.names
         
-        if not primary_keyword:
-            # Fallback if 'id' exists in actual data schema
-            if 'id' in column_names:
-                 logger.warning(f"No primary_keyword for {table_name}, defaulting to 'id'")
-                 pk_columns = ['id']
-            else:
-                 logger.warning(f"No primary_keyword for {table_name} and no 'id' column found. Proceeding with simple INSERT (Append only)")
-                 pk_columns = []
-        else:
+        if primary_keyword:
             pk_columns = [k.strip() for k in primary_keyword.split(',')]
+        else:
+            logger.warning(f"No primary_keyword for {table_name}. Proceeding with simple INSERT (Append only)")
+            pk_columns = []
         target_table_name = table_name
         
         logger.info(f"Processing {table_name} -> {target_table_name} (PK: {pk_columns})")
