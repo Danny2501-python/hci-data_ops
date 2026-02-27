@@ -19,6 +19,8 @@ import sys
 from datetime import datetime, date, timedelta
 import pyarrow as pa
 import gc
+import io
+import csv
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
@@ -119,32 +121,67 @@ class TicketSourceServingLayer:
             # Iterate through batches from Iceberg
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
-                    # OPTIMIZATION: Sub-chunk Large Arrow Batches
-                    # Even a single Arrow batch can be large (64k rows).
-                    # We process in smaller sub-batches (e.g., 2000 rows) to keep Peak RAM low,
-                    # especially since each row contains large JSON strings.
-                    SUB_BATCH_SIZE = 2000
+                    # OPTIMIZATION: Very Small Sub-batches for OOM prevention
+                    # Using 500 to ensure even with large raw_data, we stay under RAM limits.
+                    SUB_BATCH_SIZE = 500
                     
                     for start in range(0, len(batch), SUB_BATCH_SIZE):
                         sub_batch = batch.slice(start, SUB_BATCH_SIZE)
                         
-                        # OPTIMIZATION: Avoid intermediate Dictionary creation.
-                        # Using zip(*[column.to_pylist()]) is significantly more memory efficient
-                        # than batch.to_pylist() for wide tables with large strings.
+                        # Extract data columns
                         data_columns = [sub_batch.column(col).to_pylist() for col in columns]
                         rows_iterator = zip(*data_columns)
                         
-                        # Upsert sub-batch into PostgreSQL
-                        # execute_values will consume the zip iterator efficiently
-                        execute_values(cursor, upsert_sql, rows_iterator, page_size=1000)
+                        # OPTIMIZATION: Use COPY via StringIO instead of INSERT
+                        # This avoids building a massive INSERT SQL string in memory.
+                        output = io.StringIO()
+                        writer = csv.writer(output, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
                         
-                        # Force instant cleanup of the heavy sub-batch strings
+                        for row in rows_iterator:
+                            # Clean newline characters in strings to avoid CSV corruption
+                            clean_row = [str(val).replace('\n', ' ').replace('\r', ' ') if val is not None else None for val in row]
+                            writer.writerow(clean_row)
+                        
+                        output.seek(0)
+                        
+                        # Prepare temporary table or Direct COPY
+                        # Using a multi-stage approach is safer, but here we can COPY directly 
+                        # because we have a primary key and updated_at logic for UPSERT.
+                        # Note: Postgres doesn't support 'ON CONFLICT' in COPY directly.
+                        # So we COPY to a temp table FIRST, then UPSERT from there.
+                        
+                        temp_table_name = f"temp_{TARGET_TABLE}_{os.getpid()}"
+                        cursor.execute(f"CREATE TEMP TABLE {temp_table_name} (LIKE {TARGET_TABLE} INCLUDING ALL) ON COMMIT DROP")
+                        
+                        # Build column list for COPY
+                        col_list_str = ', '.join([f'"{col}"' for col in columns])
+                        
+                        cursor.copy_expert(f"COPY {temp_table_name} ({col_list_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL 'None')", output)
+                        
+                        # Perform UPSERT from Temp Table
+                        update_cols = [col for col in columns if col not in ['ticket_id', 'brand_id']]
+                        update_set = ', '.join([f'"{col}" = {temp_table_name}."{col}"' for col in update_cols])
+                        
+                        upsert_sql = f"""
+                        INSERT INTO {TARGET_TABLE} ({col_list_str})
+                        SELECT {col_list_str} FROM {temp_table_name}
+                        ON CONFLICT ("ticket_id", "brand_id")
+                        DO UPDATE SET
+                            {update_set}
+                        WHERE {TARGET_TABLE}."updated_at" < EXCLUDED."updated_at"
+                            OR {TARGET_TABLE}."updated_at" IS NULL
+                        """
+                        cursor.execute(upsert_sql)
+                        
+                        # Cleanup
+                        output.close()
+                        cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
                         del data_columns
                         del rows_iterator
                         gc.collect()
                     
                     total_rows += len(batch)
-                    logger.info(f"Upserted Arrow batch of {len(batch)} rows (Total so far: {total_rows})")
+                    logger.info(f"Refreshed Arrow batch of {len(batch)} rows (Total so far: {total_rows})")
             
             # Commit all changes
             self.pg_conn.commit()
