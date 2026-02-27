@@ -228,23 +228,23 @@ class TicketDetailEnrichment:
                 selected_fields=("ticket_id", "updated_at")
             )
             
-            # Stream to Parquet
-            batches = []
+            # Stream to Parquet incrementally
+            writer = None
+            total_rows = 0
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
-                    batches.append(batch)
+                    table_batch = pa.Table.from_batches([batch])
+                    if writer is None:
+                        writer = pq.ParquetWriter(temp_parquet, table_batch.schema, compression='snappy')
+                    writer.write_table(table_batch)
+                    total_rows += len(batch)
             
-            if not batches:
+            if writer:
+                writer.close()
+            
+            if total_rows == 0:
                 logger.info(f"No tickets found in today's snapshot for brand {brand_erp_id}")
                 return []
-            
-            # Write to disk to free RAM
-            combined = pa.Table.from_batches(batches)
-            pq.write_table(combined, temp_parquet, compression='snappy')
-            
-            # Free Arrow memory immediately
-            del batches
-            del combined
             
             # DuckDB Deduplication
             con = duckdb.connect(config={
@@ -340,7 +340,7 @@ class TicketDetailEnrichment:
         total_success = 0
         total_errors = 0
         
-        BATCH_SIZE = 10000
+        BATCH_SIZE = 500
         
         for i, ticket_id in enumerate(ticket_ids):
             # Progress logging every 10 tickets
@@ -440,8 +440,10 @@ class TicketDetailEnrichment:
                 df = pa.Table.from_pylist(batch_records, schema=pyarrow_schema)
                 detail_table.append(df)
                 total_success += len(batch_records)
-                logger.success(f"✅ Flushed {len(batch_records)} records")
+                logger.success(f"✅ Flushed {len(batch_records)} records (Total: {total_success})")
                 batch_records = []
+                del df
+                gc.collect()
             
             # Flush error batch
             if len(batch_error_records) >= BATCH_SIZE:
@@ -450,6 +452,8 @@ class TicketDetailEnrichment:
                 error_table.append(df_err)
                 logger.info(f"⚠️ Flushed {len(batch_error_records)} error records")
                 batch_error_records = []
+                del df_err
+                gc.collect()
         
         # Flush remaining
         if batch_records:
