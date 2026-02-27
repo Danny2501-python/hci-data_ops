@@ -367,20 +367,4 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
     dag=dag,
 )
 
-
-
-# ============================================================================
-# TASK DEPENDENCIES
-# ============================================================================
-
-# FLOW: 
-# 1. ERP → Bronze
-# 2. Bronze → Silver
-# 3. Silver → Gold (Enrichment)
-# 4. Gold → Comments (Flatten JSON)
-# 5. Comments → Serving (PostgreSQL)
-# 6. Gold → Serving (V2)
-
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
-task_deal_detail_enrichment >> task_deal_comments_transformation >> task_deal_comments_serving_layer
-task_deal_detail_enrichment >> task_refresh_serving_layer_v2
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_refresh_serving_layer_v2 >> task_deal_comments_transformation >> task_deal_comments_serving_layer
