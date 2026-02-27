@@ -153,7 +153,13 @@ class TicketDetailEnrichment:
             if total_rows == 0: return []
             
             con = duckdb.connect()
-            query = f"SELECT ticket_id FROM read_parquet('{temp_parquet}') GROUP BY ticket_id ORDER BY max(updated_at) DESC"
+            query = f"""
+            SELECT ticket_id 
+            FROM read_parquet('{temp_parquet}') 
+            WHERE ticket_id IS NOT NULL
+            GROUP BY ticket_id 
+            ORDER BY max(updated_at) DESC NULLS LAST
+            """
             ticket_ids = con.execute(query).fetch_arrow_table().column('ticket_id').to_pylist()
             con.close()
             
