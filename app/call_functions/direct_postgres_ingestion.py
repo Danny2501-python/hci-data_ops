@@ -247,9 +247,9 @@ class DirectPostgresToPostgres:
                             cur.execute(f"TRUNCATE TABLE {staging_table}")
                             self.target_conn.commit()
                     
-                    total_rows += len(rows)
-                    logger.info(f"Ingested {len(rows)} into {target_table}. Total: {total_rows}")
-                    del pa_table, batch_data
+                    total_rows += row_count
+                    logger.info(f"Ingested {row_count} into {target_table}. Total: {total_rows}")
+                    del pa_table
                     gc.collect()
                     pa.default_memory_pool().release_unused()
             return total_rows
