@@ -277,18 +277,24 @@ class DealDetailEnrichment:
                 selected_fields=("deal_id", "updated_at")
             )
             
-            # Read batches
-            batches_today = [b for b in today_scan.to_arrow_batch_reader() if len(b) > 0]
-            total_today = sum(len(b) for b in batches_today)
+            # Stream to Parquet incrementally
+            writer_today = None
+            total_today = 0
+            for batch in today_scan.to_arrow_batch_reader():
+                if len(batch) > 0:
+                    table_batch = pa.Table.from_batches([batch])
+                    if writer_today is None:
+                        writer_today = pq.ParquetWriter(today_parquet, table_batch.schema)
+                    writer_today.write_table(table_batch)
+                    total_today += len(batch)
+            
+            if writer_today:
+                writer_today.close()
             
             if total_today == 0:
                 logger.info(f"No deals in today's snapshot for brand {brand_erp_id}")
                 return []
             
-            # Write to Parquet & Free RAM
-            today_table = pa.Table.from_batches(batches_today)
-            pq.write_table(today_table, today_parquet)
-            del batches_today, today_table
             gc.collect()
             logger.info(f"Written {total_today} today's events to {today_parquet}")
             
@@ -305,13 +311,20 @@ class DealDetailEnrichment:
                     ),
                     selected_fields=("deal_id", "updated_at")
                 )
-                batches_yesterday = [b for b in yesterday_scan.to_arrow_batch_reader() if len(b) > 0]
-                total_yesterday = sum(len(b) for b in batches_yesterday)
+                writer_yesterday = None
+                total_yesterday = 0
+                for batch in yesterday_scan.to_arrow_batch_reader():
+                    if len(batch) > 0:
+                        table_batch = pa.Table.from_batches([batch])
+                        if writer_yesterday is None:
+                            writer_yesterday = pq.ParquetWriter(yesterday_parquet, table_batch.schema)
+                        writer_yesterday.write_table(table_batch)
+                        total_yesterday += len(batch)
                 
+                if writer_yesterday:
+                    writer_yesterday.close()
+                    
                 if total_yesterday > 0:
-                    yesterday_table = pa.Table.from_batches(batches_yesterday)
-                    pq.write_table(yesterday_table, yesterday_parquet)
-                    del batches_yesterday, yesterday_table
                     gc.collect()
                     logger.info(f"Written {total_yesterday} yesterday's events to {yesterday_parquet}")
                     
@@ -445,7 +458,7 @@ class DealDetailEnrichment:
             error_records = []
             
             # Process deals in micro-batches
-            BATCH_SIZE = 10000
+            BATCH_SIZE = 500
             batch_records = []
             batch_error_records = []
             
@@ -601,6 +614,8 @@ class DealDetailEnrichment:
                         logger.success(f"✅ Flushed {len(batch_records)} records.")
                         
                     batch_records = []
+                    del df
+                    gc.collect()
                 
                 # Flush error batch
                 if len(batch_error_records) >= BATCH_SIZE:
@@ -612,6 +627,8 @@ class DealDetailEnrichment:
                     error_table.append(df_err)
                     logger.info(f"⚠️ Flushed {len(batch_error_records)} error records.")
                     batch_error_records = []
+                    del df_err
+                    gc.collect()
             
             # Flush remaining
             if batch_records:
