@@ -254,7 +254,7 @@ class TicketDetailEnrichment:
         cursor.copy_expert(f"COPY {temp_table} ({col_list}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
         
         update_cols = [c for c in columns if c not in ['ticket_id', 'brand_id']]
-        update_set = ', '.join([f'"{c}" = {temp_table}."{c}"' for c in update_cols])
+        update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
         
         upsert_sql = f"""
             INSERT INTO {self.target_pg_table} ({col_list})
