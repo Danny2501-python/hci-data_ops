@@ -1,32 +1,27 @@
 """
 Ticket Detail Enrichment: Pull full ticket details from CareSoft API
 Architecture: Bronze (Iceberg) → Serving (PostgreSQL) - BYPASSING ICEBERG SILVER
-
-This script reads ticket IDs from Bronze Iceberg and writes details directly to PostgreSQL.
+Peak RAM Optimized & 100% Logic Parity with Error tracking in Iceberg.
 """
 
 import os
 import sys
 import time
-from datetime import datetime, date, timedelta
 import io
 import csv
 import json
 import gc
+from datetime import datetime, date, timedelta
 import psycopg2
-from psycopg2.extras import execute_values
 from loguru import logger
 import pyarrow as pa
+import pyarrow.parquet as pq
 import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And, NotNull
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    TimestampType,
-    StringType,
-    IntegerType,
-    LongType,
-    NestedField
+    TimestampType, StringType, IntegerType, LongType, NestedField
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
@@ -41,11 +36,6 @@ TICKET_DETAIL_ERROR_TABLE = 'caresoft.cs_ticket_source_error_api'
 TARGET_PG_TABLE = 'cs_ticket_source_api'
 
 class TicketDetailEnrichment:
-    """
-    Pull full ticket details from CareSoft API and write directly to PostgreSQL.
-    Bypasses the Iceberg Silver layer.
-    """
-    
     def __init__(self, snapshot_date=None):
         if isinstance(snapshot_date, str):
             self.snapshot_date = snapshot_date
@@ -54,12 +44,12 @@ class TicketDetailEnrichment:
         else:
             self.snapshot_date = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
             
-        # Initialize Bronze Catalog (to read IDs)
+        # Catalog config (Synchronized with DAG and old.py)
         catalog_config = {
             "token": os.getenv('ICEBERG_TOKEN', 'admin:password'),
             "s3.endpoint": os.getenv('S3_ENDPOINT', 'http://minio.lakehouse.com'),
-            "s3.access-key-id": os.getenv('AWS_ACCESS_KEY', 'admin'),
-            "s3.secret-access-key": os.getenv('AWS_SECRET_KEY', 'password'),
+            "s3.access-key-id": os.getenv('AWS_ACCESS_KEY_ID', os.getenv('AWS_ACCESS_KEY', 'admin')),
+            "s3.secret-access-key": os.getenv('AWS_SECRET_ACCESS_KEY', os.getenv('AWS_SECRET_KEY', 'password')),
             "s3.region": os.getenv('AWS_REGION', 'us-east-1'),
         }
         
@@ -68,26 +58,15 @@ class TicketDetailEnrichment:
             uri=os.getenv('ICEBERG_REST_URI_BRONZE'),
             **catalog_config
         )
-        
-        # Initialize Silver Catalog (for error tracking)
         self.silver_catalog = load_catalog(
             os.getenv('CATALOG_NAME_SILVER', 'silver'),
             uri=os.getenv('ICEBERG_REST_URI_SILVER'),
             **catalog_config
         )
         
-        # PostgreSQL connection (CRITICAL: Ensure this is provided via env)
         self.pg_uri = os.getenv('POSTGRES_URI')
-        
-        if not self.pg_uri:
-            logger.error("❌ POSTGRES_URI environment variable is missing or empty!")
-        else:
-            # Mask URI for safe logging
-            masked_uri = self.pg_uri.split('@')[-1] if '@' in self.pg_uri else 'hidden'
-            logger.info(f"✅ Database target configured: ...@{masked_uri}")
-
         self.target_pg_table = TARGET_PG_TABLE
-        logger.info(f"Initialized TicketDetailEnrichment (Hybrid: Postgres + Iceberg Errors) for {self.snapshot_date}")
+        logger.info(f"Initialized TicketDetailEnrichment (Final Polish) for {self.snapshot_date}")
 
     def ensure_ticket_detail_error_table_exists(self):
         """Create ticket error table in Iceberg if not exists"""
@@ -102,13 +81,9 @@ class TicketDetailEnrichment:
                 NestedField(field_id=4, name="snapshot_date", field_type=StringType(), required=False),
                 NestedField(field_id=5, name="ingestion_timestamp", field_type=TimestampType(), required=False),
             )
-            
             partition_spec = PartitionSpec(
-                PartitionField(
-                    source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date"
-                )
+                PartitionField(source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
             )
-            
             return self.silver_catalog.create_table(
                 identifier=TICKET_DETAIL_ERROR_TABLE,
                 schema=schema,
@@ -116,93 +91,66 @@ class TicketDetailEnrichment:
             )
 
     def get_ticket_ids_to_enrich(self, brand_erp_id):
-        """Scan Bronze Iceberg for tickets in today's snapshot"""
-        logger.info(f"Scanning Bronze tickets for brand={brand_erp_id}, snapshot={self.snapshot_date}")
-        
+        """Scan Bronze Iceberg for tickets with streaming Parquet writing"""
         try:
             table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
         except Exception as e:
-            logger.error(f"❌ Could not load Bronze table: {e}")
-            return []
+            logger.error(f"❌ Error loading Bronze table: {e}"); return []
         
         import tempfile
-        temp_dir = tempfile.gettempdir()
-        temp_parquet = os.path.join(temp_dir, f"enrich_ids_{brand_erp_id}_{os.getpid()}.parquet")
+        temp_parquet = os.path.join(tempfile.gettempdir(), f"ids_final_{brand_erp_id}_{os.getpid()}.parquet")
         
         try:
             scan = table.scan(
-                row_filter=And(
-                    EqualTo("snapshot_date", self.snapshot_date),
-                    EqualTo("brand_id", brand_erp_id),
-                    NotNull("ticket_id")
-                ),
+                row_filter=And(EqualTo("snapshot_date", self.snapshot_date), EqualTo("brand_id", brand_erp_id), NotNull("ticket_id")),
                 selected_fields=("ticket_id", "updated_at")
             )
             
-            total_rows = 0
             writer = None
+            total_rows = 0
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
                     t = pa.Table.from_batches([batch])
-                    if writer is None:
-                        writer = pq.ParquetWriter(temp_parquet, t.schema)
+                    if writer is None: writer = pq.ParquetWriter(temp_parquet, t.schema)
                     writer.write_table(t)
                     total_rows += len(batch)
+                    del t; gc.collect()
             
             if writer: writer.close()
             if total_rows == 0: return []
             
             con = duckdb.connect()
-            query = f"""
-            SELECT ticket_id 
-            FROM read_parquet('{temp_parquet}') 
-            WHERE ticket_id IS NOT NULL
-            GROUP BY ticket_id 
-            ORDER BY max(updated_at) DESC NULLS LAST
-            """
+            query = f"SELECT ticket_id FROM read_parquet('{temp_parquet}') WHERE ticket_id IS NOT NULL GROUP BY ticket_id ORDER BY max(updated_at) DESC NULLS LAST"
             ticket_ids = con.execute(query).fetch_arrow_table().column('ticket_id').to_pylist()
             con.close()
-            
             return ticket_ids
-        except Exception as e:
-            logger.error(f"❌ Error scanning Bronze tickets: {e}")
-            return []
         finally:
             if os.path.exists(temp_parquet): 
                 try: os.remove(temp_parquet)
                 except: pass
 
     def run(self, brand):
-        """Execute enrichment and write directly to PostgreSQL"""
+        """Standard pipeline logic with Peak RAM optimizations"""
         if not self.pg_uri:
-            logger.critical("❌ Cannot start enrichment: POSTGRES_URI is not set.")
-            return
+            logger.critical("❌ POSTGRES_URI environment variable missing"); return
 
         ticket_ids = self.get_ticket_ids_to_enrich(brand["erp_id"])
-        if not ticket_ids:
-            logger.info(f"No tickets for brand {brand['erp_id']}")
-            return
+        if not ticket_ids: return
             
-        logger.info(f"Enriching {len(ticket_ids)} tickets (Direct PG + Iceberg Errors)...")
-        
-        # Ensure error table exists in Iceberg
+        logger.info(f"Enriching {len(ticket_ids)} tickets directly to PostgreSQL...")
         error_table = self.ensure_ticket_detail_error_table_exists()
         
+        # Parity: Delete old error records for this run
+        try: error_table.delete(And(EqualTo("snapshot_date", self.snapshot_date), EqualTo("brand_id", brand["erp_id"])))
+        except: pass
+
         try:
             pg_conn = psycopg2.connect(self.pg_uri)
-            pg_conn.autocommit = False
             cursor = pg_conn.cursor()
         except Exception as e:
-            logger.critical(f"❌ Failed to connect to PostgreSQL: {e}")
-            return
+            logger.critical(f"❌ PostgreSQL Connection Error: {e}"); return
         
         try:
-            batch_records = []
-            batch_error_records = []
-            total_success = 0
-            total_errors = 0
-            BATCH_SIZE = 100
-            
             columns = [
                 "ticket_id", "account_id", "sla_id", "ticket_no", "requester_id", "group_id",
                 "created_at", "updated_at", "satisfaction_at", "duedate", "satisfaction",
@@ -212,152 +160,133 @@ class TicketDetailEnrichment:
                 "raw_data", "snapshot_date", "ingestion_timestamp"
             ]
             
+            batch_records = []
+            batch_error_records = []
+            total_success = 0
+            total_errors = 0
+            MICRO_BATCH_SIZE = 100
+            
             for i, ticket_id in enumerate(ticket_ids):
-                if (i+1) % 50 == 0:
-                    logger.info(f"Progress: {i+1}/{len(ticket_ids)}...")
-                
                 ticket_data, error = call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')
                 
                 if ticket_data:
-                    def safe_int(v):
-                        if v is None: return None
-                        try: return int(v)
-                        except: return None
-                        
-                    def safe_ts(v):
-                        try: return datetime.fromisoformat(v.replace('Z', '+00:00')) if isinstance(v, str) else v
-                        except: return None
-                        
                     record = {
                         "ticket_id": ticket_data.get("ticket_id"),
-                        "account_id": safe_int(ticket_data.get("account_id")),
-                        "sla_id": safe_int(ticket_data.get("sla_id")),
-                        "ticket_no": safe_int(ticket_data.get("ticket_no")),
+                        "account_id": self._safe_int(ticket_data.get("account_id")),
+                        "sla_id": self._safe_int(ticket_data.get("sla_id")),
+                        "ticket_no": self._safe_int(ticket_data.get("ticket_no")),
                         "requester_id": ticket_data.get("requester_id"),
-                        "group_id": safe_int(ticket_data.get("group_id")),
-                        "created_at": safe_ts(ticket_data.get("created_at")),
-                        "updated_at": safe_ts(ticket_data.get("updated_at")),
-                        "satisfaction_at": safe_ts(ticket_data.get("satisfaction_at")),
-                        "duedate": str(ticket_data.get("duedate")) if ticket_data.get("duedate") else None,
-                        "satisfaction": ticket_data.get("satisfaction"),
-                        "satisfaction_send": ticket_data.get("satisfaction_send"),
-                        "satisfaction_content": ticket_data.get("satisfaction_content"),
-                        "automessage_id": ticket_data.get("automessage_id"),
-                        "feedback_status": ticket_data.get("feedback_status"),
-                        "is_overdue": bool(ticket_data.get("is_overdue")),
-                        "incident_id": safe_int(ticket_data.get("incident_id")),
+                        "group_id": self._safe_int(ticket_data.get("group_id")),
+                        "created_at": self._safe_ts(ticket_data.get("created_at")),
+                        "updated_at": self._safe_ts(ticket_data.get("updated_at")),
+                        "satisfaction_at": self._safe_ts(ticket_data.get("satisfaction_at")),
+                        "duedate": self._safe_str(ticket_data.get("duedate")),
+                        "satisfaction": self._safe_str(ticket_data.get("satisfaction")),
+                        "satisfaction_send": self._safe_str(ticket_data.get("satisfaction_send")),
+                        "satisfaction_content": self._safe_str(ticket_data.get("satisfaction_content")),
+                        "automessage_id": self._safe_str(ticket_data.get("automessage_id")),
+                        "feedback_status": self._safe_str(ticket_data.get("feedback_status")),
+                        "is_overdue": self._safe_bool(ticket_data.get("is_overdue")),
+                        "incident_id": self._safe_int(ticket_data.get("incident_id")),
                         "service_id": ticket_data.get("service_id"),
-                        "qa_script_id": ticket_data.get("qa_script_id"),
-                        "qa_agent": ticket_data.get("qa_agent"),
-                        "current_agent": ticket_data.get("current_agent"),
-                        "ticket_source_detail_id": safe_int(ticket_data.get("ticket_source_detail_id")),
+                        "qa_script_id": self._safe_str(ticket_data.get("qa_script_id")),
+                        "qa_agent": self._safe_str(ticket_data.get("qa_agent")),
+                        "current_agent": self._safe_str(ticket_data.get("current_agent")),
+                        "ticket_source_detail_id": self._safe_int(ticket_data.get("ticket_source_detail_id")),
                         "comments": json.dumps(ticket_data.get("comments", []), ensure_ascii=False),
                         "brand_id": int(brand["erp_id"]),
                         "raw_data": json.dumps(ticket_data, ensure_ascii=False),
                         "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": datetime.now()
+                        "ingestion_timestamp": get_current_timestamp_naive()
                     }
                     batch_records.append(record)
-                
+                    del ticket_data
                 else:
-                    error_record = {
-                        "ticket_id": ticket_id,
-                        "brand_id": brand["erp_id"],
-                        "error_message": str(error)[:1000],
-                        "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": datetime.now(),
-                    }
-                    batch_error_records.append(error_record)
+                    batch_error_records.append({
+                        "ticket_id": ticket_id, "brand_id": brand["erp_id"], "error_message": str(error)[:1000],
+                        "snapshot_date": self.snapshot_date, "ingestion_timestamp": get_current_timestamp_naive()
+                    })
                     total_errors += 1
                 
-                # Flush batches
-                if len(batch_records) >= BATCH_SIZE:
+                # Flush Cycle
+                if len(batch_records) >= MICRO_BATCH_SIZE:
                     self._upsert_to_postgres(cursor, batch_records, columns)
-                    total_success += len(batch_records)
-                    pg_conn.commit()
-                    batch_records = []
-                    gc.collect()
+                    pg_conn.commit(); total_success += len(batch_records)
+                    batch_records = []; gc.collect()
 
-                if len(batch_error_records) >= BATCH_SIZE:
-                    df_err = pa.Table.from_pylist(batch_error_records)
-                    error_table.append(df_err)
-                    logger.info(f"⚠️ Flushed {len(batch_error_records)} error records to Iceberg")
-                    batch_error_records = []
+                if len(batch_error_records) >= MICRO_BATCH_SIZE:
+                    error_table.append(pa.Table.from_pylist(batch_error_records))
+                    batch_error_records = []; gc.collect()
                 
+                if (i+1) % 50 == 0: logger.info(f"Progress: {i+1}/{len(ticket_ids)} Done.")
                 time.sleep(0.01)
                 
-            # Flush final remaining
+            # Final remaining
             if batch_records:
-                self._upsert_to_postgres(cursor, batch_records, columns)
+                self._upsert_to_postgres(cursor, batch_records, columns); pg_conn.commit()
                 total_success += len(batch_records)
-                pg_conn.commit()
-
             if batch_error_records:
-                df_err = pa.Table.from_pylist(batch_error_records)
-                error_table.append(df_err)
-                logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records to Iceberg")
+                error_table.append(pa.Table.from_pylist(batch_error_records))
                 
-            logger.success(f"Brand {brand['erp_id']} enrichment complete: {total_success} success, {total_errors} errors.")
+            logger.success(f"Execution complete. Success: {total_success}, Errors: {total_errors}")
             
         except Exception as e:
-            logger.error(f"Error for brand {brand['erp_id']}: {e}")
-            pg_conn.rollback()
+            logger.error(f"Failed Run for brand {brand['erp_id']}: {e}"); pg_conn.rollback()
         finally:
-            cursor.close()
-            pg_conn.close()
+            cursor.close(); pg_conn.close()
+
+    def _safe_int(self, v):
+        try: return int(v) if v is not None else None
+        except: return None
+    
+    def _safe_str(self, v):
+        return str(v) if v is not None else None
+
+    def _safe_ts(self, v):
+        try: return datetime.fromisoformat(v.replace('Z', '+00:00')) if isinstance(v, str) else v
+        except: return None
+    
+    def _safe_bool(self, v):
+        if v is None: return None
+        return str(v).lower() in ('true', '1', 'yes') if not isinstance(v, bool) else v
 
     def _upsert_to_postgres(self, cursor, records, columns):
-        """Internal helper for high-performance UPSERT via COPY"""
+        """Streaming COPY + UPSERT with automatic staging cleanup"""
         NULL_MARKER = '__NULL__'
         output = io.StringIO()
         writer = csv.writer(output, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
-        
         for rec in records:
             row = []
             for col in columns:
                 val = rec.get(col)
-                if val is None:
-                    row.append(NULL_MARKER)
-                elif isinstance(val, (datetime, date)):
-                    row.append(val.isoformat())
-                else:
-                    row.append(str(val).replace('\n', ' ').replace('\r', ' '))
+                if val is None: row.append(NULL_MARKER)
+                elif isinstance(val, (datetime, date)): row.append(val.isoformat())
+                else: row.append(str(val).replace('\n', ' ').replace('\r', ' '))
             writer.writerow(row)
-            
-        output.seek(0)
-        temp_table = f"temp_enrich_{os.getpid()}"
-        cursor.execute(f"CREATE TEMP TABLE {temp_table} (LIKE {self.target_pg_table} INCLUDING ALL) ON COMMIT DROP")
         
+        output.seek(0)
+        temp_table = f"temp_stg_{os.getpid()}"
+        cursor.execute(f"CREATE TEMP TABLE {temp_table} (LIKE {self.target_pg_table} INCLUDING ALL) ON COMMIT DROP")
         col_list = ', '.join([f'"{c}"' for c in columns])
         cursor.copy_expert(f"COPY {temp_table} ({col_list}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
         
-        update_cols = [c for c in columns if c not in ['ticket_id', 'brand_id']]
-        update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
-        
-        upsert_sql = f"""
-            INSERT INTO {self.target_pg_table} ({col_list})
-            SELECT {col_list} FROM {temp_table}
-            ON CONFLICT ("ticket_id", "brand_id")
-            DO UPDATE SET {update_set}
-            WHERE {self.target_pg_table}."updated_at" < EXCLUDED."updated_at"
-               OR {self.target_pg_table}."updated_at" IS NULL
-        """
-        cursor.execute(upsert_sql)
-        output.close()
+        upd_list = [f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in ['ticket_id', 'brand_id']]
+        cursor.execute(f"""
+            INSERT INTO {self.target_pg_table} ({col_list}) SELECT {col_list} FROM {temp_table}
+            ON CONFLICT ("ticket_id", "brand_id") DO UPDATE SET {', '.join(upd_list)}
+            WHERE {self.target_pg_table}."updated_at" < EXCLUDED."updated_at" OR {self.target_pg_table}."updated_at" IS NULL
+        """)
+        output.close(); del output
 
 def main():
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
     snapshot_date = snapshot_date_str if snapshot_date_str else (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
-    
     brands = get_active_brands()
-    if not brands: return
-    
-    job = TicketDetailEnrichment(snapshot_date)
-    for brand in brands:
-        try:
-            job.run(brand)
-        except Exception as e:
-            logger.error(f"Brand {brand['erp_id']} failed: {e}")
+    if brands:
+        job = TicketDetailEnrichment(snapshot_date)
+        for brand in brands:
+            try: job.run(brand)
+            except Exception as e: logger.error(f"Global Failure: {e}")
 
 if __name__ == "__main__":
     main()
