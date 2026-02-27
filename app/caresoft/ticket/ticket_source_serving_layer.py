@@ -137,26 +137,33 @@ class TicketSourceServingLayer:
                         output = io.StringIO()
                         writer = csv.writer(output, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
                         
+                        # Define a explicit NULL marker to avoid ambiguity with empty strings
+                        NULL_MARKER = '__POSTGRES_NULL__'
+                        
                         for row in rows_iterator:
-                            # Clean newline characters in strings to avoid CSV corruption
-                            clean_row = [str(val).replace('\n', ' ').replace('\r', ' ') if val is not None else None for val in row]
-                            writer.writerow(clean_row)
+                            # Clean newline characters and handle NULL values explicitly
+                            processed_row = []
+                            for val in row:
+                                if val is None:
+                                    processed_row.append(NULL_MARKER)
+                                else:
+                                    # Convert to string and remove newlines to prevent CSV corruption
+                                    s_val = str(val).replace('\n', ' ').replace('\r', ' ')
+                                    processed_row.append(s_val)
+                            writer.writerow(processed_row)
                         
                         output.seek(0)
                         
-                        # Prepare temporary table or Direct COPY
-                        # Using a multi-stage approach is safer, but here we can COPY directly 
-                        # because we have a primary key and updated_at logic for UPSERT.
-                        # Note: Postgres doesn't support 'ON CONFLICT' in COPY directly.
-                        # So we COPY to a temp table FIRST, then UPSERT from there.
-                        
+                        # Prepare temporary table
                         temp_table_name = f"temp_{TARGET_TABLE}_{os.getpid()}"
                         cursor.execute(f"CREATE TEMP TABLE {temp_table_name} (LIKE {TARGET_TABLE} INCLUDING ALL) ON COMMIT DROP")
                         
                         # Build column list for COPY
                         col_list_str = ', '.join([f'"{col}"' for col in columns])
                         
-                        cursor.copy_expert(f"COPY {temp_table_name} ({col_list_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL 'None')", output)
+                        # Use the defined NULL_MARKER in the COPY command
+                        copy_cmd = f"COPY {temp_table_name} ({col_list_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')"
+                        cursor.copy_expert(copy_cmd, output)
                         
                         # Perform UPSERT from Temp Table
                         update_cols = [col for col in columns if col not in ['ticket_id', 'brand_id']]
