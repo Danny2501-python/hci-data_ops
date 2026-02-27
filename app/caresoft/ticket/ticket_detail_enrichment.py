@@ -17,10 +17,19 @@ import psycopg2
 from psycopg2.extras import execute_values
 from loguru import logger
 import pyarrow as pa
-import pyarrow.parquet as pq
 import duckdb
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And, NotNull
+from pyiceberg.schema import Schema
+from pyiceberg.types import (
+    TimestampType,
+    StringType,
+    IntegerType,
+    LongType,
+    NestedField
+)
+from pyiceberg.partitioning import PartitionSpec, PartitionField
+from pyiceberg.transforms import IdentityTransform
 
 from common.brand_config import get_active_brands
 from common.utils import get_current_timestamp_naive
@@ -28,6 +37,7 @@ from common.caresoft_api import call_caresoft_api
 
 # Table names
 TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
+TICKET_DETAIL_ERROR_TABLE = 'caresoft.cs_ticket_source_error_api'
 TARGET_PG_TABLE = 'cs_ticket_source_api'
 
 class TicketDetailEnrichment:
@@ -59,6 +69,13 @@ class TicketDetailEnrichment:
             **catalog_config
         )
         
+        # Initialize Silver Catalog (for error tracking)
+        self.silver_catalog = load_catalog(
+            os.getenv('CATALOG_NAME_SILVER', 'silver'),
+            uri=os.getenv('ICEBERG_REST_URI_SILVER'),
+            **catalog_config
+        )
+        
         # PostgreSQL connection (CRITICAL: Ensure this is provided via env)
         self.pg_uri = os.getenv('POSTGRES_URI')
         
@@ -70,7 +87,33 @@ class TicketDetailEnrichment:
             logger.info(f"✅ Database target configured: ...@{masked_uri}")
 
         self.target_pg_table = TARGET_PG_TABLE
-        logger.info(f"Initialized TicketDetailEnrichment (Direct Postgres Mode) for {self.snapshot_date}")
+        logger.info(f"Initialized TicketDetailEnrichment (Hybrid: Postgres + Iceberg Errors) for {self.snapshot_date}")
+
+    def ensure_ticket_detail_error_table_exists(self):
+        """Create ticket error table in Iceberg if not exists"""
+        try:
+            return self.silver_catalog.load_table(TICKET_DETAIL_ERROR_TABLE)
+        except:
+            logger.info(f"Creating error table {TICKET_DETAIL_ERROR_TABLE} in Iceberg...")
+            schema = Schema(
+                NestedField(field_id=1, name="ticket_id", field_type=LongType(), required=False),
+                NestedField(field_id=2, name="brand_id", field_type=IntegerType(), required=False),
+                NestedField(field_id=3, name="error_message", field_type=StringType(), required=False),
+                NestedField(field_id=4, name="snapshot_date", field_type=StringType(), required=False),
+                NestedField(field_id=5, name="ingestion_timestamp", field_type=TimestampType(), required=False),
+            )
+            
+            partition_spec = PartitionSpec(
+                PartitionField(
+                    source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date"
+                )
+            )
+            
+            return self.silver_catalog.create_table(
+                identifier=TICKET_DETAIL_ERROR_TABLE,
+                schema=schema,
+                partition_spec=partition_spec
+            )
 
     def get_ticket_ids_to_enrich(self, brand_erp_id):
         """Scan Bronze Iceberg for tickets in today's snapshot"""
@@ -134,7 +177,10 @@ class TicketDetailEnrichment:
             logger.info(f"No tickets for brand {brand['erp_id']}")
             return
             
-        logger.info(f"Enriching {len(ticket_ids)} tickets directly to PostgreSQL...")
+        logger.info(f"Enriching {len(ticket_ids)} tickets (Direct PG + Iceberg Errors)...")
+        
+        # Ensure error table exists in Iceberg
+        error_table = self.ensure_ticket_detail_error_table_exists()
         
         try:
             pg_conn = psycopg2.connect(self.pg_uri)
@@ -146,7 +192,9 @@ class TicketDetailEnrichment:
         
         try:
             batch_records = []
+            batch_error_records = []
             total_success = 0
+            total_errors = 0
             BATCH_SIZE = 100
             
             columns = [
@@ -205,21 +253,45 @@ class TicketDetailEnrichment:
                     }
                     batch_records.append(record)
                 
+                else:
+                    error_record = {
+                        "ticket_id": ticket_id,
+                        "brand_id": brand["erp_id"],
+                        "error_message": str(error)[:1000],
+                        "snapshot_date": self.snapshot_date,
+                        "ingestion_timestamp": datetime.now(),
+                    }
+                    batch_error_records.append(error_record)
+                    total_errors += 1
+                
+                # Flush batches
                 if len(batch_records) >= BATCH_SIZE:
                     self._upsert_to_postgres(cursor, batch_records, columns)
                     total_success += len(batch_records)
                     pg_conn.commit()
                     batch_records = []
                     gc.collect()
+
+                if len(batch_error_records) >= BATCH_SIZE:
+                    df_err = pa.Table.from_pylist(batch_error_records)
+                    error_table.append(df_err)
+                    logger.info(f"⚠️ Flushed {len(batch_error_records)} error records to Iceberg")
+                    batch_error_records = []
                 
                 time.sleep(0.01)
                 
+            # Flush final remaining
             if batch_records:
                 self._upsert_to_postgres(cursor, batch_records, columns)
                 total_success += len(batch_records)
                 pg_conn.commit()
+
+            if batch_error_records:
+                df_err = pa.Table.from_pylist(batch_error_records)
+                error_table.append(df_err)
+                logger.info(f"⚠️ Flushed final {len(batch_error_records)} error records to Iceberg")
                 
-            logger.success(f"Brand {brand['erp_id']} direct enrichment complete: {total_success} tickets.")
+            logger.success(f"Brand {brand['erp_id']} enrichment complete: {total_success} success, {total_errors} errors.")
             
         except Exception as e:
             logger.error(f"Error for brand {brand['erp_id']}: {e}")
