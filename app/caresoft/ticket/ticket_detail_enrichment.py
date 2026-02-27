@@ -59,19 +59,29 @@ class TicketDetailEnrichment:
             **catalog_config
         )
         
-        # PostgreSQL connection
+        # PostgreSQL connection (CRITICAL: Ensure this is provided via env)
         self.pg_uri = os.getenv('POSTGRES_URI')
-        self.target_pg_table = TARGET_PG_TABLE
         
+        if not self.pg_uri:
+            logger.error("❌ POSTGRES_URI environment variable is missing or empty!")
+        else:
+            # Mask URI for safe logging
+            masked_uri = self.pg_uri.split('@')[-1] if '@' in self.pg_uri else 'hidden'
+            logger.info(f"✅ Database target configured: ...@{masked_uri}")
+
+        self.target_pg_table = TARGET_PG_TABLE
         logger.info(f"Initialized TicketDetailEnrichment (Direct Postgres Mode) for {self.snapshot_date}")
 
     def get_ticket_ids_to_enrich(self, brand_erp_id):
         """Scan Bronze Iceberg for tickets in today's snapshot"""
         logger.info(f"Scanning Bronze tickets for brand={brand_erp_id}, snapshot={self.snapshot_date}")
         
-        table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
+        try:
+            table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
+        except Exception as e:
+            logger.error(f"❌ Could not load Bronze table: {e}")
+            return []
         
-        # Use DuckDB for efficient deduplication if needed
         import tempfile
         temp_dir = tempfile.gettempdir()
         temp_parquet = os.path.join(temp_dir, f"enrich_ids_{brand_erp_id}_{os.getpid()}.parquet")
@@ -105,11 +115,20 @@ class TicketDetailEnrichment:
             con.close()
             
             return ticket_ids
+        except Exception as e:
+            logger.error(f"❌ Error scanning Bronze tickets: {e}")
+            return []
         finally:
-            if os.path.exists(temp_parquet): os.remove(temp_parquet)
+            if os.path.exists(temp_parquet): 
+                try: os.remove(temp_parquet)
+                except: pass
 
     def run(self, brand):
         """Execute enrichment and write directly to PostgreSQL"""
+        if not self.pg_uri:
+            logger.critical("❌ Cannot start enrichment: POSTGRES_URI is not set.")
+            return
+
         ticket_ids = self.get_ticket_ids_to_enrich(brand["erp_id"])
         if not ticket_ids:
             logger.info(f"No tickets for brand {brand['erp_id']}")
@@ -117,8 +136,13 @@ class TicketDetailEnrichment:
             
         logger.info(f"Enriching {len(ticket_ids)} tickets directly to PostgreSQL...")
         
-        pg_conn = psycopg2.connect(self.pg_uri)
-        cursor = pg_conn.cursor()
+        try:
+            pg_conn = psycopg2.connect(self.pg_uri)
+            pg_conn.autocommit = False
+            cursor = pg_conn.cursor()
+        except Exception as e:
+            logger.critical(f"❌ Failed to connect to PostgreSQL: {e}")
+            return
         
         try:
             batch_records = []
@@ -141,7 +165,11 @@ class TicketDetailEnrichment:
                 ticket_data, error = call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')
                 
                 if ticket_data:
-                    def safe_int(v): return int(v) if v is not None else None
+                    def safe_int(v):
+                        if v is None: return None
+                        try: return int(v)
+                        except: return None
+                        
                     def safe_ts(v):
                         try: return datetime.fromisoformat(v.replace('Z', '+00:00')) if isinstance(v, str) else v
                         except: return None
@@ -184,7 +212,7 @@ class TicketDetailEnrichment:
                     batch_records = []
                     gc.collect()
                 
-                time.sleep(0.01) # Small delay for API fairness
+                time.sleep(0.01)
                 
             if batch_records:
                 self._upsert_to_postgres(cursor, batch_records, columns)
@@ -196,7 +224,6 @@ class TicketDetailEnrichment:
         except Exception as e:
             logger.error(f"Error for brand {brand['erp_id']}: {e}")
             pg_conn.rollback()
-            raise
         finally:
             cursor.close()
             pg_conn.close()

@@ -210,6 +210,7 @@ task_ticket_enrichment = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
     },
     
     container_resources=resource_requirements_silver,
@@ -343,5 +344,5 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
 # ============================================================================
 
 # Main Ticket Pipeline:
-task_ticket_ingestion >> task_ticket_api_serving >> task_ticket_enrichment >> task_ticket_source_serving >> task_ticket_source_metadata >> task_ticket_source_metadata_serving
+task_ticket_ingestion >> task_ticket_api_serving >> task_ticket_enrichment >> task_ticket_source_metadata >> task_ticket_source_metadata_serving
 
