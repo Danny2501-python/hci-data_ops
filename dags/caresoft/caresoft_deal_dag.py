@@ -276,34 +276,6 @@ task_deal_detail_enrichment = KubernetesPodOperator(
 # TASK 4: GOLD → SERVING (Refresh PostgreSQL Serving Layer)
 # ============================================================================
 
-task_refresh_serving_layer = KubernetesPodOperator(
-    task_id='refresh_serving_layer',
-    name='caresoft-refresh-serving-layer',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/deal/deal_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
-    ],
-    
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    
-    env_vars={
-        **common_env_vars,
-        'POSTGRES_URI': dwh_product_uri,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-        'SERVING_TABLE_NAME': 'cs_deal_detail_api_v1',
-    },
-    
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
 task_refresh_serving_layer_v2 = KubernetesPodOperator(
     task_id='refresh_serving_layer_v2',
     name='caresoft-refresh-serving-layer-v2',
@@ -407,8 +379,8 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
 # 3. Silver → Gold (Enrichment)
 # 4. Gold → Comments (Flatten JSON)
 # 5. Comments → Serving (PostgreSQL)
-# 6. Gold → Serving (V1 & V2)
+# 6. Gold → Serving (V2)
 
 task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment
 task_deal_detail_enrichment >> task_deal_comments_transformation >> task_deal_comments_serving_layer
-task_deal_detail_enrichment >> [task_refresh_serving_layer, task_refresh_serving_layer_v2]
+task_deal_detail_enrichment >> task_refresh_serving_layer_v2
