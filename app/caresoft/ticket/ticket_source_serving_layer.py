@@ -18,8 +18,7 @@ import os
 import sys
 from datetime import datetime, date, timedelta
 import pyarrow as pa
-import pyarrow.parquet as pq
-import duckdb
+import gc
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
@@ -77,23 +76,37 @@ class TicketSourceServingLayer:
         self.pg_conn.autocommit = False
         logger.success("✅ Connected to PostgreSQL")
     
-    def get_today_ticket_details(self):
+    def stream_and_upsert(self):
         """
-        Read TODAY's snapshot from Silver (already unique)
-        
-        Logic:
-        - Scan ONLY today's snapshot_date
-        - Write to Parquet (avoid OOM)
-        - Read from Parquet using DuckDB
-        - Return rows (Silver is already unique)
+        Stream TODAY's snapshot from Silver and upsert into PostgreSQL.
+        Efficiently handles large datasets by processing in batches.
         """
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
         table = self.silver_catalog.load_table(SOURCE_TABLE)
         
-        # Temp file for Parquet
-        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"ticket_source_serving_{os.getpid()}.parquet")
+        # Use columns from schema to ensure consistent ordering
+        columns = [field.name for field in table.schema().fields]
+        
+        # Ensure target table exists in PostgreSQL
+        self.ensure_serving_table_exists(columns)
+        
+        # Prepare PostgreSQL UPSERT statement
+        column_names = ', '.join([f'"{col}"' for col in columns])
+        update_cols = [col for col in columns if col not in ['ticket_id', 'brand_id']]
+        update_set = ', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+        
+        upsert_sql = f"""
+        INSERT INTO {TARGET_TABLE} ({column_names})
+        VALUES %s
+        ON CONFLICT ("ticket_id", "brand_id")
+        DO UPDATE SET
+            {update_set}
+        WHERE {TARGET_TABLE}."updated_at" < EXCLUDED."updated_at"
+            OR {TARGET_TABLE}."updated_at" IS NULL
+        """
+        
+        cursor = self.pg_conn.cursor()
+        total_rows = 0
         
         try:
             logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
@@ -103,55 +116,48 @@ class TicketSourceServingLayer:
                 row_filter=EqualTo("snapshot_date", self.snapshot_date),
             )
             
-            # Collect all batches
-            batches = []
+            # Iterate through batches from Iceberg
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
-                    batches.append(batch)
+                    # OPTIMIZATION: Sub-chunk Large Arrow Batches
+                    # Even a single Arrow batch can be large (64k rows).
+                    # We process in smaller sub-batches (e.g., 2000 rows) to keep Peak RAM low,
+                    # especially since each row contains large JSON strings.
+                    SUB_BATCH_SIZE = 2000
+                    
+                    for start in range(0, len(batch), SUB_BATCH_SIZE):
+                        sub_batch = batch.slice(start, SUB_BATCH_SIZE)
+                        
+                        # OPTIMIZATION: Avoid intermediate Dictionary creation.
+                        # Using zip(*[column.to_pylist()]) is significantly more memory efficient
+                        # than batch.to_pylist() for wide tables with large strings.
+                        data_columns = [sub_batch.column(col).to_pylist() for col in columns]
+                        rows_iterator = zip(*data_columns)
+                        
+                        # Upsert sub-batch into PostgreSQL
+                        # execute_values will consume the zip iterator efficiently
+                        execute_values(cursor, upsert_sql, rows_iterator, page_size=1000)
+                        
+                        # Force instant cleanup of the heavy sub-batch strings
+                        del data_columns
+                        del rows_iterator
+                        gc.collect()
+                    
+                    total_rows += len(batch)
+                    logger.info(f"Upserted Arrow batch of {len(batch)} rows (Total so far: {total_rows})")
             
-            if not batches:
-                logger.info(f"No ticket details found in today's snapshot")
-                return [], []
+            # Commit all changes
+            self.pg_conn.commit()
+            logger.success(f"✅ Successfully completed upsert of {total_rows} tickets to {TARGET_TABLE}")
+            return total_rows
             
-            # Combine and write to Parquet
-            combined = pa.Table.from_batches(batches)
-            pq.write_table(combined, temp_parquet)
-            
-            logger.info(f"Written {len(combined)} rows to Parquet, loading...")
-            
-            # DuckDB (No Deduplication needed - Silver is unique)
-            con = duckdb.connect(config={
-                'memory_limit': '2GB',
-                'preserve_insertion_order': 'false',
-                'temp_directory': temp_dir,
-                'threads': '1'
-            })
-            
-            query = f"""
-                SELECT * 
-                FROM read_parquet('{temp_parquet}')
-            """
-            
-            result = con.execute(query).fetch_arrow_table()
-            con.close()
-            
-            logger.success(f"✅ Loaded {len(result)} tickets from Silver")
-            
-            # Convert to columns and rows
-            columns = result.schema.names
-            rows = []
-            for i in range(len(result)):
-                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-                rows.append(row)
-            
-            return columns, rows
-            
+        except Exception as e:
+            self.pg_conn.rollback()
+            logger.error(f"❌ Error during streaming upsert: {e}")
+            raise
         finally:
-            if os.path.exists(temp_parquet):
-                try:
-                    os.remove(temp_parquet)
-                except:
-                    pass
+            cursor.close()
+
     
     def ensure_serving_table_exists(self, columns):
         """Create serving table if not exists with proper schema and constraints"""
@@ -204,65 +210,10 @@ class TicketSourceServingLayer:
         finally:
             cursor.close()
     
-    def upsert_serving_table(self, columns, rows):
-        """
-        UPSERT data into serving table
-        
-        Strategy:
-        - INSERT new tickets
-        - UPDATE existing tickets if updated_at is newer
-        
-        Args:
-            columns: List of column names
-            rows: List of tuples containing data
-        """
-        if not rows:
-            logger.warning("No data to upsert")
-            return
-        
-        # Ensure table exists
-        self.ensure_serving_table_exists(columns)
-        
-        cursor = self.pg_conn.cursor()
-        
-        try:
-            logger.info(f"Upserting {len(rows)} rows into {TARGET_TABLE}...")
-            
-            # Build UPSERT statement (PostgreSQL INSERT ... ON CONFLICT)
-            column_names = ', '.join([f'"{col}"' for col in columns])
-            
-            # Update all columns except PK on conflict
-            update_cols = [col for col in columns if col not in ['ticket_id', 'brand_id']]
-            update_set = ', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
-            
-            upsert_sql = f"""
-            INSERT INTO {TARGET_TABLE} ({column_names})
-            VALUES %s
-            ON CONFLICT ("ticket_id", "brand_id")
-            DO UPDATE SET
-                {update_set}
-            WHERE {TARGET_TABLE}."updated_at" < EXCLUDED."updated_at"
-                OR {TARGET_TABLE}."updated_at" IS NULL
-            """
-            
-            # Execute batch upsert using execute_values (faster than executemany)
-            execute_values(cursor, upsert_sql, rows, page_size=1000)
-            
-            # Commit transaction
-            self.pg_conn.commit()
-            logger.success(f"✅ Upserted {len(rows)} rows into {TARGET_TABLE}")
-            
-        except Exception as e:
-            self.pg_conn.rollback()
-            logger.error(f"❌ Error upserting data: {e}")
-            raise
-        finally:
-            cursor.close()
-    
     def run(self):
-        """Execute the incremental serving layer refresh"""
+        """Execute the incremental serving layer refresh using streaming"""
         logger.info("=" * 80)
-        logger.info(f"Starting Ticket Source API Serving Layer Refresh (Incremental)")
+        logger.info(f"Starting Ticket Source API Serving Layer Refresh (Incremental Streaming)")
         logger.info(f"Snapshot Date: {self.snapshot_date}")
         logger.info("=" * 80)
         
@@ -271,11 +222,8 @@ class TicketSourceServingLayer:
             self.connect_iceberg()
             self.connect_postgres()
             
-            # Get today's ticket details from Silver (already unique)
-            columns, rows = self.get_today_ticket_details()
-            
-            # Upsert into PostgreSQL serving table
-            self.upsert_serving_table(columns, rows)
+            # Stream from Silver Iceberg and upsert to PostgreSQL
+            self.stream_and_upsert()
             
             logger.success("=" * 80)
             logger.success("Ticket Source API Serving Layer Refresh Completed Successfully")
@@ -288,6 +236,7 @@ class TicketSourceServingLayer:
             if self.pg_conn:
                 self.pg_conn.close()
                 logger.info("Closed PostgreSQL connection")
+
 
 
 def main():
