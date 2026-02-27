@@ -68,6 +68,26 @@ class DirectPostgresToPostgres:
                          host=config['host'], port=int(config.get('port', 5432)), database=config['dbname'])
         return create_engine(url)
 
+    def check_source_table_exists(self, engine, source_table: str) -> bool:
+        """Helper to verify if the source table exists in the given engine"""
+        st_parts = source_table.split('.')
+        table_name = st_parts[-1]
+        schema_name = st_parts[0] if len(st_parts) > 1 else 'public'
+        
+        query = text(f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE  table_schema = '{schema_name}'
+                AND    table_name   = '{table_name}'
+            );
+        """)
+        try:
+            with engine.connect() as conn:
+                return conn.execute(query).scalar()
+        except Exception as e:
+            logger.warning(f"Error checking table existence: {e}")
+            return False
+
     def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, rename_map: Dict[str, str] = {}):
         """Fetch schema from source and create exactly the same table in target if not exists"""
         logger.info(f"Ensuring target table {target_table} exists based on source {source_table}")
@@ -143,56 +163,78 @@ class DirectPostgresToPostgres:
             target_cols = [r[0] for r in cur.fetchall()]
             cols_str = ", ".join([f'"{c}"' for c in target_cols])
 
-            if config.get('truncate'):
-                logger.info(f"Truncating {target_table}")
-                cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
-            
             cur.execute(f"CREATE UNLOGGED TABLE {staging_table} (LIKE {target_table} INCLUDING DEFAULTS)")
             self.target_conn.commit()
 
         # 2. Streaming Loop
-        BATCH_SIZE, total_rows = 20000, 0
-        temp_dir = os.getenv('TEMP_DIR', '/tmp')
+        BATCH_SIZE, total_rows = 10000, 0
+        temp_dir = os.getenv('TEMP_DIR', tempfile.gettempdir())
         
         try:
             with source_engine.connect().execution_options(stream_results=True) as conn:
                 result = conn.execute(query)
                 source_cols = list(result.keys())
-                mapping = {}
+                
+                # Pre-calculate mapping to optimize hot loop
+                mapping_indices = []
                 for col in target_cols:
-                    if col in source_cols: mapping[col] = source_cols.index(col)
+                    if col in source_cols:
+                        mapping_indices.append((col, source_cols.index(col)))
                     else:
+                        found_in_rename = False
                         for src, tgt in rename_map.items():
                             if tgt == col and src in source_cols:
-                                mapping[col] = source_cols.index(src)
+                                mapping_indices.append((col, source_cols.index(src)))
+                                found_in_rename = True
                                 break
+                        if not found_in_rename:
+                            mapping_indices.append((col, None))
                 
                 while True:
                     rows = result.fetchmany(BATCH_SIZE)
                     if not rows: break
                     
+                    row_count = len(rows)
                     batch_data = {col: [] for col in target_cols}
+                    
+                    # 2.1 Transformation Loop
                     for r in rows:
-                        for col in target_cols:
-                            if col in mapping:
-                                val = r[mapping[col]]
-                                if isinstance(val, (datetime, date)): 
-                                    if isinstance(val, datetime): val = val.replace(tzinfo=None)
-                                    val = val.isoformat()
-                                elif isinstance(val, Decimal): val = str(val)
-                                elif isinstance(val, str): val = val.replace('\x00', '')
-                                else: val = str(val) if val is not None else None
-                                batch_data[col].append(val)
-                            elif col == 'snapshot_date': batch_data[col].append(str(self.snapshot_date))
-                            elif col == 'ingestion_timestamp': batch_data[col].append(str(get_current_timestamp_naive()))
-                            elif col == 'source_server': batch_data[col].append(str(source_name or config['server']))
-                            elif col in ('brand_etl', 'brand_etl_new'):
-                                # Metadata: if not in source, use brand_etl. If in source, use mapping.
-                                if col not in mapping: batch_data[col].append(str(brand_etl) if brand_etl is not None else None)
-                                else: batch_data[col].append(str(r[mapping[col]]) if r[mapping[col]] is not None else None)
-                            else: batch_data[col].append(None)
+                        for col, idx in mapping_indices:
+                            if idx is not None:
+                                val = r[idx]
+                                if val is None:
+                                    batch_data[col].append(None)
+                                elif isinstance(val, (datetime, date)):
+                                    if isinstance(val, datetime):
+                                        val = val.replace(tzinfo=None)
+                                    batch_data[col].append(val.isoformat())
+                                elif isinstance(val, Decimal):
+                                    batch_data[col].append(str(val))
+                                elif isinstance(val, str):
+                                    batch_data[col].append(val.replace('\x00', ''))
+                                else:
+                                    batch_data[col].append(str(val))
+                    
+                    # Clean up rows immediately to free RAM before Arrow conversion
+                    del rows
+                    
+                    # 2.2 Fill constant metadata columns (much faster and RAM efficient)
+                    if 'snapshot_date' in batch_data: batch_data['snapshot_date'] = [str(self.snapshot_date)] * row_count
+                    if 'ingestion_timestamp' in batch_data: batch_data['ingestion_timestamp'] = [str(get_current_timestamp_naive())] * row_count
+                    if 'source_server' in batch_data: batch_data['source_server'] = [str(source_name or config['server'])] * row_count
+                    
+                    b_etl_val = str(brand_etl) if brand_etl is not None else None
+                    if 'brand_etl' in batch_data and batch_data['brand_etl'] == []:
+                        batch_data['brand_etl'] = [b_etl_val] * row_count
+                    if 'brand_etl_new' in batch_data and batch_data['brand_etl_new'] == []:
+                        batch_data['brand_etl_new'] = [b_etl_val] * row_count
+
+                    # Ensure all columns have data (even for unexpected gaps)
+                    for col in target_cols:
+                        if not batch_data[col]: batch_data[col] = [None] * row_count
                     
                     pa_table = pa.Table.from_pydict(batch_data, schema=pa.schema([(c, pa.string()) for c in target_cols]))
+                    del batch_data
                     with tempfile.TemporaryFile(mode='wb+', dir=temp_dir) as tmp:
                         pv.write_csv(pa_table, tmp, write_options=pv.WriteOptions(include_header=False))
                         tmp.seek(0)
@@ -220,18 +262,24 @@ class DirectPostgresToPostgres:
         target_table, source_table = config['table_name'], config['table_name_source']
         rename_map = json.loads(config.get('rename_column') or '{}')
         
-        if drop_table:
-            logger.warning(f"Dropping target table {target_table} (CASCADE) as requested.")
-            with self.target_conn.cursor() as cur:
+        with self.target_conn.cursor() as cur:
+            if drop_table:
+                logger.warning(f"Dropping target table {target_table} (CASCADE) as requested.")
                 cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
                 self.target_conn.commit()
-        self.ensure_target_table_exists_from_source(engine, source_table, target_table, rename_map=rename_map)
+            
+            # 1. Ensure table exists with correct schema
+            self.ensure_target_table_exists_from_source(engine, source_table, target_table, rename_map=rename_map)
+
+            # 2. Handle Truncate (Wipe existing data for Full Reload)
+            if config.get('truncate'):
+                logger.info(f"Truncating target table {target_table} as requested.")
+                cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
+                self.target_conn.commit()
 
     def process_erp(self, config: Dict, drop_table: bool, load_type: str):
         target_table = config['table_name']
         source_table = config['table_name_source']
-        pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
-        rename_map = json.loads(config.get('rename_column') or '{}')
         
         total = 0
         initialized = False
@@ -242,6 +290,11 @@ class DirectPostgresToPostgres:
             if uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
             engine = create_engine(uri)
             try:
+                # Check if table exists in this source before trying to define schema or stream data
+                if not self.check_source_table_exists(engine, source_table):
+                    logger.warning(f"Source table {source_table} not found in {name}. Skipping.")
+                    continue
+
                 if not initialized:
                     self.prepare_target(engine, config, drop_table)
                     initialized = True
@@ -249,6 +302,10 @@ class DirectPostgresToPostgres:
                 total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
             finally:
                 engine.dispose()
+        
+        if not initialized:
+            logger.error(f"Table {source_table} was not found in ANY ERP source database.")
+            
         return total
 
     def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None, drop_table: bool = False, load_type: str = 'incremental'):
