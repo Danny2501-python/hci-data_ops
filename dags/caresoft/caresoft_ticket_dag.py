@@ -251,38 +251,7 @@ task_ticket_api_serving = KubernetesPodOperator(
 )
 
 # ============================================================================
-# TASK 4: SERVING - Ticket Source API to PostgreSQL DWH
-# ============================================================================
-
-task_ticket_source_serving = KubernetesPodOperator(
-    task_id='ticket_source_serving_layer',
-    name='caresoft-ticket-source-serving',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/ticket/ticket_source_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
-    ],
-    
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    
-    env_vars={
-        **common_env_vars,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-        'POSTGRES_URI': dwh_product_uri,
-    },
-    
-    container_resources=resource_requirements_serving,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# ============================================================================
-# TASK 5: BRONZE - Ticket Source Metadata (All Brands)
+# TASK 4: BRONZE - Ticket Source Metadata (All Brands)
 # ============================================================================
 
 task_ticket_source_metadata = KubernetesPodOperator(
@@ -309,7 +278,7 @@ task_ticket_source_metadata = KubernetesPodOperator(
 )
 
 # ============================================================================
-# TASK 6: SERVING - Ticket Source Metadata to PostgreSQL DWH
+# TASK 5: SERVING - Ticket Source Metadata to PostgreSQL DWH
 # ============================================================================
 
 task_ticket_source_metadata_serving = KubernetesPodOperator(
