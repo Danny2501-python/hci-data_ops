@@ -99,8 +99,8 @@ common_env_vars = {
 
 # Resources
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '512Mi'},
-    limits={'cpu': '1000m', 'memory': '1Gi'}
+    requests={'cpu': '1000m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
 # NFS

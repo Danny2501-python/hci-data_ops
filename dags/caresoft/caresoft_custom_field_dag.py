@@ -104,13 +104,13 @@ common_env_vars = {
 
 # Resource requirements
 resource_requirements_ingestion = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '512Mi'},
-    limits={'cpu': '1000m', 'memory': '1Gi'}
+    requests={'cpu': '1000m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
 resource_requirements_serving = k8s.V1ResourceRequirements(
-    requests={'cpu': '500m', 'memory': '512Mi'},
-    limits={'cpu': '1000m', 'memory': '1Gi'}
+    requests={'cpu': '1000m', 'memory': '2Gi'},
+    limits={'cpu': '2000m', 'memory': '4Gi'}
 )
 
 # NFS Volume (for scripts)
