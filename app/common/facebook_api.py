@@ -279,7 +279,8 @@ def get_active_facebook_accounts(db) -> List[Dict]:
     """
     query = """
         SELECT id, name, ad_account_id, app_id, app_secret, 
-               access_token, access_token_expires, current_brand_id
+               access_token, access_token_expires, current_brand_id,
+               script_type_to_run
         FROM core_facebook_ad_account
         WHERE is_active = TRUE
     """
@@ -296,6 +297,7 @@ def get_active_facebook_accounts(db) -> List[Dict]:
             'access_token': row[5],
             'access_token_expires': row[6],
             'current_brand_id': row[7],
+            'script_type_to_run': row[8],
         })
     
     return accounts

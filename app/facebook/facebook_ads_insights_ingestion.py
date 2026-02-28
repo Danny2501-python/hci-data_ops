@@ -53,6 +53,12 @@ class FacebookAdsInsightsIngestion:
         self.account_id = None
         self.rate_limit_tracker = FacebookRateLimitTracker()
         self.insights_data = []  # Collect all insights
+        self.processed_ids = {
+            'campaigns': set(),
+            'adsets': set(),
+            'ads': set(),
+            'creatives': set()
+        }
     
     def fetch_insights(self, account: Dict):
         """Fetch insights from Facebook API and collect to list"""
@@ -480,42 +486,143 @@ class FacebookAdsInsightsIngestion:
             if os.path.exists(csv_file.name):
                 os.unlink(csv_file.name)
     
+    def fetch_insights_by_campaign(self, account: Dict):
+        """Fetch insights for each campaign in the account (to avoid rate limits)"""
+        ad_account, api = init_facebook_api(account, FB_API_VERSION)
+        if not ad_account:
+            return
+        
+        now = get_current_timestamp_naive()
+        this_day = now - timedelta(days=self.days_for_ago)
+        this_day_str = this_day.strftime("%Y-%m-%d")
+        brand_id = account.get('current_brand_id')
+        
+        # Reset processed IDs for this account's persistent run
+        self.processed_ids = {'campaigns': set(), 'adsets': set(), 'ads': set(), 'creatives': set()}
+        
+        logger.info(f"Fetching campaigns for account: {account['name']}")
+        try:
+            campaigns = ad_account.get_campaigns(
+                fields=[Campaign.Field.id, Campaign.Field.name],
+                params={'effective_status': ['ACTIVE', 'PAUSED', 'WITH_ISSUES']}
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch campaigns for account {account['name']}: {e}")
+            return
+
+        for campaign in campaigns:
+            campaign_id = campaign['id']
+            batch_campaign_ids = {campaign_id}
+            batch_adset_ids = set()
+            batch_ad_ids = set()
+            
+            logger.info(f"Campaign: {campaign.get('name')} ({campaign_id})")
+            
+            params = {
+                'time_range': {"since": this_day_str, "until": this_day_str},
+                'level': 'ad',
+                'breakdowns': ['region']
+            }
+            fields = [AdsInsights.Field.campaign_id, AdsInsights.Field.adset_id, AdsInsights.Field.ad_id, AdsInsights.Field.spend, AdsInsights.Field.date_start, AdsInsights.Field.account_currency]
+            
+            try:
+                campaign_obj = Campaign(campaign_id, api=api)
+                insights = campaign_obj.get_insights(params=params, fields=fields)
+                
+                for insight in insights:
+                    data = insight._json
+                    aid = data.get('ad_id')
+                    sid = data.get('adset_id')
+                    if sid: batch_adset_ids.add(sid)
+                    if aid: batch_ad_ids.add(aid)
+                    
+                    self.insights_data.append({
+                        'date': data.get('date_start'),
+                        'fb_account_currency': data.get('account_currency'),
+                        'fb_ad_ad_id': aid,
+                        'spend': float(data.get('spend', 0)),
+                        'region': data.get('region', 'unknown'),
+                        'brand_id': brand_id,
+                        'etl_updated': get_current_timestamp_naive()
+                    })
+                    if self.rate_limit_tracker.should_check_limit(insights.headers()):
+                        self.rate_limit_tracker.check_limit(insights.headers())
+                
+                if self.insights_data:
+                    self.process_dependencies_optimized(api, batch_campaign_ids, batch_adset_ids, batch_ad_ids, brand_id, self.processed_ids)
+                    self.bulk_upsert_insights()
+                    self.insights_data = [] # Clear memory after each campaign
+                
+            except Exception as e:
+                logger.error(f"Error for campaign {campaign_id}: {e}")
+                if self.insights_data:
+                    self.process_dependencies_optimized(api, batch_campaign_ids, batch_adset_ids, batch_ad_ids, brand_id, self.processed_ids)
+                    self.bulk_upsert_insights()
+                    self.insights_data = []
+                continue
+
+    def process_dependencies_optimized(self, api, campaign_ids, adset_ids, ad_ids, brand_id, processed_ids):
+        """Helper to fetch and save dependencies with filtering"""
+        new_cids = campaign_ids - processed_ids['campaigns']
+        if new_cids:
+            data = self.fetch_campaigns_data(api, new_cids, brand_id)
+            self.bulk_insert_data('core_facebook_ad_campaign', 'fb_ad_campaign_id', data, ['name', 'fb_ad_campaign_id', 'created_time', 'updated_time', 'start_time', 'stop_time', 'status', 'fb_ad_account_id', 'etl_updated', 'company_id'])
+            processed_ids['campaigns'].update(new_cids)
+
+        new_sids = adset_ids - processed_ids['adsets']
+        if new_sids:
+            data = self.fetch_adsets_data(api, new_sids, brand_id)
+            self.bulk_insert_data('core_facebook_ad_set', 'fb_ad_set_id', data, ['name', 'fb_ad_set_id', 'created_time', 'updated_time', 'start_time', 'status', 'fb_ad_campaign_id', 'etl_updated'])
+            processed_ids['adsets'].update(new_sids)
+
+        new_aids = ad_ids - processed_ids['ads']
+        if new_aids:
+            found_creative_ids = set()
+            data = self.fetch_ads_data(api, new_aids, found_creative_ids, brand_id)
+            self.bulk_insert_data('core_facebook_ad_ad', 'fb_ad_ad_id', data, ['name', 'fb_ad_ad_id', 'fb_ad_set_id', 'fb_creative_id', 'created_time', 'updated_time', 'status', 'brand_id', 'etl_updated'])
+            processed_ids['ads'].update(new_aids)
+            
+            new_crids = found_creative_ids - processed_ids['creatives']
+            if new_crids:
+                data = self.fetch_creatives_data(api, new_crids, brand_id)
+                self.bulk_insert_data('core_facebook_ad_creative', 'fb_ad_creative_id', data, ['name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_effective_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated'])
+                processed_ids['creatives'].update(new_crids)
+
     def run(self):
-        """Execute Facebook Ads insights ingestion"""
+        """Execute Ingestion with dynamic strategy based on account settings"""
         logger.info("="*80)
-        logger.info(f"Starting Facebook Ads Insights Ingestion (Bulk COPY)")
-        logger.info(f"Days for ago: {self.days_for_ago}")
+        logger.info(f"Starting Facebook Ads Insights Ingestion | Days: {self.days_for_ago}")
         logger.info("="*80)
         
         try:
             accounts = get_active_facebook_accounts(self.db)
-            logger.info(f"Found {len(accounts)} total active Facebook Ad accounts")
-            
             if self.account_id:
-                logger.info(f"Filtering for Account ID: {self.account_id}")
                 accounts = [a for a in accounts if str(a.get('ad_account_id')) == str(self.account_id)]
-                if not accounts:
-                    logger.warning(f"⚠️ No account found with ID {self.account_id}")
-                    return
 
-            logger.info(f"Processing {len(accounts)} accounts")
-            
             for account in accounts:
                 try:
                     time.sleep(1)
-                    logger.info(f"Fetching account: {account['name']} ({account['ad_account_id']})")
-                    self.fetch_insights(account)
+                    strategy = account.get('script_type_to_run', 'account')
+                    logger.info(f">>> Processing: {account['name']} | Strategy: {strategy}")
+                    
+                    if strategy == 'campaign':
+                        self.fetch_insights_by_campaign(account)
+                    else:
+                        # Clear memory for account-level processing
+                        self.insights_data = []
+                        self.fetch_insights(account)
+                        # Save at the end of account-level fetch
+                        self.bulk_upsert_insights()
+                        self.insights_data = []
+                        
                 except Exception as e:
-                    logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
+                    logger.error(f"❌ Failed account {account['name']}: {e}")
+                    self.insights_data = []
                     continue
-                
-                # Save insights immediately after each account
-                self.bulk_upsert_insights()
-                self.insights_data = [] # Clear memory for next account
+                    
             logger.success("✅ Facebook Ads insights ingestion completed successfully")
-        
         except Exception as e:
-            logger.error(f"❌ Facebook Ads insights ingestion failed: {e}")
+            logger.error(f"❌ Ingestion failed: {e}")
             raise
 
 
