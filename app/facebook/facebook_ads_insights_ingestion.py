@@ -549,6 +549,7 @@ class FacebookAdsInsightsIngestion:
                         self.rate_limit_tracker.check_limit(insights.headers())
                 
                 if self.insights_data:
+                    logger.info(f"Fetched {len(self.insights_data)} insights for campaign {campaign_id}")
                     self.process_dependencies_optimized(api, batch_campaign_ids, batch_adset_ids, batch_ad_ids, brand_id, self.processed_ids)
                     self.bulk_upsert_insights()
                     self.insights_data = [] # Clear memory after each campaign
