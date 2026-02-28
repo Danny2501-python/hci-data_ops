@@ -43,7 +43,7 @@ local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 dag = DAG(
     'facebook_ads_base_entities_etl',
     default_args=default_args,
-    description='Facebook Ads Base Entities: Campaigns → Ad Sets → Creatives (Sequential)',
+    description='Facebook Ads Base Entities: Campaigns → Ad Sets → Creatives → Ads (Sequential)',
     schedule_interval=None,  # Triggered by Master DAG or manually (was: '0 3 * * *')
     start_date=datetime(2026, 2, 5, tzinfo=local_tz),
     catchup=False,
@@ -166,11 +166,32 @@ facebook_ads_creatives = KubernetesPodOperator(
     dag=dag,
 )
 
+# Task 4: Ads (with dependency creation)
+facebook_ads_ads = KubernetesPodOperator(
+    task_id='facebook_ads_ads',
+    name='facebook-ads-ads',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/facebook/facebook_ads_ads_ingestion.py',
+        '{{ params.date_preset }}',
+    ],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    env_vars=common_env_vars,
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
 # Run tasks SEQUENTIALLY to avoid hitting Facebook API rate limits
-# All 3 tasks use the same Facebook Ad Account and share the same rate limit quota
+# All 4 tasks use the same Facebook Ad Account and share the same rate limit quota
 # Running in parallel causes rate limit errors (200 calls/hour per account)
-facebook_ads_campaigns >> facebook_ads_adsets >> facebook_ads_creatives
+facebook_ads_campaigns >> facebook_ads_adsets >> facebook_ads_creatives >> facebook_ads_ads
