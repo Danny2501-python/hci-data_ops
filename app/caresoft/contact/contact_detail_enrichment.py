@@ -191,11 +191,12 @@ class ContactDetailEnrichment:
 
         contact_ids = self.get_contact_ids_to_enrich(brand["erp_id"])
         if not contact_ids:
-            logger.warning(f"No contacts to enrich for brand {brand['name']}")
+            logger.warning(f"No contacts to enrich for brand {brand.get('name') or brand.get('erp_id')}")
             return
             
-        logger.info(f"Enriching {len(contact_ids)} contacts directly to PostgreSQL for brand {brand['name']}...")
+        logger.info(f"Enriching {len(contact_ids)} contacts directly to PostgreSQL for brand {brand.get('name') or brand.get('erp_id')}...")
         error_table = self.ensure_contact_detail_error_table_exists()
+        error_pa_schema = schema_to_pyarrow(error_table.schema())
         
         # Delete old error records for this partition
         try:
@@ -273,7 +274,7 @@ class ContactDetailEnrichment:
                     del contact_data
                 else:
                     batch_error_records.append({
-                        "id": contact_id, 
+                        "id": int(contact_id), 
                         "brand_id": int(brand["erp_id"]), 
                         "trangthai": 1,
                         "snapshot_date": self.snapshot_date, 
@@ -290,12 +291,12 @@ class ContactDetailEnrichment:
                     gc.collect()
 
                 if len(batch_error_records) >= MICRO_BATCH_SIZE:
-                    error_table.append(pa.Table.from_pylist(batch_error_records))
+                    error_table.append(pa.Table.from_pylist(batch_error_records, schema=error_pa_schema))
                     batch_error_records = []
                     gc.collect()
                 
                 if (i+1) % 50 == 0:
-                    logger.info(f"Progress: {i+1}/{len(contact_ids)} contacts processed for {brand['name']}")
+                    logger.info(f"Progress: {i+1}/{len(contact_ids)} contacts processed for {brand.get('name') or brand.get('erp_id')}")
                 
                 # Rate limit protection
                 time.sleep(0.01)
@@ -307,9 +308,9 @@ class ContactDetailEnrichment:
                 total_success += len(batch_records)
             
             if batch_error_records:
-                error_table.append(pa.Table.from_pylist(batch_error_records))
+                error_table.append(pa.Table.from_pylist(batch_error_records, schema=error_pa_schema))
                 
-            logger.success(f"Enrichment complete for {brand['name']}. Success: {total_success}, Errors: {total_errors}")
+            logger.success(f"Enrichment complete for {brand.get('name') or brand.get('erp_id')}. Success: {total_success}, Errors: {total_errors}")
             
         except Exception as e:
             logger.error(f"Failed Run for brand {brand['erp_id']}: {e}")
