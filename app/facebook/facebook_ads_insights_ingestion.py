@@ -93,29 +93,38 @@ class FacebookAdsInsightsIngestion:
         count = 0
         brand_id = account.get('current_brand_id')
         
-        # Dependency Sets
-        campaign_ids = set()
-        adset_ids = set()
-        ad_ids = set()
+        # Dependency Sets for Current Batch
+        batch_campaign_ids = set()
+        batch_adset_ids = set()
+        batch_ad_ids = set()
+        
+        # Persistent Sets for Cross-Batch Filtering (across the same account)
+        processed_ids = {
+            'campaigns': set(),
+            'adsets': set(),
+            'ads': set(),
+            'creatives': set()
+        }
         
         try:
             for insight in insights:
                 try:
                     data = insight._json
                     
-                    # Collect Dependencies
-                    if data.get('campaign_id'):
-                        campaign_ids.add(data.get('campaign_id'))
-                    if data.get('adset_id'):
-                        adset_ids.add(data.get('adset_id'))
-                    if data.get('ad_id'):
-                        ad_ids.add(data.get('ad_id'))
+                    # Collect IDs for the current batch
+                    cid = data.get('campaign_id')
+                    sid = data.get('adset_id')
+                    aid = data.get('ad_id')
+                    
+                    if cid: batch_campaign_ids.add(cid)
+                    if sid: batch_adset_ids.add(sid)
+                    if aid: batch_ad_ids.add(aid)
                     
                     # Collect insight data
                     self.insights_data.append({
                         'date': data.get('date_start'),
                         'fb_account_currency': data.get('account_currency'),
-                        'fb_ad_ad_id': data.get('ad_id'),
+                        'fb_ad_ad_id': aid,
                         'spend': float(data.get('spend', 0)),
                         'region': data.get('region', 'unknown'),
                         'brand_id': brand_id,
@@ -123,6 +132,22 @@ class FacebookAdsInsightsIngestion:
                     })
                     count += 1
                     
+                    # Interim Batch Save (every 5000 insights) 
+                    if count > 0 and count % 5000 == 0:
+                        logger.info(f"⏳ Interim save for {account['name']}: {count} insights collected...")
+                        
+                        self.process_dependencies_optimized(
+                            api, batch_campaign_ids, batch_adset_ids, batch_ad_ids, brand_id, processed_ids
+                        )
+                        
+                        # Clear batch sets for next chunk
+                        batch_campaign_ids.clear()
+                        batch_adset_ids.clear()
+                        batch_ad_ids.clear()
+                        
+                        self.bulk_upsert_insights()
+                        self.insights_data = []
+
                 except Exception as e:
                     logger.error(f"Error processing insight: {e}")
                     continue
@@ -130,35 +155,80 @@ class FacebookAdsInsightsIngestion:
                 try:
                     current_headers = insights.headers()
                     if self.rate_limit_tracker.should_check_limit(current_headers):
-                        logger.debug(f"Headers changed, checking rate limit (processed {count} insights so far)")
+                        logger.debug(f"Headers changed (processed {count})")
                         self.rate_limit_tracker.check_limit(current_headers)
-                        
                         if self.rate_limit_tracker.time_await_limit >= 5:
-                            logger.warning(f"🛑 Stopping account {account['name']} due to 5x rate limit hits.")
+                            logger.warning(f"🛑 Stopping account {account['name']} (5x limit hits)")
                             break
-                            
                 except Exception as e:
                     logger.error(f"Error checking limit: {e}")
         
         except Exception as e:
             error_str = str(e).lower()
-            if any(keyword in error_str for keyword in [
-                'rate limit', 
-                'user request limit',
-                'code": 17',
-                'error_subcode": 2446079'
-            ]):
-                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} insights)")
-                logger.warning(f"Iterator exception: {e}")
+            if any(kw in error_str for kw in ['rate limit', 'code": 17', 'subcode": 2446079', 'subcode": 1504044']):
+                logger.warning(f"⚠️ FB API issue: {e}")
             else:
                 logger.error(f"Error during iteration: {e}")
-                raise
+            logger.warning(f"⚠️ Saving partial data for {account['name']}: {count} insights.")
+
+        # Finalizing remaining data
+        if self.insights_data or batch_ad_ids:
+            logger.info(f"Finalizing remaining {len(self.insights_data)} insights for {account['name']}")
+            self.process_dependencies_optimized(
+                api, batch_campaign_ids, batch_adset_ids, batch_ad_ids, brand_id, processed_ids
+            )
+            self.bulk_upsert_insights()
+            self.insights_data = []
         
-        logger.success(f"✅ Collected {count} insights for account: {account['name']}")
+        logger.success(f"✅ Finished account: {account['name']} (Total: {count} insights)")
+
+    def process_dependencies_optimized(self, api, campaign_ids, adset_ids, ad_ids, brand_id, processed_ids):
+        """Fetch and bulk upsert dependencies with strict cross-batch filtering"""
         
-        # Process Dependencies (Campaigns, AdSets, Ads)
-        logger.info(f"Processing dependencies: {len(campaign_ids)} Campaigns, {len(adset_ids)} AdSets, {len(ad_ids)} Ads")
-        self.process_dependencies(api, campaign_ids, adset_ids, ad_ids, brand_id)
+        # 1. Filter and Fetch Campaigns
+        new_cids = campaign_ids - processed_ids['campaigns']
+        if new_cids:
+            logger.info(f"Fetching {len(new_cids)} new Campaigns...")
+            campaigns_data = self.fetch_campaigns_data(api, new_cids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_campaign', 'fb_ad_campaign_id', campaigns_data,
+                ['name', 'fb_ad_campaign_id', 'created_time', 'updated_time', 'start_time', 'stop_time', 'status', 'fb_ad_account_id', 'etl_updated', 'company_id']
+            )
+            processed_ids['campaigns'].update(new_cids)
+
+        # 2. Filter and Fetch AdSets
+        new_sids = adset_ids - processed_ids['adsets']
+        if new_sids:
+            logger.info(f"Fetching {len(new_sids)} new AdSets...")
+            adsets_data = self.fetch_adsets_data(api, new_sids, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_set', 'fb_ad_set_id', adsets_data,
+                ['name', 'fb_ad_set_id', 'created_time', 'updated_time', 'start_time', 'status', 'fb_ad_campaign_id', 'etl_updated']
+            )
+            processed_ids['adsets'].update(new_sids)
+
+        # 3. Filter and Fetch Ads
+        new_aids = ad_ids - processed_ids['ads']
+        if new_aids:
+            logger.info(f"Fetching {len(new_aids)} new Ads...")
+            creative_ids_found = set()
+            ads_data = self.fetch_ads_data(api, new_aids, creative_ids_found, brand_id)
+            self.bulk_insert_data(
+                'core_facebook_ad_ad', 'fb_ad_ad_id', ads_data,
+                ['name', 'fb_ad_ad_id', 'fb_ad_set_id', 'fb_creative_id', 'created_time', 'updated_time', 'status', 'brand_id', 'etl_updated']
+            )
+            processed_ids['ads'].update(new_aids)
+            
+            # 4. Filter and Fetch Creatives (Only new creatives found in new ads)
+            new_crids = creative_ids_found - processed_ids['creatives']
+            if new_crids:
+                logger.info(f"Fetching {len(new_crids)} new Creatives...")
+                creatives_data = self.fetch_creatives_data(api, new_crids, brand_id)
+                self.bulk_insert_data(
+                    'core_facebook_ad_creative', 'fb_ad_creative_id', creatives_data,
+                    ['name', 'fb_ad_creative_id', 'fb_object_id', 'fb_object_story_id', 'fb_effective_object_story_id', 'fb_link_url', 'status', 'fb_ad_account_id', 'brand_id', 'etl_updated']
+                )
+                processed_ids['creatives'].update(new_crids)
 
     def process_dependencies(self, api, campaign_ids, adset_ids, ad_ids, brand_id):
         """Fetch and bulk upsert dependencies (Campaign, AdSet, Ad, Creative)"""
@@ -505,14 +575,13 @@ class FacebookAdsInsightsIngestion:
                 try:
                     time.sleep(1)
                     logger.info(f"Fetching account: {account['name']} ({account['ad_account_id']})")
+                    # fetch_insights now handles its own intermittent and final saving to prevent data loss
                     self.fetch_insights(account)
                 except Exception as e:
                     logger.error(f"❌ Failed to fetch account {account['name']}: {e}")
+                    # Ensure insights_data is cleared for next account even on failure
+                    self.insights_data = []
                     continue
-                
-                # Save insights immediately after each account
-                self.bulk_upsert_insights()
-                self.insights_data = [] # Clear memory for next account
             logger.success("✅ Facebook Ads insights ingestion completed successfully")
         
         except Exception as e:
