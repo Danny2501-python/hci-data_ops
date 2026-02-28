@@ -146,13 +146,12 @@ class FacebookAdsInsightsIngestion:
                 'rate limit', 
                 'user request limit',
                 'code": 17',
-                'error_subcode": 2446079'
+                'error_subcode": 2446079',
+                'error_subcode": 1504044'  # Service temporarily unavailable
             ]):
-                logger.warning(f"⚠️ Rate limit hit while iterating (after {count} insights)")
-                logger.warning(f"Iterator exception: {e}")
+                logger.warning(f"⚠️ FB API issue while iterating (after {count} insights): {e}")
             else:
-                logger.error(f"Error during iteration: {e}")
-                raise
+                logger.error(f"Error during iteration (partial data will be saved): {e}")
         
         logger.success(f"✅ Collected {count} insights for account: {account['name']}")
         
