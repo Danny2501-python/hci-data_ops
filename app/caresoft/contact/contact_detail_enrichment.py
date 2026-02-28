@@ -2,19 +2,21 @@ import os
 import sys
 import json
 import time
-import requests
+import io
+import csv
 import gc
 from datetime import date, datetime, timedelta
 from loguru import logger
+import psycopg2
 from pyiceberg.catalog import load_catalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import (
-    NestedField, StringType, IntegerType, TimestampType, BooleanType, DateType
+    NestedField, StringType, IntegerType, TimestampType, DateType
 )
 from pyiceberg.partitioning import PartitionSpec, PartitionField
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.io.pyarrow import schema_to_pyarrow
-from pyiceberg.expressions import EqualTo, And
+from pyiceberg.expressions import EqualTo, And, NotNull
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -37,210 +39,130 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-# Source and target tables - matching old system naming
-CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
-CONTACT_DETAIL_SILVER_TABLE = 'caresoft.cs_contact_api'
-CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
+# PostgreSQL configuration
+POSTGRES_URI = os.getenv('POSTGRES_URI')
 
+# Source and target tables
+CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
+CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
+TARGET_PG_TABLE = 'cs_contact_api'
 
 
 class ContactDetailEnrichment:
     """Pull full contact details from CareSoft API based on Bronze contact data
-    Optimized for Lakehouse architecture
+    Architecture: Bronze (Iceberg) → Serving (PostgreSQL) - BYPASSING ICEBERG SILVER
     """
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
-        self.bronze_catalog = None
-        self.silver_catalog = None
+        if isinstance(self.snapshot_date, str):
+            self.snapshot_date = datetime.strptime(self.snapshot_date, "%Y-%m-%d").date()
+            
+        # Catalog configuration
+        catalog_config = {
+            "s3.endpoint": S3_ENDPOINT,
+            "s3.access-key-id": AWS_ACCESS_KEY,
+            "s3.secret-access-key": AWS_SECRET_KEY,
+            "s3.region": AWS_REGION,
+        }
         
-        logger.info(f"Initializing ContactDetailEnrichment for snapshot_date={self.snapshot_date}")
-        
-        # Connect to Bronze catalog
         self.bronze_catalog = load_catalog(
             CATALOG_NAME_BRONZE,
-            **{
-                "uri": ICEBERG_REST_URI_BRONZE,
-                "s3.endpoint": S3_ENDPOINT,
-                "s3.access-key-id": AWS_ACCESS_KEY,
-                "s3.secret-access-key": AWS_SECRET_KEY,
-                "s3.region": AWS_REGION,
-            }
+            uri=ICEBERG_REST_URI_BRONZE,
+            **catalog_config
         )
-        
-        # Connect to Silver catalog
         self.silver_catalog = load_catalog(
             CATALOG_NAME_SILVER,
-            **{
-                "uri": ICEBERG_REST_URI_SILVER,
-                "s3.endpoint": S3_ENDPOINT,
-                "s3.access-key-id": AWS_ACCESS_KEY,
-                "s3.secret-access-key": AWS_SECRET_KEY,
-                "s3.region": AWS_REGION,
-            }
+            uri=ICEBERG_REST_URI_SILVER,
+            **catalog_config
         )
         
-        # Ensure tables exist
-        self.ensure_contact_detail_table_exists()
+        self.pg_uri = POSTGRES_URI
+        self.target_pg_table = TARGET_PG_TABLE
+        
+        logger.info(f"Initialized ContactDetailEnrichment (Postgres-Direct) for snapshot_date={self.snapshot_date}")
+        
+        # Ensure error table exists in Iceberg
         self.ensure_contact_detail_error_table_exists()
     
-    def ensure_contact_detail_table_exists(self):
-        """Create contact detail silver table if not exists"""
-        try:
-            table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-            logger.info(f"Table {CONTACT_DETAIL_SILVER_TABLE} already exists")
-        except Exception:
-            logger.info(f"Creating table {CONTACT_DETAIL_SILVER_TABLE}")
-            
-            # Schema matching old system cs_contact_api (DDL: all text except timestamps)
-            schema = Schema(
-                NestedField(1, "account_id", StringType(), required=False),
-                NestedField(2, "id", IntegerType(), required=True),
-                NestedField(3, "username", StringType(), required=False),
-                NestedField(4, "email", StringType(), required=False),
-                NestedField(5, "email2", StringType(), required=False),
-                NestedField(6, "phone_no", StringType(), required=False),
-                NestedField(7, "phone_no2", StringType(), required=False),
-                NestedField(8, "phone_no3", StringType(), required=False),
-                NestedField(9, "facebook", StringType(), required=False),
-                NestedField(10, "gender", StringType(), required=False),
-                NestedField(11, "organization_id", StringType(), required=False),
-                NestedField(12, "address", StringType(), required=False),
-                NestedField(13, "city_id", StringType(), required=False),
-                NestedField(14, "created_from", StringType(), required=False),
-                NestedField(15, "district_id", StringType(), required=False),
-                NestedField(16, "created_at", TimestampType(), required=False),
-                NestedField(17, "updated_at", TimestampType(), required=False),
-                NestedField(18, "role_id", StringType(), required=False),
-                NestedField(19, "campaign_handler_id", StringType(), required=False),
-                NestedField(20, "take_phone_at", StringType(), required=False),
-                NestedField(21, "take_email_at", StringType(), required=False),
-                NestedField(22, "custom_fields", StringType(), required=False),
-                NestedField(23, "organization", StringType(), required=False),
-                NestedField(24, "psid", StringType(), required=False),
-                NestedField(25, "brand_id", IntegerType(), required=True),
-                NestedField(26, "raw_data", StringType(), required=False),
-                
-                # Metadata fields
-                NestedField(27, "snapshot_date", DateType(), required=True),
-                NestedField(28, "ingestion_timestamp", TimestampType(), required=True),
-            )
-            
-            # Partition by snapshot_date
-            partition_spec = PartitionSpec(
-                PartitionField(
-                    source_id=27,
-                    field_id=1000,
-                    transform=IdentityTransform(),
-                    name="snapshot_date"
-                )
-            )
-            
-            table = self.silver_catalog.create_table(
-                identifier=CONTACT_DETAIL_SILVER_TABLE,
-                schema=schema,
-                partition_spec=partition_spec
-            )
-            
-            logger.success(f"Created table {CONTACT_DETAIL_SILVER_TABLE}")
-    
     def ensure_contact_detail_error_table_exists(self):
-        """Create contact detail error table if not exists"""
+        """Create contact detail error table in Iceberg if not exists"""
         try:
-            table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
-            logger.info(f"Table {CONTACT_DETAIL_ERROR_TABLE} already exists")
+            return self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
         except Exception:
-            logger.info(f"Creating table {CONTACT_DETAIL_ERROR_TABLE}")
-            
-            # Schema matching old system cs_contact_error (DDL: id, brand_id, trangthai)
+            logger.info(f"Creating error table {CONTACT_DETAIL_ERROR_TABLE} in Iceberg...")
             schema = Schema(
                 NestedField(1, "id", IntegerType(), required=True),
                 NestedField(2, "brand_id", IntegerType(), required=True),
                 NestedField(3, "trangthai", IntegerType(), required=False),
-                
-                # Metadata fields for lakehouse
                 NestedField(4, "snapshot_date", DateType(), required=True),
                 NestedField(5, "error_timestamp", TimestampType(), required=True),
             )
-            
             partition_spec = PartitionSpec(
-                PartitionField(
-                    source_id=4,
-                    field_id=1000,
-                    transform=IdentityTransform(),
-                    name="snapshot_date"
-                )
+                PartitionField(source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
             )
-            
-            table = self.silver_catalog.create_table(
+            return self.silver_catalog.create_table(
                 identifier=CONTACT_DETAIL_ERROR_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            
-            logger.success(f"Created table {CONTACT_DETAIL_ERROR_TABLE}")
-    
+
+    def ensure_target_pg_table_exists(self, cursor, columns):
+        """Ensure the target PostgreSQL table exists with the correct primary key"""
+        logger.info(f"Ensuring PostgreSQL target table {self.target_pg_table} exists...")
+        column_defs = [f'"{col}" TEXT' for col in columns]
+        # Note: We use TEXT for all columns to match legacy schema, but id/brand_id could be INT.
+        # However, to maintain parity with contact_detail_serving_layer.py, we use TEXT.
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {self.target_pg_table} (
+            {', '.join(column_defs)},
+            PRIMARY KEY ("id", "brand_id")
+        )
+        """
+        cursor.execute(create_sql)
+
     def get_contact_ids_to_enrich(self, brand_erp_id: int) -> list:
-        """
-        Get contact_ids from Bronze table (today's snapshot only)
-        
-        Strategy:
-        - Scan contacts from TODAY's Bronze snapshot only
-        - Deduplicate by contact_id (MAX updated_at)
-        - Return deduplicated contact_ids
-        
-        Args:
-            brand_erp_id: The erp_id from core_brand table
-        
-        Returns:
-            List of contact_ids to enrich
-        """
-        snapshot_date_str = self.snapshot_date.isoformat()
-        
-        logger.info(f"Scanning Bronze table for brand_id={brand_erp_id}, snapshot_date={snapshot_date_str}")
-        
-        # Temp directory for DuckDB and Parquet
-        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"contact_enrich_ids_{brand_erp_id}_{os.getpid()}.parquet")
+        """Scan Bronze Iceberg for contacts to enrich using DuckDB"""
+        try:
+            bronze_table = self.bronze_catalog.load_table(CONTACT_BRONZE_TABLE)
+        except Exception as e:
+            logger.error(f"Error loading Bronze table: {e}")
+            return []
+            
+        import tempfile
+        temp_parquet = os.path.join(tempfile.gettempdir(), f"contact_ids_{brand_erp_id}_{os.getpid()}.parquet")
         
         try:
-            # Load Bronze table
-            bronze_table = self.bronze_catalog.load_table(CONTACT_BRONZE_TABLE)
-            
-            # Scan today's partition AND brand_id (optimization)
             scan = bronze_table.scan(
                 row_filter=And(
                     EqualTo("snapshot_date", self.snapshot_date),
-                    EqualTo("brand_id", brand_erp_id)
-                )
+                    EqualTo("brand_id", brand_erp_id),
+                    NotNull("id")
+                ),
+                selected_fields=("id", "updated_at")
             )
             
-            # Collect batches to Arrow Table
-            batches = []
+            writer = None
+            total_rows = 0
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
-                    batches.append(batch)
+                    t = pa.Table.from_batches([batch])
+                    if writer is None:
+                        writer = pq.ParquetWriter(temp_parquet, t.schema)
+                    writer.write_table(t)
+                    total_rows += len(batch)
+                    del t
+                    gc.collect()
             
-            if not batches:
-                logger.warning(f"No contacts found in Bronze for brand_id={brand_erp_id}")
+            if writer:
+                writer.close()
+            
+            if total_rows == 0:
                 return []
             
-            # Write to Parquet (avoid large memory footprint in DuckDB registration)
-            combined_table = pa.Table.from_batches(batches)
-            pq.write_table(combined_table, temp_parquet)
-            
-            # Use DuckDB for deduplication
-            conn = duckdb.connect(config={
-                'memory_limit': '2GB',
-                'preserve_insertion_order': 'false',
-                'temp_directory': temp_dir,
-                'threads': '1'
-            })
-            
-            # Deduplicate: Get latest contact per id
+            con = duckdb.connect()
             query = f"""
-            SELECT id as contact_id
+            SELECT id
             FROM (
                 SELECT 
                     id,
@@ -251,258 +173,234 @@ class ContactDetailEnrichment:
             WHERE rn = 1
             ORDER BY updated_at DESC
             """
-            
-            result = conn.execute(query).fetchall()
-            contact_ids = [row[0] for row in result]
-            conn.close()
-            
-            logger.info(f"Found {len(contact_ids)} unique contacts to enrich")
-            
+            contact_ids = con.execute(query).fetch_arrow_table().column('id').to_pylist()
+            con.close()
             return contact_ids
-            
         finally:
-            # Cleanup temp parquet
             if os.path.exists(temp_parquet):
                 try:
                     os.remove(temp_parquet)
                 except:
                     pass
-    
-    # Note: call_caresoft_api is now imported from common.caresoft_api
-    # Usage: call_caresoft_api(brand, 'contacts', contact_id, response_key='contact')
-    
-    
+
     def run(self, brand: dict):
-        """
-        Execute contact detail enrichment pipeline
-        
-        Args:
-            brand: Brand configuration dict
-        """
-        brand_erp_id = brand["erp_id"]
-        brand_name = brand["name"]
-        
-        logger.info("=" * 80)
-        logger.info(f"Starting contact detail enrichment for brand: {brand_name} (erp_id={brand_erp_id})")
-        logger.info("=" * 80)
-        
-        # Get contact IDs to enrich from Bronze
-        contact_ids = self.get_contact_ids_to_enrich(brand_erp_id)
-        
-        if not contact_ids:
-            logger.warning(f"No contacts to enrich for brand {brand_name}")
+        """Standard pipeline logic with Peak RAM optimizations and Direct Postgres Upsert"""
+        if not self.pg_uri:
+            logger.critical("❌ POSTGRES_URI environment variable missing")
             return
+
+        contact_ids = self.get_contact_ids_to_enrich(brand["erp_id"])
+        if not contact_ids:
+            logger.warning(f"No contacts to enrich for brand {brand['name']}")
+            return
+            
+        logger.info(f"Enriching {len(contact_ids)} contacts directly to PostgreSQL for brand {brand['name']}...")
+        error_table = self.ensure_contact_detail_error_table_exists()
         
-        snapshot_date_str = self.snapshot_date.isoformat()
-        ingestion_timestamp = get_current_timestamp_naive()
-        
-        # DELETE old partition data (Snapshot Overwrite Pattern)
-        # This prevents duplicates if re-running for the same day
+        # Delete old error records for this partition
         try:
-            logger.info(f"🗑️  Cleaning up old data for brand {brand_name} (snapshot={snapshot_date_str})...")
-            
-            # Delete from Silver table
-            silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-            silver_table.delete(
-                And(
-                    EqualTo("snapshot_date", self.snapshot_date),
-                    EqualTo("brand_id", brand_erp_id)
-                )
-            )
-            
-            # Delete from Error table
-            error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
             error_table.delete(
                 And(
                     EqualTo("snapshot_date", self.snapshot_date),
-                    EqualTo("brand_id", brand_erp_id)
+                    EqualTo("brand_id", brand["erp_id"])
                 )
             )
+        except Exception:
+            pass
+
+        try:
+            pg_conn = psycopg2.connect(self.pg_uri)
+            cursor = pg_conn.cursor()
+        except Exception as e:
+            logger.critical(f"❌ PostgreSQL Connection Error: {e}")
+            return
+        
+        try:
+            columns = [
+                "account_id", "id", "username", "email", "email2", "phone_no", 
+                "phone_no2", "phone_no3", "facebook", "gender", "organization_id", 
+                "address", "city_id", "created_from", "district_id", "created_at", 
+                "updated_at", "role_id", "campaign_handler_id", "take_phone_at", 
+                "take_email_at", "custom_fields", "organization", "psid", 
+                "brand_id", "raw_data", "snapshot_date", "ingestion_timestamp"
+            ]
             
-            logger.success(f"✅ Cleaned up old partition data for brand {brand_name}")
+            # Ensure target table exists once
+            self.ensure_target_pg_table_exists(cursor, columns)
+            pg_conn.commit()
+
+            batch_records = []
+            batch_error_records = []
+            total_success = 0
+            total_errors = 0
+            MICRO_BATCH_SIZE = 100
+            
+            for i, contact_id in enumerate(contact_ids):
+                contact_data, error = call_caresoft_api(brand, 'contacts', contact_id, response_key='contact')
+                
+                if contact_data:
+                    record = {
+                        "account_id": self._safe_str(contact_data.get("account_id")),
+                        "id": self._safe_int(contact_data.get("id")),
+                        "username": self._safe_str(contact_data.get("username")),
+                        "email": self._safe_str(contact_data.get("email")),
+                        "email2": self._safe_str(contact_data.get("email2")),
+                        "phone_no": self._safe_str(contact_data.get("phone_no")),
+                        "phone_no2": self._safe_str(contact_data.get("phone_no2")),
+                        "phone_no3": self._safe_str(contact_data.get("phone_no3")),
+                        "facebook": self._safe_str(contact_data.get("facebook")),
+                        "gender": self._safe_str(contact_data.get("gender")),
+                        "organization_id": self._safe_str(contact_data.get("organization_id")),
+                        "address": self._safe_str(contact_data.get("address")),
+                        "city_id": self._safe_str(contact_data.get("city_id")),
+                        "created_from": self._safe_str(contact_data.get("created_from")),
+                        "district_id": self._safe_str(contact_data.get("district_id")),
+                        "created_at": self._safe_ts(contact_data.get("created_at")),
+                        "updated_at": self._safe_ts(contact_data.get("updated_at")),
+                        "role_id": self._safe_str(contact_data.get("role_id")),
+                        "campaign_handler_id": self._safe_str(contact_data.get("campaign_handler_id")),
+                        "take_phone_at": self._safe_str(contact_data.get("take_phone_at")),
+                        "take_email_at": self._safe_str(contact_data.get("take_email_at")),
+                        "custom_fields": json.dumps(contact_data.get("custom_fields", []), ensure_ascii=False),
+                        "organization": self._safe_str(contact_data.get("organization")),
+                        "psid": json.dumps(contact_data.get("psid", []), ensure_ascii=False),
+                        "brand_id": int(brand["erp_id"]),
+                        "raw_data": json.dumps(contact_data, ensure_ascii=False),
+                        "snapshot_date": self.snapshot_date,
+                        "ingestion_timestamp": get_current_timestamp_naive()
+                    }
+                    batch_records.append(record)
+                    del contact_data
+                else:
+                    batch_error_records.append({
+                        "id": contact_id, 
+                        "brand_id": int(brand["erp_id"]), 
+                        "trangthai": 1,
+                        "snapshot_date": self.snapshot_date, 
+                        "error_timestamp": get_current_timestamp_naive()
+                    })
+                    total_errors += 1
+                
+                # Flush Cycle
+                if len(batch_records) >= MICRO_BATCH_SIZE:
+                    self._upsert_to_postgres(cursor, batch_records, columns)
+                    pg_conn.commit()
+                    total_success += len(batch_records)
+                    batch_records = []
+                    gc.collect()
+
+                if len(batch_error_records) >= MICRO_BATCH_SIZE:
+                    error_table.append(pa.Table.from_pylist(batch_error_records))
+                    batch_error_records = []
+                    gc.collect()
+                
+                if (i+1) % 50 == 0:
+                    logger.info(f"Progress: {i+1}/{len(contact_ids)} contacts processed for {brand['name']}")
+                
+                # Rate limit protection
+                time.sleep(0.01)
+                
+            # Final remaining
+            if batch_records:
+                self._upsert_to_postgres(cursor, batch_records, columns)
+                pg_conn.commit()
+                total_success += len(batch_records)
+            
+            if batch_error_records:
+                error_table.append(pa.Table.from_pylist(batch_error_records))
+                
+            logger.success(f"Enrichment complete for {brand['name']}. Success: {total_success}, Errors: {total_errors}")
             
         except Exception as e:
-            logger.warning(f"Could not clean up old data (tables might be new/empty): {e}")
+            logger.error(f"Failed Run for brand {brand['erp_id']}: {e}")
+            pg_conn.rollback()
+        finally:
+            cursor.close()
+            pg_conn.close()
 
-        logger.info(f"Enriching {len(contact_ids)} contacts for brand {brand_name}")
-        
-        # Batch size for writing records
-        BATCH_SIZE = 10000
-        
-        # Helper functions for safe type conversion
-        def safe_int(val):
-            if val is None or val == '':
-                return None
-            try:
-                return int(val)
-            except (ValueError, TypeError):
-                return None
-        
-        def safe_str(val):
-            if val is None:
-                return ''
-            return str(val)
-        
-        def safe_ts(val):
-            """Convert timestamp string or int to datetime"""
-            if val is None or val == '':
-                return None
-            try:
-                # Handle integer milliseconds timestamp
-                if isinstance(val, int):
-                    return datetime.fromtimestamp(val / 1000.0)
-                # Handle string timestamp formats
-                if isinstance(val, str):
-                    # Try ISO format with 'T': "2026-01-16T23:13:40Z"
-                    if 'T' in val:
-                        return datetime.fromisoformat(val.replace('Z', '+00:00'))
-                    # Try format without 'T': "2026-01-16 23:13:40"
-                    else:
-                        return datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
-                return None
-            except (ValueError, TypeError):
-                return None
-        
+    def _safe_int(self, v):
+        try:
+            return int(v) if v is not None else None
+        except:
+            return None
+    
+    def _safe_str(self, v):
+        return str(v) if v is not None else ''
 
+    def _safe_ts(self, v):
+        try:
+            if v is None or v == '': return None
+            # Handle integer milliseconds timestamp
+            if isinstance(v, int):
+                return datetime.fromtimestamp(v / 1000.0)
+            # Handle string ISO format
+            if isinstance(v, str):
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            return None
+        except:
+            return None
+
+    def _upsert_to_postgres(self, cursor, records, columns):
+        """Streaming COPY + UPSERT with automatic staging cleanup"""
+        NULL_MARKER = '__NULL__'
+        output = io.StringIO()
+        writer = csv.writer(output, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
         
-        success_records = []
-        error_records = []
+        for rec in records:
+            row = []
+            for col in columns:
+                val = rec.get(col)
+                if val is None:
+                    row.append(NULL_MARKER)
+                elif isinstance(val, (datetime, date)):
+                    row.append(val.isoformat())
+                else:
+                    # Clean newline characters to prevent CSV corruption
+                    row.append(str(val).replace('\n', ' ').replace('\r', ' '))
+            writer.writerow(row)
         
-        for i, contact_id in enumerate(contact_ids, 1):
-            if i % 50 == 0:
-                logger.info(f"Progress: {i}/{len(contact_ids)} contacts processed")
-            
-            contact_data, error = call_caresoft_api(brand, 'contacts', contact_id, response_key='contact')
-            
-            if contact_data:
-                # Transform contact data (matching DDL: most fields are text)
-                record = {
-                    "account_id": safe_str(contact_data.get("account_id")),
-                    "id": safe_int(contact_data.get("id")),
-                    "username": safe_str(contact_data.get("username")),
-                    "email": safe_str(contact_data.get("email")),
-                    "email2": safe_str(contact_data.get("email2")),
-                    "phone_no": safe_str(contact_data.get("phone_no")),
-                    "phone_no2": safe_str(contact_data.get("phone_no2")),
-                    "phone_no3": safe_str(contact_data.get("phone_no3")),
-                    "facebook": safe_str(contact_data.get("facebook")),
-                    "gender": safe_str(contact_data.get("gender")),
-                    "organization_id": safe_str(contact_data.get("organization_id")),
-                    "address": safe_str(contact_data.get("address")),
-                    "city_id": safe_str(contact_data.get("city_id")),
-                    "created_from": safe_str(contact_data.get("created_from")),
-                    "district_id": safe_str(contact_data.get("district_id")),
-                    "created_at": safe_ts(contact_data.get("created_at")),
-                    "updated_at": safe_ts(contact_data.get("updated_at")),
-                    "role_id": safe_str(contact_data.get("role_id")),
-                    "campaign_handler_id": safe_str(contact_data.get("campaign_handler_id")),
-                    "take_phone_at": safe_str(contact_data.get("take_phone_at")),
-                    "take_email_at": safe_str(contact_data.get("take_email_at")),
-                    "custom_fields": json.dumps(contact_data.get("custom_fields", []), ensure_ascii=False),
-                    "organization": safe_str(contact_data.get("organization")),
-                    "psid": json.dumps(contact_data.get("psid", []), ensure_ascii=False),
-                    "brand_id": brand_erp_id,
-                    "raw_data": json.dumps(contact_data, ensure_ascii=False),
-                    "snapshot_date": self.snapshot_date,
-                    "ingestion_timestamp": ingestion_timestamp,
-                }
-                
-                success_records.append(record)
-                
-            else:
-                # Log error (matching DDL: id, brand_id, trangthai)
-                error_record = {
-                    "id": contact_id,
-                    "brand_id": brand_erp_id,
-                    "trangthai": 1,  # 1 = error status
-                    "snapshot_date": self.snapshot_date,
-                    "error_timestamp": ingestion_timestamp,
-                }
-                error_records.append(error_record)
-                logger.warning(f"Failed to fetch contact {contact_id}: {error}")
-            
-            # Rate limiting
-            time.sleep(0.05)
-            
-            # Batch write every BATCH_SIZE records
-            if len(success_records) >= BATCH_SIZE:
-                logger.info(f"Writing batch of {len(success_records)} contact details to Silver")
-                silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-                pa_schema = schema_to_pyarrow(silver_table.schema())
-                df = pa.Table.from_pylist(success_records, schema=pa_schema)
-                silver_table.append(df)
-                success_records = []
-            
-            # Batch write errors every BATCH_SIZE records
-            if len(error_records) >= BATCH_SIZE:
-                logger.warning(f"Writing batch of {len(error_records)} errors to error table")
-                error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
-                pa_schema = schema_to_pyarrow(error_table.schema())
-                df = pa.Table.from_pylist(error_records, schema=pa_schema)
-                error_table.append(df)
-                error_records = []
+        output.seek(0)
+        temp_table = f"temp_stg_contact_{os.getpid()}"
         
-        # Write remaining records
-        if success_records:
-            logger.info(f"Writing final batch of {len(success_records)} contact details to Silver")
-            silver_table = self.silver_catalog.load_table(CONTACT_DETAIL_SILVER_TABLE)
-            pa_schema = schema_to_pyarrow(silver_table.schema())
-            df = pa.Table.from_pylist(success_records, schema=pa_schema)
-            silver_table.append(df)
+        # Create staging table
+        cursor.execute(f"CREATE TEMP TABLE {temp_table} (LIKE {self.target_pg_table} INCLUDING ALL) ON COMMIT DROP")
         
-        # Write errors
-        if error_records:
-            logger.warning(f"Writing {len(error_records)} errors to error table")
-            error_table = self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
-            pa_schema = schema_to_pyarrow(error_table.schema())
-            df = pa.Table.from_pylist(error_records, schema=pa_schema)
-            error_table.append(df)
+        # Load via COPY
+        col_list = ', '.join([f'"{c}"' for c in columns])
+        cursor.copy_expert(f"COPY {temp_table} ({col_list}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
         
-        logger.success(f"Completed enrichment for brand {brand_name}: {len(contact_ids) - len(error_records)} success, {len(error_records)} errors")
+        # Perform UPSERT
+        upd_list = [f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in ['id', 'brand_id']]
+        cursor.execute(f"""
+            INSERT INTO {self.target_pg_table} ({col_list}) 
+            SELECT {col_list} FROM {temp_table}
+            ON CONFLICT ("id", "brand_id") 
+            DO UPDATE SET 
+                {', '.join(upd_list)}
+            WHERE {self.target_pg_table}."updated_at" < EXCLUDED."updated_at" 
+               OR {self.target_pg_table}."updated_at" IS NULL
+        """)
         
-        gc.collect()
+        output.close()
+        del output
 
 
 def main():
-    """
-    Main entry point
-    Usage: python contact_detail_enrichment.py <snapshot_date>
-    """
-    # Parse snapshot_date from command line or use today
+    """Main entry point"""
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
-    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else (date.today() - timedelta(days=1))
+    snapshot_date = snapshot_date_str if snapshot_date_str else (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
     
-    logger.info(f"Starting Contact Detail Enrichment for snapshot_date={snapshot_date}")
-    
-    # Load all active brands
     brands = get_active_brands()
-    
     if not brands:
-        logger.error("No active brands found in core_brand table")
-        sys.exit(1)
-    
-    logger.info(f"Found {len(brands)} active brands to process")
-    
-    # Initialize job once
-    job = ContactDetailEnrichment(snapshot_date)
-    
-    # Process each brand sequentially
-    total_success = 0
-    total_errors = 0
-    
-    for brand in brands:
-        logger.info(f"\n{'='*80}")
-        logger.info(f"Processing brand: {brand['name']} (erp_id={brand['erp_id']})")
-        logger.info(f"{'='*80}")
+        logger.error("No active brands found")
+        return
         
+    job = ContactDetailEnrichment(snapshot_date)
+    for brand in brands:
         try:
-            job.run(brand=brand)
-            total_success += 1
+            job.run(brand)
         except Exception as e:
-            logger.error(f"Failed to process brand {brand['erp_id']}: {e}")
-            total_errors += 1
-    
-    logger.success(f"Completed. Success: {total_success}/{len(brands)}, Errors: {total_errors}")
+            logger.error(f"Global Failure for brand {brand['erp_id']}: {e}")
 
 
 if __name__ == "__main__":

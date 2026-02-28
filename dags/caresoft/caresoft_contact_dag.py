@@ -70,7 +70,7 @@ def get_yesterday_tz():
 dag = DAG(
     'caresoft_contact_etl',
     default_args=default_args,
-    description='CareSoft Contact Pipeline: Bronze → Silver → Serving',
+    description='CareSoft Contact Pipeline: Bronze → Serving (PostgreSQL Bypass Silver)',
     schedule_interval='0 1 * * *',  # 01:00 AM daily
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
@@ -210,40 +210,10 @@ task_contact_enrichment = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-    },
-    
-    container_resources=resource_requirements_silver,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# ============================================================================
-# TASK 3: SERVING - Contact Detail to PostgreSQL DWH
-# ============================================================================
-
-task_contact_serving = KubernetesPodOperator(
-    task_id='contact_detail_serving_layer',
-    name='caresoft-contact-detail-serving',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/contact/contact_detail_serving_layer.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
-    ],
-    
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    
-    env_vars={
-        **common_env_vars,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_product_uri,
     },
     
-    container_resources=resource_requirements_serving,
+    container_resources=resource_requirements_silver,
     is_delete_operator_pod=True,
     get_logs=True,
     dag=dag,
@@ -254,5 +224,6 @@ task_contact_serving = KubernetesPodOperator(
 # ============================================================================
 
 # Contact Pipeline Flow:
-# 1. Bronze Ingestion → Silver Enrichment → Serving Layer
-task_contact_ingestion >> task_contact_enrichment >> task_contact_serving
+# 1. Bronze Ingestion → Serving Enrichment
+task_contact_ingestion >> task_contact_enrichment
+
