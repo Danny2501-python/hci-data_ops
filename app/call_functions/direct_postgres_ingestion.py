@@ -278,8 +278,8 @@ class DirectPostgresToPostgres:
                 self.target_conn.commit()
 
     def process_erp(self, config: Dict, drop_table: bool, load_type: str):
-        target_table = config['table_name']
-        source_table = config['table_name_source']
+        target_table = config['table_name'].strip()
+        source_table = config['table_name_source'].strip()
         
         total = 0
         initialized = False
@@ -318,8 +318,8 @@ class DirectPostgresToPostgres:
         configs = get_active_table_configs(table_id=table_id, source=None if table_id else actual_source)
         for config in configs:
             try:
-                target_table = config['table_name']
-                source_table = config['table_name_source']
+                target_table = config['table_name'].strip()
+                source_table = config['table_name_source'].strip()
                 pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
 
                 # Use ERP logic if the METADATA says it's an ERP table
