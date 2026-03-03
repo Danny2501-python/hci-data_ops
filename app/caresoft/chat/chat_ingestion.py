@@ -93,7 +93,7 @@ class ChatIngestion:
                 NestedField(21, "facebook_page_id", StringType(), required=False),
                 NestedField(22, "service_id", LongType(), required=False),
                 NestedField(23, "brand_id", IntegerType(), required=False),
-                NestedField(24, "raw_data", StringType(), required=False),
+                # NestedField(24, "raw_data", StringType(), required=False), # Removed due to size
                 NestedField(25, "agent_name", StringType(), required=False),
                 
                 # Metadata fields
@@ -244,7 +244,7 @@ class ChatIngestion:
                 "facebook_page_id": str(chat.get("facebook_page_id")) if chat.get("facebook_page_id") is not None else None,
                 "service_id": chat.get("service_id"),
                 "brand_id": brand_erp_id,
-                "raw_data": json.dumps(chat, ensure_ascii=False),
+                # "raw_data": json.dumps(chat, ensure_ascii=False), # Removed due to size
                 "agent_name": chat.get("agent_name"),
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp

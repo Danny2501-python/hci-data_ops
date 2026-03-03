@@ -151,7 +151,6 @@ class ChatServingLayer:
                 facebook_page_id,
                 service_id,
                 brand_id,
-                raw_data,
                 agent_name,
                 snapshot_date,
                 ingestion_timestamp

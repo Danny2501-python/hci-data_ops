@@ -84,7 +84,7 @@ class GroupIngestion:
                 NestedField(2, "group_name", StringType(), required=False),
                 NestedField(3, "created_at", StringType(), required=False),
                 NestedField(4, "brand_id", IntegerType(), required=False),
-                NestedField(5, "raw_data", StringType(), required=False),
+                # NestedField(5, "raw_data", StringType(), required=False), # Removed due to size
                 
                 # Metadata fields
                 NestedField(6, "snapshot_date", DateType(), required=True),
@@ -191,7 +191,7 @@ class GroupIngestion:
                 "group_name": safe_str(group.get("group_name")),
                 "created_at": safe_str(group.get("created_at")),
                 "brand_id": brand_erp_id,
-                "raw_data": json.dumps(group, ensure_ascii=False),
+                # "raw_data": json.dumps(group, ensure_ascii=False), # Removed due to size
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp
             }

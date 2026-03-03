@@ -104,7 +104,7 @@ class TicketSourceMetadata:
                 
                 # Brand and metadata
                 NestedField(15, "brand_id", IntegerType(), required=False),
-                NestedField(16, "raw_data", StringType(), required=False),
+                # NestedField(16, "raw_data", StringType(), required=False), # Removed due to size
                 
                 # Metadata
                 NestedField(100, "snapshot_date", DateType(), required=False),
@@ -280,7 +280,7 @@ class TicketSourceMetadata:
                 "created_at": safe_ts(source.get("created_at")),
                 
                 "brand_id": safe_int(brand["erp_id"]),
-                "raw_data": json.dumps(source, ensure_ascii=False),
+                # "raw_data": json.dumps(source, ensure_ascii=False), # Removed due to size
                 
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp,

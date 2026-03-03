@@ -148,7 +148,6 @@ class CustomFieldServingLayer:
                     value_id,
                     value_lable,
                     brand_id,
-                    raw_data,
                     snapshot_date,
                     ingestion_timestamp
                 """
@@ -162,7 +161,6 @@ class CustomFieldServingLayer:
                     value_lable,
                     parent_value_id,
                     brand_id,
-                    raw_data,
                     snapshot_date,
                     ingestion_timestamp
                 """

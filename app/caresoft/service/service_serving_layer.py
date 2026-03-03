@@ -134,7 +134,6 @@ class ServiceServingLayer:
                 status,
                 detail,
                 brand_id,
-                raw_data,
                 snapshot_date,
                 ingestion_timestamp
             FROM (

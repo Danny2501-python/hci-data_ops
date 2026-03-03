@@ -137,7 +137,6 @@ class AgentServingLayer:
                 call_status,
                 ticket_status,
                 chat_status,
-                raw_data,
                 brand_id,
                 snapshot_date,
                 ingestion_timestamp

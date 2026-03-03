@@ -113,7 +113,7 @@ class TicketIngestion:
                 NestedField(19, "requester", StringType(), required=False),  # JSON object as string
                 NestedField(20, "tags", StringType(), required=False),  # JSON array as string
                 NestedField(21, "brand_id", IntegerType(), required=False),
-                NestedField(22, "raw_data", StringType(), required=False),
+                # NestedField(22, "raw_data", StringType(), required=False), # Removed due to size
                 NestedField(23, "ghi_chu", StringType(), required=False),
                 NestedField(24, "id_value_phan_loai_ket_noi", StringType(), required=False),
                 NestedField(25, "id_value_muc_do_hai_long", StringType(), required=False),
@@ -470,7 +470,7 @@ class TicketIngestion:
                     
                     # Brand and metadata (matching old table)
                     "brand_id": safe_int(brand["erp_id"]),  # From brand config, not ticket
-                    "raw_data": json.dumps(ticket, ensure_ascii=False, default=serialize_for_json),
+                    # "raw_data": json.dumps(ticket, ensure_ascii=False, default=serialize_for_json), # Removed due to size
                     "ghi_chu": extracted_custom_fields['ghi_chu'],  # Extracted from custom_fields
                     
                     # Custom extracted fields (matching old table)

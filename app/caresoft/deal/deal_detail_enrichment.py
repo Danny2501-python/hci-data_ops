@@ -573,7 +573,6 @@ class DealDetailEnrichment:
                         
                         # --- Metadata ---
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {}), ensure_ascii=False),
-                        # "raw_data": json.dumps(deal_data, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": get_current_timestamp_naive(),
                     }

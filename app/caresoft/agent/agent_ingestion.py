@@ -94,7 +94,7 @@ class AgentIngestion:
                 NestedField(12, "call_status", StringType(), required=False),
                 NestedField(13, "ticket_status", StringType(), required=False),  # Added
                 NestedField(14, "chat_status", StringType(), required=False),    # Added
-                NestedField(15, "raw_data", StringType(), required=False),
+                # NestedField(15, "raw_data", StringType(), required=False), # Removed due to size
                 NestedField(16, "brand_id", IntegerType(), required=False),
                 
                 # Metadata fields
@@ -212,7 +212,7 @@ class AgentIngestion:
                 "call_status": safe_str(agent.get("call_status")),
                 "ticket_status": safe_str(agent.get("ticket_status")),  # Added
                 "chat_status": safe_str(agent.get("chat_status")),      # Added
-                "raw_data": json.dumps(agent, ensure_ascii=False),
+                # "raw_data": json.dumps(agent, ensure_ascii=False), # Removed due to size
                 "brand_id": brand_erp_id,
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp

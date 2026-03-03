@@ -86,7 +86,7 @@ class ServiceIngestion:
                 NestedField(5, "status", IntegerType(), required=False),
                 NestedField(6, "detail", StringType(), required=False),
                 NestedField(7, "brand_id", IntegerType(), required=False),
-                NestedField(8, "raw_data", StringType(), required=False),
+                # NestedField(8, "raw_data", StringType(), required=False), # Removed due to size
                 
                 # Metadata fields
                 NestedField(9, "snapshot_date", DateType(), required=True),
@@ -187,7 +187,7 @@ class ServiceIngestion:
                 "status": service.get("status"), # Keep as int
                 "detail": detail_str,
                 "brand_id": brand_erp_id,
-                "raw_data": json.dumps(service, ensure_ascii=False),
+                # "raw_data": json.dumps(service, ensure_ascii=False), # Removed due to size
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp
             }

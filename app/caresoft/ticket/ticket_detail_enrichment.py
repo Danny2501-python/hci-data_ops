@@ -157,7 +157,8 @@ class TicketDetailEnrichment:
                 "satisfaction_send", "satisfaction_content", "automessage_id", "feedback_status",
                 "is_overdue", "incident_id", "service_id", "qa_script_id", "qa_agent",
                 "current_agent", "ticket_source_detail_id", "comments", "brand_id",
-                "raw_data", "snapshot_date", "ingestion_timestamp"
+                # "raw_data", 
+                "snapshot_date", "ingestion_timestamp"
             ]
             
             batch_records = []
@@ -195,7 +196,7 @@ class TicketDetailEnrichment:
                         "ticket_source_detail_id": self._safe_int(ticket_data.get("ticket_source_detail_id")),
                         "comments": json.dumps(ticket_data.get("comments", []), ensure_ascii=False),
                         "brand_id": int(brand["erp_id"]),
-                        "raw_data": json.dumps(ticket_data, ensure_ascii=False),
+                        # "raw_data": json.dumps(ticket_data, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": get_current_timestamp_naive()
                     }

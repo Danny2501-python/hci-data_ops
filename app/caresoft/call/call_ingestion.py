@@ -94,7 +94,7 @@ class CallIngestion:
                 NestedField(23, "missed_reason", StringType(), required=False),
                 NestedField(24, "path", StringType(), required=False),
                 NestedField(25, "path_download", StringType(), required=False),
-                NestedField(26, "raw_data", StringType(), required=False),
+                # NestedField(26, "raw_data", StringType(), required=False), # Removed due to size
                 NestedField(27, "brand_id", IntegerType(), required=False),
                 NestedField(28, "dtmf", StringType(), required=False),
                 
@@ -240,7 +240,7 @@ class CallIngestion:
                 "missed_reason": safe_str(call.get("missed_reason")),
                 "path": safe_str(call.get("path")),
                 "path_download": safe_str(call.get("path_download")),
-                "raw_data": json.dumps(call, ensure_ascii=False),
+                # "raw_data": json.dumps(call, ensure_ascii=False), # Removed due to size
                 "brand_id": brand_erp_id,
                 "dtmf": safe_str(call.get("dtmf")),
                 "snapshot_date": self.snapshot_date,

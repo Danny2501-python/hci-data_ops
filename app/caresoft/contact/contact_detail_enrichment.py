@@ -223,7 +223,9 @@ class ContactDetailEnrichment:
                 "address", "city_id", "created_from", "district_id", "created_at", 
                 "updated_at", "role_id", "campaign_handler_id", "take_phone_at", 
                 "take_email_at", "custom_fields", "organization", "psid", 
-                "brand_id", "raw_data", "snapshot_date", "ingestion_timestamp"
+                "brand_id", 
+                # "raw_data", 
+                "snapshot_date", "ingestion_timestamp"
             ]
             
             # Ensure target table exists once
@@ -266,7 +268,7 @@ class ContactDetailEnrichment:
                         "organization": self._safe_str(contact_data.get("organization")),
                         "psid": json.dumps(contact_data.get("psid", []), ensure_ascii=False),
                         "brand_id": int(brand["erp_id"]),
-                        "raw_data": json.dumps(contact_data, ensure_ascii=False),
+                        # "raw_data": json.dumps(contact_data, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": get_current_timestamp_naive()
                     }

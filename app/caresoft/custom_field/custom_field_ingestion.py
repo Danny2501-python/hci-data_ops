@@ -99,7 +99,7 @@ class CustomFieldIngestion:
                 NestedField(6, "parent_value_id", StringType(), required=False),
                 NestedField(7, "field_type", StringType(), required=False),  # 'ticket' or 'contact'
                 NestedField(8, "brand_id", IntegerType(), required=False),
-                NestedField(9, "raw_data", StringType(), required=False),
+                # NestedField(9, "raw_data", StringType(), required=False), # Removed due to size
                 
                 # Metadata fields
                 NestedField(10, "snapshot_date", DateType(), required=True),
@@ -212,7 +212,7 @@ class CustomFieldIngestion:
                         "parent_value_id": safe_str(value.get('parent_value_id')),
                         "field_type": self.field_type,  # 'ticket' or 'contact'
                         "brand_id": brand_erp_id,
-                        "raw_data": json.dumps(field, ensure_ascii=False),
+                        # "raw_data": json.dumps(field, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": ingestion_timestamp
                     }
@@ -228,7 +228,7 @@ class CustomFieldIngestion:
                     "parent_value_id": "None",
                     "field_type": self.field_type,  # 'ticket' or 'contact'
                     "brand_id": brand_erp_id,
-                    "raw_data": json.dumps(field, ensure_ascii=False),
+                    # "raw_data": json.dumps(field, ensure_ascii=False), # Removed due to size
                     "snapshot_date": self.snapshot_date,
                     "ingestion_timestamp": ingestion_timestamp
                 }

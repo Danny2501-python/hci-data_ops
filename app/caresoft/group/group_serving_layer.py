@@ -127,7 +127,6 @@ class GroupServingLayer:
                 group_name,
                 created_at,
                 brand_id,
-                raw_data,
                 snapshot_date,
                 ingestion_timestamp
             FROM (

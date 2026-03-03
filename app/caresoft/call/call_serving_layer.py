@@ -148,7 +148,6 @@ class CallServingLayer:
                 missed_reason,
                 path,
                 path_download,
-                raw_data,
                 brand_id,
                 dtmf,
                 snapshot_date,

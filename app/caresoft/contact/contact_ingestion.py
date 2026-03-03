@@ -83,7 +83,7 @@ class ContactIngestion:
                 NestedField(5, "username", StringType(), required=False),
                 NestedField(6, "email", StringType(), required=False),
                 NestedField(7, "brand_id", IntegerType(), required=True),
-                NestedField(8, "raw_data", StringType(), required=False),
+                # NestedField(8, "raw_data", StringType(), required=False), # Removed due to size
                 
                 # Metadata fields
                 NestedField(9, "snapshot_date", DateType(), required=True),
@@ -246,7 +246,7 @@ class ContactIngestion:
                 "username": safe_str(contact.get("username")),
                 "email": safe_str(contact.get("email")),
                 "brand_id": brand_erp_id,
-                "raw_data": json.dumps(contact, ensure_ascii=False),
+                # "raw_data": json.dumps(contact, ensure_ascii=False), # Removed due to size
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp,
             }
