@@ -156,10 +156,11 @@ class DirectPostgresToPostgres:
         
         where = f"({keyword} + interval '7 hour')::date >= '{cutoff_str}' AND {consider}" if load_type == 'incremental' and keyword and keyword.lower() != 'none' else consider
         query = text(f"SELECT * FROM {source_table} WHERE {where}")
-        staging_table = f"{target_table}_staging_{uuid.uuid4().hex[:8]}"
-        
+        target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
+        target_table_name = target_table.split('.')[-1]
+
         with self.target_conn.cursor() as cur:
-            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table.split('.')[-1]}' ORDER BY ordinal_position")
+            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table_name}' AND table_schema='{target_schema}' ORDER BY ordinal_position")
             target_cols = [r[0] for r in cur.fetchall()]
             cols_str = ", ".join([f'"{c}"' for c in target_cols])
 
@@ -167,17 +168,11 @@ class DirectPostgresToPostgres:
             self.target_conn.commit()
 
         # 2. Streaming Loop
-        BATCH_SIZE, total_rows = 10000, 0
+        BATCH_SIZE, total_rows = 50000, 0
         temp_dir = os.getenv('TEMP_DIR', tempfile.gettempdir())
         
         try:
             with source_engine.connect().execution_options(stream_results=True) as conn:
-                # Disable timeout on source for long-running streaming
-                try: conn.execute(text("SET statement_timeout = 0"))
-                except: 
-                    try: conn.rollback() # Essential to clear aborted transaction state
-                    except: pass
-
                 try:
                     result = conn.execute(query)
                 except Exception as e:
@@ -185,7 +180,7 @@ class DirectPostgresToPostgres:
 
                 source_cols = list(result.keys())
                 
-                # Pre-calculate mapping to optimize hot loop
+                # Pre-calculate constant metadata and schema
                 mapping_indices = []
                 for col in target_cols:
                     if col in source_cols:
@@ -200,6 +195,12 @@ class DirectPostgresToPostgres:
                         if not found_in_rename:
                             mapping_indices.append((col, None))
                 
+                # Pre-calculate labels and Arrow Schema
+                snap_date_str = str(self.snapshot_date)
+                source_srv_str = str(source_name or config.get('server'))
+                b_etl_val = str(brand_etl) if brand_etl is not None else None
+                pa_schema = pa.schema([(c, pa.string()) for c in target_cols])
+
                 while True:
                     try:
                         rows = result.fetchmany(BATCH_SIZE)
@@ -232,12 +233,11 @@ class DirectPostgresToPostgres:
                     # Clean up rows immediately to free RAM before Arrow conversion
                     del rows
                     
-                    # 2.2 Fill constant metadata columns (much faster and RAM efficient)
-                    if 'snapshot_date' in batch_data: batch_data['snapshot_date'] = [str(self.snapshot_date)] * row_count
+                    # 2.2 Fill constant metadata columns (Pre-calculated for speed)
+                    if 'snapshot_date' in batch_data: batch_data['snapshot_date'] = [snap_date_str] * row_count
                     if 'ingestion_timestamp' in batch_data: batch_data['ingestion_timestamp'] = [str(get_current_timestamp_naive())] * row_count
-                    if 'source_server' in batch_data: batch_data['source_server'] = [str(source_name or config['server'])] * row_count
+                    if 'source_server' in batch_data: batch_data['source_server'] = [source_srv_str] * row_count
                     
-                    b_etl_val = str(brand_etl) if brand_etl is not None else None
                     if 'brand_etl' in batch_data and batch_data['brand_etl'] == []:
                         batch_data['brand_etl'] = [b_etl_val] * row_count
                     if 'brand_etl_new' in batch_data and batch_data['brand_etl_new'] == []:
@@ -247,7 +247,7 @@ class DirectPostgresToPostgres:
                     for col in target_cols:
                         if not batch_data[col]: batch_data[col] = [None] * row_count
                     
-                    pa_table = pa.Table.from_pydict(batch_data, schema=pa.schema([(c, pa.string()) for c in target_cols]))
+                    pa_table = pa.Table.from_pydict(batch_data, schema=pa_schema)
                     del batch_data
                     with tempfile.TemporaryFile(mode='wb+', dir=temp_dir) as tmp:
                         pv.write_csv(pa_table, tmp, write_options=pv.WriteOptions(include_header=False))
@@ -297,8 +297,11 @@ class DirectPostgresToPostgres:
             # 3. Create Index on PK Columns for performance if not exists
             pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
             if pk_columns:
+                target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
+                target_table_name = target_table.split('.')[-1]
+                
                 # Ensure all PK columns actually exist in target (case insensitive check)
-                cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table.split('.')[-1]}'")
+                cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table_name}' AND table_schema='{target_schema}'")
                 existing_cols = [r[0].lower() for r in cur.fetchall()]
                 valid_pk = [c for c in pk_columns if c.lower() in existing_cols]
                 
