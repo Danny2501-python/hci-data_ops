@@ -159,7 +159,7 @@ class DirectPostgresToPostgres:
         staging_table = f"{target_table}_staging_{uuid.uuid4().hex[:8]}"
         
         with self.target_conn.cursor() as cur:
-            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table}' ORDER BY ordinal_position")
+            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table.split('.')[-1]}' ORDER BY ordinal_position")
             target_cols = [r[0] for r in cur.fetchall()]
             cols_str = ", ".join([f'"{c}"' for c in target_cols])
 
@@ -167,12 +167,20 @@ class DirectPostgresToPostgres:
             self.target_conn.commit()
 
         # 2. Streaming Loop
-        BATCH_SIZE, total_rows = 20000, 0
+        BATCH_SIZE, total_rows = 10000, 0
         temp_dir = os.getenv('TEMP_DIR', tempfile.gettempdir())
         
         try:
             with source_engine.connect().execution_options(stream_results=True) as conn:
-                result = conn.execute(query)
+                # Disable timeout on source for long-running streaming
+                try: conn.execute(text("SET statement_timeout = 0"))
+                except: pass
+
+                try:
+                    result = conn.execute(query)
+                except Exception as e:
+                    raise RuntimeError(f"SOURCE_QUERY_ERROR: {e}")
+
                 source_cols = list(result.keys())
                 
                 # Pre-calculate mapping to optimize hot loop
@@ -191,7 +199,11 @@ class DirectPostgresToPostgres:
                             mapping_indices.append((col, None))
                 
                 while True:
-                    rows = result.fetchmany(BATCH_SIZE)
+                    try:
+                        rows = result.fetchmany(BATCH_SIZE)
+                    except Exception as e:
+                        raise RuntimeError(f"SOURCE_FETCH_ERROR: {e}")
+
                     if not rows: break
                     
                     row_count = len(rows)
@@ -238,14 +250,17 @@ class DirectPostgresToPostgres:
                     with tempfile.TemporaryFile(mode='wb+', dir=temp_dir) as tmp:
                         pv.write_csv(pa_table, tmp, write_options=pv.WriteOptions(include_header=False))
                         tmp.seek(0)
-                        with self.target_conn.cursor() as cur:
-                            cur.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", tmp)
-                            if pk_columns:
-                                pk_match = " AND ".join([f'dest."{c}" = src."{c}"' for c in pk_columns])
-                                cur.execute(f'DELETE FROM {target_table} AS dest USING {staging_table} AS src WHERE {pk_match}')
-                            cur.execute(f"INSERT INTO {target_table} ({cols_str}) SELECT {cols_str} FROM {staging_table}")
-                            cur.execute(f"TRUNCATE TABLE {staging_table}")
-                            self.target_conn.commit()
+                        try:
+                            with self.target_conn.cursor() as cur:
+                                cur.copy_expert(f"COPY {staging_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, HEADER FALSE)", tmp)
+                                if pk_columns:
+                                    pk_match = " AND ".join([f'dest."{c}" = src."{c}"' for c in pk_columns])
+                                    cur.execute(f'DELETE FROM {target_table} AS dest USING {staging_table} AS src WHERE {pk_match}')
+                                cur.execute(f"INSERT INTO {target_table} ({cols_str}) SELECT {cols_str} FROM {staging_table}")
+                                cur.execute(f"TRUNCATE TABLE {staging_table}")
+                                self.target_conn.commit()
+                        except Exception as e:
+                            raise RuntimeError(f"TARGET_DB_ERROR: {e}")
                     
                     total_rows += row_count
                     logger.info(f"Ingested {row_count} into {target_table} from {source_name or config.get('server')}. Total: {total_rows}")
@@ -350,7 +365,8 @@ class DirectPostgresToPostgres:
                     finally:
                         engine.dispose()
             except Exception as e:
-                db_side = "Target" if "target_conn" in str(e) or "psycopg2" in str(e) else "Source/Logic"
+                err_msg = str(e)
+                db_side = "Source" if "SOURCE_" in err_msg else ("Target" if "TARGET_" in err_msg else "Logic/Unknown")
                 logger.error(f"Failed {config['table_name']} ({db_side} side): {e}")
             finally:
                 if self.target_conn:
