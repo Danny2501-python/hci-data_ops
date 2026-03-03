@@ -10,7 +10,6 @@ import json
 import uuid
 import gc
 import tempfile
-import time
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 from decimal import Decimal
@@ -249,7 +248,7 @@ class DirectPostgresToPostgres:
                             self.target_conn.commit()
                     
                     total_rows += row_count
-                    logger.info(f"Ingested {row_count} into {target_table}. Total: {total_rows}")
+                    logger.info(f"Ingested {row_count} into {target_table} from {source_name or config.get('server')}. Total: {total_rows}")
                     del pa_table
                     gc.collect()
                     pa.default_memory_pool().release_unused()
@@ -332,36 +331,26 @@ class DirectPostgresToPostgres:
         actual_source = None if not source_type or str(source_type).lower() in ('standard', 'none', '') else source_type.upper()
         configs = get_active_table_configs(table_id=table_id, source=None if table_id else actual_source)
         for config in configs:
-            max_retries, retry_count = 3, 0
-            while retry_count < max_retries:
-                try:
-                    target_table = config['table_name']
-                    source_table = config['table_name_source']
+            try:
+                target_table = config['table_name']
+                source_table = config['table_name_source']
 
-                    # Use ERP logic if the METADATA says it's an ERP table
-                    if str(config.get('source')).upper() == 'ERP':
-                        self.process_erp(config, drop_table=drop_table, load_type=load_type)
-                    else:
-                        # Single source logic
-                        engine = self.create_source_engine(config['server'])
-                        if not engine:
-                            logger.warning(f"No connection found for server {config['server']} (Table: {target_table})")
-                            break
-                        try:
-                            self.prepare_target(engine, config, drop_table)
-                            self.stream_and_upsert(engine, config, config['table_name'], load_type=load_type)
-                        finally:
-                            engine.dispose()
-                    break # Success
-                except Exception as e:
-                    retry_count += 1
-                    logger.error(f"Attempt {retry_count}/{max_retries} failed for {config['table_name']}: {e}")
-                    if retry_count < max_retries:
-                        time.sleep(10)
-                        try: self.connect_target() # Attempt to revive target connection
-                        except: pass
-                    else:
-                        logger.critical(f"All attempts failed for {config['table_name']}. Skipping.")
+                # Use ERP logic if the METADATA says it's an ERP table
+                if str(config.get('source')).upper() == 'ERP':
+                    self.process_erp(config, drop_table=drop_table, load_type=load_type)
+                else:
+                    # Single source logic
+                    engine = self.create_source_engine(config['server'])
+                    if not engine:
+                        logger.warning(f"No connection found for server {config['server']} (Table: {target_table})")
+                        continue
+                    try:
+                        self.prepare_target(engine, config, drop_table)
+                        self.stream_and_upsert(engine, config, config['table_name'], load_type=load_type)
+                    finally:
+                        engine.dispose()
+            except Exception as e:
+                logger.error(f"Failed {config['table_name']}: {e}")
         self.target_conn.close()
 
 if __name__ == "__main__":
