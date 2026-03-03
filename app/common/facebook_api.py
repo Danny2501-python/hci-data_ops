@@ -283,6 +283,7 @@ def get_active_facebook_accounts(db) -> List[Dict]:
                script_type_to_run
         FROM core_facebook_ad_account
         WHERE is_active = TRUE
+        ORDER BY priority_order ASC
     """
     rows = db.fetchall(query)
     
