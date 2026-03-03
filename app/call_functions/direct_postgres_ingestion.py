@@ -288,7 +288,8 @@ class DirectPostgresToPostgres:
                 
                 if valid_pk:
                     idx_name = f"idx_{target_table.replace('.', '_')}_pk"[:63]
-                    cur.execute(f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {target_table} ({", ".join([f"\"{c}\"" for c in valid_pk])})')
+                    pk_cols_str = ", ".join(['"' + c + '"' for c in valid_pk])
+                    cur.execute(f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {target_table} ({pk_cols_str})')
                     self.target_conn.commit()
 
     def process_erp(self, config: Dict, drop_table: bool, load_type: str):
