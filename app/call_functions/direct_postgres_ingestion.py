@@ -270,6 +270,9 @@ class DirectPostgresToPostgres:
                     del pa_table
                     gc.collect()
                     pa.default_memory_pool().release_unused()
+
+                    if row_count < BATCH_SIZE:
+                        break
             return total_rows
         finally:
             with self.target_conn.cursor() as cur:
@@ -334,7 +337,12 @@ class DirectPostgresToPostgres:
                     self.prepare_target(engine, config, drop_table)
                     initialized = True
                 
-                total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
+                try:
+                    total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
+                except Exception as e:
+                    err_msg = str(e)
+                    db_side = "Source" if "SOURCE_" in err_msg else ("Target" if "TARGET_" in err_msg else "Logic/Unknown")
+                    logger.error(f"Failed to ingest {target_table} from {name} ({db_side} side): {e}")
             finally:
                 engine.dispose()
         
