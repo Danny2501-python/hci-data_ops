@@ -94,20 +94,6 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
     config_table = ensure_table_config_table_exists()
     
     # Build filter
-    filters = [
-        EqualTo("active", True),
-    ]
-    
-    # If neither table_id nor source is provided, it's a "Standard" run -> enforce is_transfrom=True
-    if not source and not table_id:
-        filters.append(EqualTo("is_transfrom", True))
-        
-    if table_id:
-        filters.append(EqualTo("id", table_id))
-        
-    if source:
-        filters.append(EqualTo("source", source))
-    
     logger.info(f"Fetching table configs with filters: table_id={table_id}, source='{source}'")
     
     # DEBUG: See what's actually in Iceberg
