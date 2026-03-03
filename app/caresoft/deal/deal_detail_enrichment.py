@@ -180,9 +180,8 @@ class DealDetailEnrichment:
                 NestedField(53, "assignee", StringType(), required=False),
                 NestedField(54, "requester", StringType(), required=False),
                 
-                # Brand and raw data
+                # Brand mapping
                 NestedField(55, "brand_id", IntegerType(), required=False),
-                NestedField(56, "raw_data", StringType(), required=False),
                 
                 # Metadata
                 NestedField(100, "snapshot_date", DateType(), required=False),
@@ -574,7 +573,7 @@ class DealDetailEnrichment:
                         
                         # --- Metadata ---
                         "custom_fields": json.dumps(deal_data.get("custom_fields", {}), ensure_ascii=False),
-                        "raw_data": json.dumps(deal_data, ensure_ascii=False),
+                        # "raw_data": json.dumps(deal_data, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
                         "ingestion_timestamp": get_current_timestamp_naive(),
                     }
