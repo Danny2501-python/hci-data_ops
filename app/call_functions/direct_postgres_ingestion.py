@@ -174,7 +174,9 @@ class DirectPostgresToPostgres:
             with source_engine.connect().execution_options(stream_results=True) as conn:
                 # Disable timeout on source for long-running streaming
                 try: conn.execute(text("SET statement_timeout = 0"))
-                except: pass
+                except: 
+                    try: conn.rollback() # Essential to clear aborted transaction state
+                    except: pass
 
                 try:
                     result = conn.execute(query)
