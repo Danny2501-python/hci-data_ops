@@ -108,6 +108,16 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
     if source:
         filters.append(EqualTo("source", source))
     
+    logger.info(f"Fetching table configs with filters: table_id={table_id}, source='{source}'")
+    
+    # DEBUG: See what's actually in Iceberg
+    all_scan = config_table.scan()
+    available_info = []
+    for batch in all_scan.to_arrow_batch_reader():
+        for i in range(len(batch)):
+            available_info.append(f"ID:{batch['id'][i].as_py()} | Source:'{batch['source'][i].as_py()}' | Active:{batch['active'][i].as_py()}")
+    logger.info(f"All available records in Iceberg: {available_info}")
+
     # Scan for active configs
     scan = config_table.scan(
         row_filter=And(*filters) if len(filters) > 1 else filters[0]
