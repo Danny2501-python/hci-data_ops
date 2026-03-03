@@ -114,7 +114,7 @@ try:
 except Exception as e:
     logger.warning(f"Could not load dwh_product_new connection: {e}")
 
-resource_requirements = k8s.V1ResourceRequirements(requests={'cpu': '1000m', 'memory': '2Gi'}, limits={'cpu': '2000m', 'memory': '4Gi'})
+resource_requirements = k8s.V1ResourceRequirements(requests={'cpu': '2000m', 'memory': '4Gi'}, limits={'cpu': '3000m', 'memory': '6Gi'})
 nfs_volume = k8s.V1Volume(name='nfs-scripts', nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH))
 nfs_mount = k8s.V1VolumeMount(name='nfs-scripts', mount_path='/app', read_only=True)
 temp_disk_volume = k8s.V1Volume(name='temp-disk', empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='10Gi'))

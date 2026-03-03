@@ -220,14 +220,9 @@ for env_var_name, conn_id in erp_conn_mapping.items():
         erp_configs[env_var_name] = ""
 
 # Resource requirements
-resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
-)
-
 resource_requirements_serving = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'},
-    limits={'cpu': '2000m', 'memory': '4Gi'}
+    requests={'cpu': '2000m', 'memory': '4Gi'},
+    limits={'cpu': '3000m', 'memory': '6Gi'}
 )
 
 # NFS Volume

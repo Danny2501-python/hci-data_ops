@@ -167,7 +167,7 @@ class DirectPostgresToPostgres:
             self.target_conn.commit()
 
         # 2. Streaming Loop
-        BATCH_SIZE, total_rows = 10000, 0
+        BATCH_SIZE, total_rows = 20000, 0
         temp_dir = os.getenv('TEMP_DIR', tempfile.gettempdir())
         
         try:
@@ -323,7 +323,6 @@ class DirectPostgresToPostgres:
         return total
 
     def run(self, table_id: Optional[int] = None, source_type: Optional[str] = None, drop_table: bool = False, load_type: str = 'incremental'):
-        self.connect_target()
         
         # Flexibility: Normalize 'standard' or empty string to None for the config loader
         # This allows 'Standard' ingestion to work by filtering is_transfrom=True
@@ -332,6 +331,7 @@ class DirectPostgresToPostgres:
         configs = get_active_table_configs(table_id=table_id, source=None if table_id else actual_source)
         for config in configs:
             try:
+                self.connect_target() # Fresh connection for each table
                 target_table = config['table_name']
                 source_table = config['table_name_source']
 
@@ -350,8 +350,12 @@ class DirectPostgresToPostgres:
                     finally:
                         engine.dispose()
             except Exception as e:
-                logger.error(f"Failed {config['table_name']}: {e}")
-        self.target_conn.close()
+                db_side = "Target" if "target_conn" in str(e) or "psycopg2" in str(e) else "Source/Logic"
+                logger.error(f"Failed {config['table_name']} ({db_side} side): {e}")
+            finally:
+                if self.target_conn:
+                    self.target_conn.close()
+                    self.target_conn = None
 
 if __name__ == "__main__":
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
