@@ -10,6 +10,7 @@ import json
 import uuid
 import gc
 import tempfile
+import time
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
 from decimal import Decimal
@@ -277,6 +278,19 @@ class DirectPostgresToPostgres:
                 cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
                 self.target_conn.commit()
 
+            # 3. Create Index on PK Columns for performance if not exists
+            pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
+            if pk_columns:
+                # Ensure all PK columns actually exist in target (case insensitive check)
+                cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table.split('.')[-1]}'")
+                existing_cols = [r[0].lower() for r in cur.fetchall()]
+                valid_pk = [c for c in pk_columns if c.lower() in existing_cols]
+                
+                if valid_pk:
+                    idx_name = f"idx_{target_table.replace('.', '_')}_pk"[:63]
+                    cur.execute(f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {target_table} ({", ".join([f"\"{c}\"" for c in valid_pk])})')
+                    self.target_conn.commit()
+
     def process_erp(self, config: Dict, drop_table: bool, load_type: str):
         target_table = config['table_name']
         source_table = config['table_name_source']
@@ -317,27 +331,36 @@ class DirectPostgresToPostgres:
         actual_source = None if not source_type or str(source_type).lower() in ('standard', 'none', '') else source_type.upper()
         configs = get_active_table_configs(table_id=table_id, source=None if table_id else actual_source)
         for config in configs:
-            try:
-                target_table = config['table_name']
-                source_table = config['table_name_source']
-                pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
+            max_retries, retry_count = 3, 0
+            while retry_count < max_retries:
+                try:
+                    target_table = config['table_name']
+                    source_table = config['table_name_source']
 
-                # Use ERP logic if the METADATA says it's an ERP table
-                if str(config.get('source')).upper() == 'ERP':
-                    self.process_erp(config, drop_table=drop_table, load_type=load_type)
-                else:
-                    # Single source logic
-                    engine = self.create_source_engine(config['server'])
-                    if not engine:
-                        logger.warning(f"No connection found for server {config['server']} (Table: {target_table})")
-                        continue
-                    try:
-                        self.prepare_target(engine, config, drop_table)
-                        self.stream_and_upsert(engine, config, config['table_name'], load_type=load_type)
-                    finally:
-                        engine.dispose()
-            except Exception as e:
-                logger.error(f"Failed {config['table_name']}: {e}")
+                    # Use ERP logic if the METADATA says it's an ERP table
+                    if str(config.get('source')).upper() == 'ERP':
+                        self.process_erp(config, drop_table=drop_table, load_type=load_type)
+                    else:
+                        # Single source logic
+                        engine = self.create_source_engine(config['server'])
+                        if not engine:
+                            logger.warning(f"No connection found for server {config['server']} (Table: {target_table})")
+                            break
+                        try:
+                            self.prepare_target(engine, config, drop_table)
+                            self.stream_and_upsert(engine, config, config['table_name'], load_type=load_type)
+                        finally:
+                            engine.dispose()
+                    break # Success
+                except Exception as e:
+                    retry_count += 1
+                    logger.error(f"Attempt {retry_count}/{max_retries} failed for {config['table_name']}: {e}")
+                    if retry_count < max_retries:
+                        time.sleep(10)
+                        try: self.connect_target() # Attempt to revive target connection
+                        except: pass
+                    else:
+                        logger.critical(f"All attempts failed for {config['table_name']}. Skipping.")
         self.target_conn.close()
 
 if __name__ == "__main__":
