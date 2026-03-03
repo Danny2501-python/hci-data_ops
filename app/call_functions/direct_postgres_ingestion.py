@@ -158,6 +158,7 @@ class DirectPostgresToPostgres:
         query = text(f"SELECT * FROM {source_table} WHERE {where}")
         target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
         target_table_name = target_table.split('.')[-1]
+        staging_table = f"{target_table_name}_staging_{uuid.uuid4().hex[:8]}"
 
         with self.target_conn.cursor() as cur:
             cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table_name}' AND table_schema='{target_schema}' ORDER BY ordinal_position")
