@@ -159,18 +159,18 @@ for erp_name, conn_id in erp_connections_config.items():
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = ''
 
 # DWH Product Connection (for serving layer)
-dwh_product_uri = ''
+dwh_product_new_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product')
-    conn = hook.get_connection('dwh_product')
-    dwh_product_uri = conn.get_uri()
+    hook = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn = hook.get_connection('dwh_product_new')
+    dwh_product_new_uri = conn.get_uri()
     
-    if '?__extra__=' in dwh_product_uri:
-        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    if '?__extra__=' in dwh_product_new_uri:
+        dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
     
-    logger.info("✅ Loaded connection URI for dwh_product")
+    logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
 
 
 
@@ -293,7 +293,7 @@ task_refresh_serving_layer_v2 = KubernetesPodOperator(
     
     env_vars={
         **common_env_vars,
-        'POSTGRES_URI': dwh_product_uri,
+        'POSTGRES_URI': dwh_product_new_uri,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'SERVING_TABLE_NAME': 'cs_deal_detail_api_v2',
     },
@@ -357,7 +357,7 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
     
     env_vars={
         **common_env_vars,
-        'POSTGRES_URI': dwh_product_uri,
+        'POSTGRES_URI': dwh_product_new_uri,
         'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments',
     },
     

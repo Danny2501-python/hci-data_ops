@@ -73,16 +73,16 @@ common_env_vars = {
 # DWH Connection
 dwh_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product')
-    conn = hook.get_connection('dwh_product')
+    hook = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn = hook.get_connection('dwh_product_new')
     dwh_uri = conn.get_uri()
     
     if '?__extra__=' in dwh_uri:
         dwh_uri = dwh_uri.split('?__extra__=')[0]
     
-    logger.info("✅ Loaded connection URI for dwh_product")
+    logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
