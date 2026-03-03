@@ -292,7 +292,7 @@ class ChatAgentUpdate:
                 "facebook_page_id": str(chat.get("facebook_page_id")) if chat.get("facebook_page_id") is not None else None,
                 "service_id": chat.get("service_id"),
                 "brand_id": brand_erp_id,
-                "raw_data": json.dumps(chat, ensure_ascii=False),
+                # "raw_data": json.dumps(chat, ensure_ascii=False), # Removed due to size
                 "agent_name": chat.get("agent_name"),
                 "snapshot_date": self.snapshot_date,
                 "ingestion_timestamp": ingestion_timestamp
