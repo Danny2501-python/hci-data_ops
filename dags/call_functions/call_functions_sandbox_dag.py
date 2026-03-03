@@ -133,10 +133,10 @@ common_env_vars = {
         'dbname': 'staging_sci'
     }),
     'ERP_SCI_CONFIG': json.dumps({
-        'user': 'reporter',
-        'password': 'xjsfpwzlqehd',
-        'host': '10.10.10.154',
-        'port': 5432,
+        'user': 'report_user',
+        'password': '3EC4BUOtK4QokfJ8wJQA0uLcJaB7j+Ue',
+        'host': '10.10.10.221',
+        'port': 54321,
         'dbname': 'sci_erp'
     }),
     'DEV_SCI_CONFIG': json.dumps({

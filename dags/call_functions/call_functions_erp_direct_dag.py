@@ -97,7 +97,7 @@ common_env_vars = {
     'DEFAULT_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.214', 'port': 5432, 'dbname': 'etl_marketing'}),
     'CUSTOM_DB_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.214', 'port': 5432, 'dbname': 'staging_sci'}),
     'DU_PHONG_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.226', 'port': 5432, 'dbname': 'staging_sci'}),
-    'ERP_SCI_CONFIG': json.dumps({'user': 'reporter', 'password': 'xjsfpwzlqehd', 'host': '10.10.10.154', 'port': 5432, 'dbname': 'sci_erp'}),
+    'ERP_SCI_CONFIG': json.dumps({'user': 'report_user', 'password': '3EC4BUOtK4QokfJ8wJQA0uLcJaB7j+Ue', 'host': '10.10.10.221', 'port': 54321, 'dbname': 'sci_erp'}),
     'GIAOVIEC_CONFIG': json.dumps({'user': 'reader', 'password': 'Sci@123', 'host': '10.10.10.153', 'port': 54222, 'dbname': 'project'}),
     'SEEDING_CONFIG': json.dumps({'user': 'reader', 'password': 'seeding@123', 'host': '10.10.10.234', 'port': 54300, 'dbname': 'sale'}),
     'HONGHA_CONFIG': json.dumps({'user': 'reporter', 'password': 'hovxmsgewkru', 'host': 'db.benhvienhongha.com.vn', 'port': 55000, 'dbname': 'bvhongha'}),
