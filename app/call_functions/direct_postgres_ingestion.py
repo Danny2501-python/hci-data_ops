@@ -356,7 +356,7 @@ class DirectPostgresToPostgres:
         # Flexibility: Normalize 'standard' or empty string to None for the config loader
         # This allows 'Standard' ingestion to work by filtering is_transfrom=True
         # If table_id is provided, we ignore the source filter to avoid AND mismatches
-        actual_source = None if not source_type or str(source_type).lower() in ('standard', 'none', '') else source_type.upper()
+        actual_source = None if not source_type or str(source_type).lower() in ('standard', 'none', '') else source_type.strip()
         configs = get_active_table_configs(table_id=table_id, source=None if table_id else actual_source)
         for config in configs:
             try:

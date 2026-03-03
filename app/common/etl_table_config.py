@@ -120,17 +120,37 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
 
     # Scan for active configs
     scan = config_table.scan(
-        row_filter=And(*filters) if len(filters) > 1 else filters[0]
+        row_filter=EqualTo("active", True)
     )
     
     configs = []
     for batch in scan.to_arrow_batch_reader():
         for i in range(len(batch)):
+            row_id = batch["id"][i].as_py()
+            row_source = batch["source"][i].as_py()
+            row_is_transfrom = batch["is_transfrom"][i].as_py()
+
+            # 1. Apply table_id filter if provided
+            if table_id is not None and row_id != table_id:
+                continue
+            
+            # 2. Apply source filter (Case-insensitive)
+            if source:
+                target_source = source.strip().lower()
+                current_source = (row_source or "").strip().lower()
+                if current_source != target_source:
+                    continue
+            
+            # 3. If no source and no table_id provided, enforce is_transfrom=True (Standard run)
+            if not source and table_id is None:
+                if not row_is_transfrom:
+                    continue
+
             config = {
-                "id": batch["id"][i].as_py(),
+                "id": row_id,
                 "table_name": batch["table_name"][i].as_py(),
                 "table_name_source": batch["table_name_source"][i].as_py(),
-                "source": batch["source"][i].as_py(),
+                "source": row_source,
                 "server": batch["server"][i].as_py(),
                 "created_date": batch["created_date"][i].as_py(),
                 "updated_date": batch["updated_date"][i].as_py(),
@@ -141,13 +161,13 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
                 "result": batch["result"][i].as_py(),
                 "update_time": batch["update_time"][i].as_py(),
                 "primary_keyword": batch["primary_keyword"][i].as_py(),
-                "is_transfrom": batch["is_transfrom"][i].as_py(),
+                "is_transfrom": row_is_transfrom,
                 "consider": batch["consider"][i].as_py(),
                 "truncate": batch["truncate"][i].as_py(),
             }
             configs.append(config)
     
-    logger.info(f"Loaded {len(configs)} active table configurations from {TABLE_CONFIG_TABLE}")
+    logger.info(f"Loaded {len(configs)} active table configurations (Filter: source={source}, table_id={table_id})")
     return configs
 
 
