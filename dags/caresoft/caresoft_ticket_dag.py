@@ -404,5 +404,14 @@ task_ticket_source_metadata_serving_old = KubernetesPodOperator(
 # ============================================================================
 
 # Main Ticket Pipeline:
-task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old] >> [task_ticket_enrichment, task_ticket_enrichment_old] >> task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old]
+# Main Ticket Pipeline:
+# Ingestion -> Serving (API) -> Enrichment -> Source Metadata -> Serving (Metadata)
+task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old]
+
+# Both serving tasks (new/old) must finish before enrichment starts
+[task_ticket_api_serving, task_ticket_api_serving_old] >> task_ticket_enrichment
+[task_ticket_api_serving, task_ticket_api_serving_old] >> task_ticket_enrichment_old
+
+[task_ticket_enrichment, task_ticket_enrichment_old] >> task_ticket_source_metadata
+task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old]
 

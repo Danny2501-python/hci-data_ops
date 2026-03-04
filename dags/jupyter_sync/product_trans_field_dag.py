@@ -146,4 +146,12 @@ t_ks_crm_lead = create_k8s_task('sync_ks_crm_lead', 'sync_ks_crm_lead')
 ks_crm_tasks = [t_ks_sale_order, t_ks_crm_line, t_ks_crm_line_prod, t_ks_crm_lead]
 
 # --- Dependencies ---
-medical_tasks >> crm_tasks >> ks_medical_tasks >> ks_crm_tasks
+# Airflow doesn't support list >> list, so we connect them sequentially or use cross_downstream
+for med_task in medical_tasks:
+    med_task >> crm_tasks
+
+for crm_task in crm_tasks:
+    crm_task >> ks_medical_tasks
+
+for ks_med_task in ks_medical_tasks:
+    ks_med_task >> ks_crm_tasks
