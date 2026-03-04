@@ -24,6 +24,7 @@ from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
 import psycopg2
+import gc
 # from psycopg2.extras import execute_values
 
 # Add parent directory to path for imports
