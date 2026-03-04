@@ -13,6 +13,9 @@ from datetime import date, datetime, timedelta
 from pyiceberg.expressions import EqualTo
 from pyiceberg.catalog import load_catalog
 from loguru import logger
+import pyarrow as pa
+import pyarrow.parquet as pq
+import gc
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))

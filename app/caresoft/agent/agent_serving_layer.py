@@ -5,6 +5,10 @@ import psycopg2
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
 from loguru import logger
+import pyarrow as pa
+import pyarrow.parquet as pq
+import duckdb
+import gc
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
