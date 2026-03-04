@@ -158,19 +158,29 @@ for erp_name, conn_id in erp_connections_config.items():
         logger.warning(f"⚠️  Could not load {erp_name} connection: {e}")
         erp_connection_env_vars[f'ERP_{erp_name}_URI'] = ''
 
-# DWH Product Connection (for serving layer)
+# DWH Product Connections (for serving layer)
 dwh_product_new_uri = ''
+dwh_product_uri = ''
+
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product_new')
-    conn = hook.get_connection('dwh_product_new')
-    dwh_product_new_uri = conn.get_uri()
-    
+    hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn_new = hook_new.get_connection('dwh_product_new')
+    dwh_product_new_uri = conn_new.get_uri()
     if '?__extra__=' in dwh_product_new_uri:
         dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
-    
     logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
+
+try:
+    hook_old = PostgresHook(postgres_conn_id='dwh_product')
+    conn_old = hook_old.get_connection('dwh_product')
+    dwh_product_uri = conn_old.get_uri()
+    if '?__extra__=' in dwh_product_uri:
+        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 
 
@@ -304,6 +314,34 @@ task_refresh_serving_layer_v2 = KubernetesPodOperator(
     dag=dag,
 )
 
+task_refresh_serving_layer_v2_old = KubernetesPodOperator(
+    task_id='refresh_serving_layer_v2_old_dwh',
+    name='caresoft-refresh-serving-layer-v2-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_product_uri,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'SERVING_TABLE_NAME': 'cs_deal_detail_api_v2',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 
 # ============================================================================
 # TASK 5: Transform Deal Comments (JSON → Flat Table)
@@ -367,4 +405,31 @@ task_deal_comments_serving_layer = KubernetesPodOperator(
     dag=dag,
 )
 
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> task_refresh_serving_layer_v2 >> task_deal_comments_transformation >> task_deal_comments_serving_layer
+task_deal_comments_serving_layer_old = KubernetesPodOperator(
+    task_id='deal_comments_serving_layer_old_dwh',
+    name='caresoft-deal-comments-serving-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_comments_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_product_uri,
+        'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer_v2, task_refresh_serving_layer_v2_old] >> task_deal_comments_transformation >> [task_deal_comments_serving_layer, task_deal_comments_serving_layer_old]

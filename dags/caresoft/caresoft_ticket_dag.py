@@ -27,19 +27,29 @@ NFS_PATH = '/srv/nfs_share/app'
 # LOAD AIRFLOW CONNECTIONS
 # ============================================================================
 
-# DWH Product Connection (for serving layer)
+# DWH Product Connections (for serving layer)
 dwh_product_new_uri = ''
+dwh_product_uri = ''
+
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product_new')
-    conn = hook.get_connection('dwh_product_new')
-    dwh_product_new_uri = conn.get_uri()
-    
+    hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn_new = hook_new.get_connection('dwh_product_new')
+    dwh_product_new_uri = conn_new.get_uri()
     if '?__extra__=' in dwh_product_new_uri:
         dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
-    
     logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
+
+try:
+    hook_old = PostgresHook(postgres_conn_id='dwh_product')
+    conn_old = hook_old.get_connection('dwh_product')
+    dwh_product_uri = conn_old.get_uri()
+    if '?__extra__=' in dwh_product_uri:
+        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
@@ -219,6 +229,33 @@ task_ticket_enrichment = KubernetesPodOperator(
     dag=dag,
 )
 
+task_ticket_enrichment_old = KubernetesPodOperator(
+    task_id='ticket_enrichment_silver_old_dwh',
+    name='caresoft-ticket-enrichment-silver-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_detail_enrichment.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK 3: SERVING - Ticket API to PostgreSQL DWH
 # ============================================================================
@@ -242,6 +279,33 @@ task_ticket_api_serving = KubernetesPodOperator(
         **common_env_vars,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_product_new_uri,
+    },
+    
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+task_ticket_api_serving_old = KubernetesPodOperator(
+    task_id='ticket_api_serving_layer_old_dwh',
+    name='caresoft-ticket-api-serving-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_api_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
     },
     
     container_resources=resource_requirements_serving,
@@ -308,10 +372,37 @@ task_ticket_source_metadata_serving = KubernetesPodOperator(
     dag=dag,
 )
 
+task_ticket_source_metadata_serving_old = KubernetesPodOperator(
+    task_id='ticket_source_metadata_serving_layer_old_dwh',
+    name='caresoft-ticket-source-metadata-serving-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_source_metadata_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
 # Main Ticket Pipeline:
-task_ticket_ingestion >> task_ticket_api_serving >> task_ticket_enrichment >> task_ticket_source_metadata >> task_ticket_source_metadata_serving
+task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old] >> [task_ticket_enrichment, task_ticket_enrichment_old] >> task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old]
 

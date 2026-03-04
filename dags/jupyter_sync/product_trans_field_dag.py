@@ -4,7 +4,9 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 import pendulum
-from loguru import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # CONFIGURATION

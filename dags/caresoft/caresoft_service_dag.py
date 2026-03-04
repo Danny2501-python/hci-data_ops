@@ -70,19 +70,29 @@ common_env_vars = {
     'CARESOFT_PAGE_SIZE': '500',
 }
 
-# DWH Connection
+# DWH Connections
 dwh_uri = ''
+dwh_old_uri = ''
+
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product_new')
-    conn = hook.get_connection('dwh_product_new')
-    dwh_uri = conn.get_uri()
-    
+    hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
+    conn_new = hook_new.get_connection('dwh_product_new')
+    dwh_uri = conn_new.get_uri()
     if '?__extra__=' in dwh_uri:
         dwh_uri = dwh_uri.split('?__extra__=')[0]
-    
     logger.info("✅ Loaded connection URI for dwh_product_new")
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
+
+try:
+    hook_old = PostgresHook(postgres_conn_id='dwh_product')
+    conn_old = hook_old.get_connection('dwh_product')
+    dwh_old_uri = conn_old.get_uri()
+    if '?__extra__=' in dwh_old_uri:
+        dwh_old_uri = dwh_old_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_product")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
@@ -170,8 +180,29 @@ task_service_serving = KubernetesPodOperator(
     dag=dag,
 )
 
+task_service_serving_old = KubernetesPodOperator(
+    task_id='service_serving_layer_old_dwh',
+    name='caresoft-service-serving-layer-old-dwh',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/service/service_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'],
+    volumes=[nfs_volume, duckdb_volume],
+    volume_mounts=[nfs_mount, duckdb_mount],
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_old_uri,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
+    },
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-task_service_ingestion >> task_service_serving
+task_service_ingestion >> [task_service_serving, task_service_serving_old]
