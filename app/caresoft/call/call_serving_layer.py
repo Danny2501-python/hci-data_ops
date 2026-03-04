@@ -1,9 +1,10 @@
 import os
 import sys
 from datetime import datetime, date, timedelta
+import psycopg2
+from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo
-import os
-import sys
+from loguru import logger
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
