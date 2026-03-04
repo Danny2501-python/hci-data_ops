@@ -24,7 +24,7 @@ import pyarrow.parquet as pq
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.brand_config import get_active_brands
-from common.utils import get_current_timestamp_naive
+from common.utils import get_current_timestamp_naive, bulk_load
 from common.caresoft_api import call_caresoft_api
 
 # Iceberg configuration
@@ -344,48 +344,16 @@ class ContactDetailEnrichment:
             return None
 
     def _upsert_to_postgres(self, cursor, records, columns):
-        """Streaming COPY + UPSERT with automatic staging cleanup"""
-        NULL_MARKER = '__NULL__'
-        output = io.StringIO()
-        writer = csv.writer(output, delimiter='\t', quoting=csv.QUOTE_MINIMAL)
-        
-        for rec in records:
-            row = []
-            for col in columns:
-                val = rec.get(col)
-                if val is None:
-                    row.append(NULL_MARKER)
-                elif isinstance(val, (datetime, date)):
-                    row.append(val.isoformat())
-                else:
-                    # Clean newline characters to prevent CSV corruption
-                    row.append(str(val).replace('\n', ' ').replace('\r', ' '))
-            writer.writerow(row)
-        
-        output.seek(0)
-        temp_table = f"temp_stg_contact_{os.getpid()}"
-        
-        # Create staging table
-        cursor.execute(f"CREATE TEMP TABLE {temp_table} (LIKE {self.target_pg_table} INCLUDING ALL) ON COMMIT DROP")
-        
-        # Load via COPY
-        col_list = ', '.join([f'"{c}"' for c in columns])
-        cursor.copy_expert(f"COPY {temp_table} ({col_list}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
-        
-        # Perform UPSERT
-        upd_list = [f'"{c}" = EXCLUDED."{c}"' for c in columns if c not in ['id', 'brand_id']]
-        cursor.execute(f"""
-            INSERT INTO {self.target_pg_table} ({col_list}) 
-            SELECT {col_list} FROM {temp_table}
-            ON CONFLICT ("id", "brand_id") 
-            DO UPDATE SET 
-                {', '.join(upd_list)}
-            WHERE {self.target_pg_table}."updated_at" < EXCLUDED."updated_at" 
-               OR {self.target_pg_table}."updated_at" IS NULL
-        """)
-        
-        output.close()
-        del output
+        """Standardized Bulk Upsert using common utility"""
+        bulk_load(
+            cursor=cursor,
+            target_table=self.target_pg_table,
+            records=records,
+            columns=columns,
+            conflict_columns=['id', 'brand_id'],
+            method='upsert',
+            update_condition=f'{self.target_pg_table}."updated_at" < EXCLUDED."updated_at" OR {self.target_pg_table}."updated_at" IS NULL'
+        )
 
 
 def main():

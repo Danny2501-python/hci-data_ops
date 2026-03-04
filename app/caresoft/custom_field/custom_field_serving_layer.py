@@ -1,14 +1,10 @@
+from pyiceberg.expressions import EqualTo
 import os
 import sys
-from datetime import datetime, date, timedelta
-from loguru import logger
-import psycopg2
-from psycopg2.extras import execute_values
-import pyarrow as pa
-import pyarrow.parquet as pq
-import duckdb
-from pyiceberg.catalog import load_catalog
-from pyiceberg.expressions import EqualTo
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from common.utils import bulk_load
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -202,27 +198,19 @@ class CustomFieldServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            cols_str = ', '.join([f'"{c}"' for c in columns])
+            logger.info(f"Bulk Upserting {len(rows)} {self.field_type} custom fields into {self.target_table}...")
             
-            # UPDATE on conflict
-            update_cols = [c for c in columns if c not in ('custom_field_id', 'value_id', 'brand_id')]
-            update_set = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in update_cols])
+            bulk_load(
+                cursor=cursor,
+                target_table=self.target_table,
+                records=rows,
+                columns=columns,
+                conflict_columns=['custom_field_id', 'value_id', 'brand_id'],
+                method='upsert'
+            )
             
-            logger.debug(f"Update columns: {update_cols}")
-            
-            sql = f"""
-            INSERT INTO {self.target_table} ({cols_str})
-            VALUES %s
-            ON CONFLICT ("custom_field_id", "value_id", "brand_id")
-            DO UPDATE SET
-                {update_set}
-            """
-            
-            logger.debug(f"SQL: {sql}")
-            
-            execute_values(cursor, sql, rows, page_size=1000)
             self.pg_conn.commit()
-            logger.success(f"Upserted {len(rows)} {self.field_type} custom field records to {self.target_table}")
+            logger.success(f"✅ Bulk Upserted {len(rows)} {self.field_type} custom field records to {self.target_table}")
             
         except Exception as e:
             self.pg_conn.rollback()

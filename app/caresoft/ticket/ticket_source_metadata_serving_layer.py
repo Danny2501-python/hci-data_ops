@@ -11,14 +11,13 @@ UPSERT Strategy:
 - PostgreSQL automatically maintains latest state
 """
 
+from pyiceberg.expressions import EqualTo
 import os
 import sys
-from datetime import datetime, date, timedelta
-from loguru import logger
-import psycopg2
-from psycopg2.extras import execute_values
-from pyiceberg.catalog import load_catalog
-from pyiceberg.expressions import EqualTo
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from common.utils import bulk_load
 
 # Iceberg configuration
 ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
@@ -221,52 +220,26 @@ class TicketSourceMetadataServingLayer:
                     pass
     
     def upsert_serving_table(self, columns, rows):
-        """
-        UPSERT data into serving table (Insert or Update on Conflict)
-        
-        Strategy:
-        - New sources → INSERT
-        - Existing sources with newer updated_at → UPDATE
-        - Existing sources with older updated_at → SKIP
-        
-        Args:
-            columns: List of column names
-            rows: List of tuples containing data
-        """
         if not rows:
             logger.warning("No data to upsert")
             return
             
-        logger.info(f"Upserting {len(rows)} records to {TARGET_TABLE}...")
+        logger.info(f"Bulk Upserting {len(rows)} records to {TARGET_TABLE}...")
         
         cursor = self.pg_conn.cursor()
         try:
-            # Build column list (quoted for reserved words like "index")
-            quoted_columns = [f'"{col}"' for col in columns]
-            columns_str = ', '.join(quoted_columns)
+            bulk_load(
+                cursor=cursor,
+                target_table=TARGET_TABLE,
+                records=rows,
+                columns=columns,
+                conflict_columns=['id', 'brand_id'],
+                method='upsert',
+                update_condition=f'{TARGET_TABLE}.updated_at < EXCLUDED.updated_at OR {TARGET_TABLE}.updated_at IS NULL'
+            )
             
-            # Build UPDATE SET clause (exclude PK columns)
-            pk_columns = {'id', 'brand_id'}
-            update_columns = [col for col in columns if col not in pk_columns]
-            update_set = ', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_columns])
-            
-            # UPSERT SQL with conflict resolution
-            upsert_sql = f"""
-            INSERT INTO {TARGET_TABLE} ({columns_str})
-            VALUES %s
-            ON CONFLICT (id, brand_id)
-            DO UPDATE SET
-                {update_set}
-            WHERE 
-                {TARGET_TABLE}.updated_at < EXCLUDED.updated_at
-                OR {TARGET_TABLE}.updated_at IS NULL
-            """
-            
-            # Execute batch insert
-            execute_values(cursor, upsert_sql, rows)
             self.pg_conn.commit()
-            
-            logger.success(f"✅ Upserted to {TARGET_TABLE}")
+            logger.success(f"✅ Bulk Upserted to {TARGET_TABLE}")
             
         except Exception as e:
             self.pg_conn.rollback()

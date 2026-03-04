@@ -8,14 +8,13 @@ Flow:
 3. Insert new records
 """
 
+from pyiceberg.expressions import EqualTo
 import os
 import sys
-from datetime import datetime, date, timedelta
-from loguru import logger
-import psycopg2
-from psycopg2.extras import execute_values
-from pyiceberg.catalog import load_catalog
-from pyiceberg.expressions import EqualTo
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from common.utils import bulk_load
 
 # Iceberg configuration
 ICEBERG_REST_URI_GOLD = os.getenv('ICEBERG_REST_URI_GOLD')
@@ -123,7 +122,7 @@ class DealCommentsServingLayer:
             raise
 
     def sync_comments(self, columns, rows):
-        """Delete existing + Insert new comments in single transaction"""
+        """Sync comments using standardized bulk_load (delete_insert)"""
         if not rows:
             logger.warning("No comments to sync")
             return
@@ -131,64 +130,26 @@ class DealCommentsServingLayer:
         # Ensure table exists first
         self.ensure_serving_table_exists(columns)
         
-        # Extract and validate ticket_ids and brand_ids
-        ticket_id_idx = columns.index('ticket_id')
-        brand_id_idx = columns.index('brand_id')
-        
-        # Build list of (brand_id, ticket_id) tuples for deletion
-        delete_pairs = set()
-        for row in rows:
-            brand_id = row[brand_id_idx]
-            ticket_id = row[ticket_id_idx]
-            
-            # Validate both IDs
-            if brand_id is not None and ticket_id is not None:
-                try:
-                    b = float(brand_id)
-                    t = float(ticket_id)
-                    if -1e20 < b < 1e20 and -1e20 < t < 1e20:
-                        delete_pairs.add((b, t))
-                except Exception:
-                    pass
-        
-        # Log brand distribution
-        brand_counts = {}
-        for brand_id, _ in delete_pairs:
-            brand_counts[brand_id] = brand_counts.get(brand_id, 0) + 1
-        logger.info(f"Brand distribution: {brand_counts}")
-
         cursor = self.pg_conn.cursor()
         try:
-            # 1. Delete existing records by (brand_id, ticket_id) pairs
-            if delete_pairs:
-                # Build WHERE clause: (brand_id = %s AND ticket_id = %s) OR ...
-                conditions = []
-                params = []
-                for brand_id, ticket_id in delete_pairs:
-                    conditions.append("(brand_id = %s AND ticket_id = %s)")
-                    params.extend([brand_id, ticket_id])
-                
-                where_clause = " OR ".join(conditions)
-                delete_sql = f"DELETE FROM {TARGET_TABLE} WHERE {where_clause}"
-                
-                cursor.execute(delete_sql, params)
-                logger.info(f"Deleted records for {len(delete_pairs)} (brand_id, ticket_id) pairs")
+            logger.info(f"Bulk Syncing {len(rows)} comments into {TARGET_TABLE} (Delete-Insert strategy)...")
             
-            # 2. Insert new records
-            cols_str = ', '.join([f'"{c}"' for c in columns])
-            execute_values(
-                cursor,
-                f"INSERT INTO {TARGET_TABLE} ({cols_str}) VALUES %s",
-                rows,
-                page_size=1000
+            bulk_load(
+                cursor=cursor,
+                target_table=TARGET_TABLE,
+                records=rows,
+                columns=columns,
+                conflict_columns=['brand_id', 'ticket_id'],
+                method='delete_insert'
             )
             
-            # 3. Commit transaction (atomic)
+            # Commit transaction (atomic)
             self.pg_conn.commit()
-            logger.success(f"Synced {len(rows)} comments for {len(delete_pairs)} (brand, ticket) pairs")
+            logger.success(f"✅ Bulk Synced {len(rows)} comments successfully")
             
-        except Exception:
+        except Exception as e:
             self.pg_conn.rollback()
+            logger.error(f"❌ Error syncing comments: {e}")
             raise
         finally:
             cursor.close()
