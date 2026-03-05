@@ -90,6 +90,9 @@ def get_active_table_configs(table_id: Optional[Any] = None, source: Optional[st
     Returns:
         List of table config dicts with all configuration fields
     """
+    # Normalize table_id: treat empty list, empty string or 'None' as None effectively
+    if table_id == [] or table_id == "" or str(table_id).lower() == 'none':
+        table_id = None
     # Ensure table exists
     config_table = ensure_table_config_table_exists()
     
