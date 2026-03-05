@@ -5,7 +5,7 @@ Similar to brand_config.py pattern
 """
 
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pyiceberg.catalog import load_catalog
 from pyiceberg.expressions import EqualTo, And
 from pyiceberg.schema import Schema
@@ -79,12 +79,12 @@ def ensure_table_config_table_exists():
         return table
 
 
-def get_active_table_configs(table_id: Optional[int] = None, source: Optional[str] = None) -> List[Dict]:
+def get_active_table_configs(table_id: Optional[Any] = None, source: Optional[str] = None) -> List[Dict]:
     """
     Load active table configurations from Gold layer
     
     Args:
-        table_id: Optional specific table ID to load
+        table_id: Optional specific table ID or list of IDs to load
         source: Optional source to filter by (e.g. 'ERP')
     
     Returns:
@@ -117,8 +117,13 @@ def get_active_table_configs(table_id: Optional[int] = None, source: Optional[st
             row_is_transfrom = batch["is_transfrom"][i].as_py()
 
             # 1. Apply table_id filter if provided
-            if table_id is not None and row_id != table_id:
-                continue
+            if table_id is not None:
+                if isinstance(table_id, list):
+                    if row_id not in table_id:
+                        continue
+                elif row_id != table_id:
+                    continue
+
             
             # 2. Apply source filter (Case-insensitive)
             if source:

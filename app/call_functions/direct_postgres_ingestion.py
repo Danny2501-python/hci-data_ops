@@ -390,7 +390,16 @@ class DirectPostgresToPostgres:
 if __name__ == "__main__":
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
     s_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date() if snapshot_date_str else None
-    t_id = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
+    t_id_arg = sys.argv[2] if len(sys.argv) > 2 else None
+    t_id = None
+    if t_id_arg and t_id_arg.strip() and t_id_arg.lower() != 'none':
+        # Handle list format: [1,2,3] or 1,2,3
+        clean_arg = t_id_arg.strip('[] ')
+        if ',' in clean_arg:
+            t_id = [int(i.strip()) for i in clean_arg.split(',') if i.strip().isdigit()]
+        elif clean_arg.isdigit():
+            t_id = int(clean_arg)
+
     s_type = sys.argv[3] if len(sys.argv) > 3 else None
     
     # Arg 4: load_type (incremental/full)

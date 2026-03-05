@@ -60,8 +60,8 @@ dag = DAG(
         ),
         'table_id': Param(
             default=None,
-            type=['null', 'integer'],
-            description='Process specific table ID only. Leave empty to process all tables.',
+            type=['null', 'string', 'array'],
+            description='Process specific table ID(s). Can be a single ID, a comma-separated string, or a list [1, 2]. Leave empty to process all.',
         ),
         'load_type': Param(
             default='incremental',
