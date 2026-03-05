@@ -393,15 +393,25 @@ if __name__ == "__main__":
     t_id_arg = sys.argv[2] if len(sys.argv) > 2 else None
     t_id = None
     if t_id_arg and t_id_arg.strip() and t_id_arg.lower() != 'none':
-        # Clean everything: brackets, spaces, quotes
-        clean_arg = t_id_arg.strip('[] ').replace('"', '').replace("'", "")
-        if ',' in clean_arg:
-            t_id = [int(i.strip()) for i in clean_arg.split(',') if i.strip().isdigit()]
-        elif clean_arg.isdigit():
-            t_id = int(clean_arg)
+        # 1. Clean brackets and spaces
+        raw_val = str(t_id_arg).strip('[] ')
         
-        # If after parsing it's an empty list, set to None to avoid blocking all rows
-        if isinstance(t_id, list) and len(t_id) == 0:
+        # 2. Handle comma-separated list
+        if ',' in raw_val:
+            parts = raw_val.split(',')
+            t_id = []
+            for p in parts:
+                clean_p = p.strip(' "\'') # Remove spaces, double quotes, and single quotes
+                if clean_p.isdigit():
+                    t_id.append(int(clean_p))
+        # 3. Handle single ID
+        else:
+            clean_p = raw_val.strip(' "\'')
+            if clean_p.isdigit():
+                t_id = int(clean_p)
+        
+        # Final safety check: if list is empty, set to None
+        if isinstance(t_id, list) and not t_id:
             t_id = None
 
     s_type = sys.argv[3] if len(sys.argv) > 3 else None
