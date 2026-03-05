@@ -58,9 +58,9 @@ dag = DAG(
             description='Override snapshot date (YYYY-MM-DD). Leave empty to use T-1.',
         ),
         'table_id': Param(
-            default='593,614',
+            default=[593, 614],
             type=['null', 'string', 'array'],
-            description='Table IDs to process.',
+            description='Table IDs to process (e.g. [593, 614] or "593,614").',
         ),
         'load_type': Param(
             default='incremental',
@@ -87,6 +87,8 @@ dag = DAG(
 # ============================================================================
 
 common_env_vars = {
+    'ICEBERG_REST_URI_BRONZE': 'http://iceberg-rest-bronze-zone:8181',
+    'CATALOG_NAME_BRONZE': 'bronze',
     'ICEBERG_REST_URI_GOLD': 'http://iceberg-rest-gold-zone:8181',
     'CATALOG_NAME_GOLD': 'gold',
     'S3_ENDPOINT': 'http://10.152.183.65:9000',
@@ -95,18 +97,36 @@ common_env_vars = {
     'AWS_REGION': 'us-east-1',
     'DEFAULT_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.214', 'port': 5432, 'dbname': 'etl_marketing'}),
     'CUSTOM_DB_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.214', 'port': 5432, 'dbname': 'staging_sci'}),
+    'DU_PHONG_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.226', 'port': 5432, 'dbname': 'staging_sci'}),
+    'ERP_SCI_CONFIG': json.dumps({'user': 'report_user', 'password': '3EC4BUOtK4QokfJ8wJQA0uLcJaB7j+Ue', 'host': '10.10.10.221', 'port': 54321, 'dbname': 'sci_erp'}),
+    'GIAOVIEC_CONFIG': json.dumps({'user': 'reader', 'password': 'Sci@123', 'host': '10.10.10.153', 'port': 54222, 'dbname': 'project'}),
+    'SEEDING_CONFIG': json.dumps({'user': 'reader', 'password': 'seeding@123', 'host': '10.10.10.234', 'port': 54300, 'dbname': 'sale'}),
+    'HONGHA_CONFIG': json.dumps({'user': 'reporter', 'password': 'hovxmsgewkru', 'host': 'db.benhvienhongha.com.vn', 'port': 55000, 'dbname': 'bvhongha'}),
+    'PORTAL_GUIDE_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.230', 'port': 5432, 'dbname': 'portal_guide'}),
 }
 
-# Load Target Connection
+# Fetch Connections
 dwh_product_new_uri = ''
+erp_configs = {}
 try:
     hook = PostgresHook(postgres_conn_id='dwh_product_new')
     conn = hook.get_connection('dwh_product_new')
     dwh_product_new_uri = conn.get_uri()
     if '?__extra__=' in dwh_product_new_uri:
         dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
+
+    erp_conn_mapping = {'ERP_SCI_URI': 'sci_erp_sci', 'ERP_KN_URI': 'sci_erp_kn', 'ERP_PR_URI': 'sci_erp_pr', 'ERP_HH_URI': 'sci_erp_hh'}
+    for env_var_name, conn_id in erp_conn_mapping.items():
+        try:
+            e_hook = PostgresHook(postgres_conn_id=conn_id)
+            e_conn = e_hook.get_connection(conn_id)
+            uri = e_conn.get_uri()
+            if '?__extra__=' in uri: uri = uri.split('?__extra__=')[0]
+            erp_configs[env_var_name] = uri
+        except:
+            pass
 except Exception as e:
-    logger.warning(f"Could not load dwh_product_new connection: {e}")
+    logger.warning(f"Could not load connection details: {e}")
 
 resource_requirements = k8s.V1ResourceRequirements(requests={'cpu': '2000m', 'memory': '4Gi'}, limits={'cpu': '3000m', 'memory': '6Gi'})
 nfs_volume = k8s.V1Volume(name='nfs-scripts', nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH))
@@ -138,6 +158,7 @@ direct_ingestion = KubernetesPodOperator(
     volume_mounts=[nfs_mount, temp_disk_mount],
     env_vars={
         **common_env_vars,
+        **erp_configs,
         'POSTGRES_URI': dwh_product_new_uri,
         'TEMP_DIR': '/tmp',
     },

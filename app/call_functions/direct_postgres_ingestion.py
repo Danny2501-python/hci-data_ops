@@ -393,6 +393,7 @@ if __name__ == "__main__":
     t_id_arg = sys.argv[2] if len(sys.argv) > 2 else None
     t_id = None
     if t_id_arg and t_id_arg.strip() and t_id_arg.lower() != 'none':
+        logger.info(f"Raw table_id input from CLI: {t_id_arg}")
         # 1. Clean brackets and spaces
         raw_val = str(t_id_arg).strip('[] ')
         
