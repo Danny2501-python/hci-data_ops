@@ -179,10 +179,23 @@ def execute_report_functions(**kwargs):
         "SELECT public.bc_sales_paris();",
         "SELECT public.op_convert_kangnam();"
     ]
+    
+    errors = []
     for sql in statements:
-        logger.info(f"Running: {sql}")
-        result = hook.get_first(sql)
-        logger.info(f"Result from DB: {result}")
+        try:
+            logger.info(f"🚀 Running: {sql}")
+            # Each get_first call handles its own connection open/close from the pool
+            result = hook.get_first(sql)
+            logger.info(f"✅ Result from DB: {result}")
+        except Exception as e:
+            error_msg = f"❌ Error executing {sql}: {str(e)}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+            
+    if errors:
+        # If any errors occurred, we might want to flag the task as failed 
+        # at the end while still having attempted everything.
+        raise Exception(f"Task completed with some errors: {'; '.join(errors)}")
 
 call_functions = PythonOperator(
     task_id='call_report_functions',
