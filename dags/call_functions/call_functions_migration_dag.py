@@ -75,9 +75,9 @@ dag = DAG(
             description='Drop serving table before loading (Full Refresh). WARNING: Destructive.'
         ),
         'source': Param(
-            default='migration',
+            default='caresoft',
             type='string',
-            description='Source type filter (e.g. migration, ERP)'
+            description='Source type filter (e.g. caresoft, ERP)'
         ),
         'target_conn_id': Param(
             default='dwh_product_new',
