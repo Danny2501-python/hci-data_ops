@@ -78,9 +78,17 @@ dag = DAG(
             default='sandbox',
             type='string',
             description='Source type filter (e.g. sandbox, ERP)'
+        ),
+        'target_conn_id': Param(
+            default='dwh_product_new',
+            type='string',
+            description='Target Postgres Connection ID (e.g. dwh_sandbox, dwh_product_new)'
         )
     },
-    user_defined_macros={'yesterday_tz': get_yesterday_tz},
+    user_defined_macros={
+        'yesterday_tz': get_yesterday_tz,
+        'get_conn_uri': lambda conn_id: PostgresHook(postgres_conn_id=conn_id).get_connection(conn_id).get_uri().split('?__extra__=')[0] if conn_id else ""
+    },
 )
 
 # ============================================================================
@@ -184,19 +192,9 @@ common_env_vars = {
 }
 
 # ============================================================================
-# LOAD DATABASE CONNECTIONS (Dynamic - Target & ERP Sources)
+# LOAD ERP CONNECTIONS (Parse-time fallback)
 # ============================================================================
-
-dwh_sandbox_uri = ''
-try:
-    hook = PostgresHook(postgres_conn_id='dwh_sandbox')
-    conn = hook.get_connection('dwh_sandbox')
-    dwh_sandbox_uri = conn.get_uri()
-    if '?__extra__=' in dwh_sandbox_uri:
-        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
-    logger.info("✅ Loaded connection URI for dwh_sandbox")
-except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+# Note: target_conn_id is now handled dynamically via macro in the task
 
 erp_configs = {}
 erp_conn_mapping = {
@@ -268,7 +266,7 @@ direct_ingestion = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         **erp_configs,
-        'POSTGRES_URI': dwh_sandbox_uri,
+        'POSTGRES_URI': '{{ get_conn_uri(params.target_conn_id) }}',
         'TEMP_DIR': '/tmp',
     },
     container_resources=resource_requirements_serving,
