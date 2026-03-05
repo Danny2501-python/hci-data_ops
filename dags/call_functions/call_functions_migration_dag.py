@@ -44,14 +44,14 @@ def get_yesterday_tz():
     return yesterday.strftime('%Y-%m-%d')
 
 dag = DAG(
-    'call_functions_sandbox_dag',
+    'call_functions_migration_dag',
     default_args=default_args,
-    description='ETL Sandbox SCI: Source DBs → Bronze Iceberg (Sandbox)',
+    description='ETL Migration SCI: Source DBs → Bronze Iceberg (Migration)',
     schedule_interval=None, # Usually manual for sandbox or different schedule
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'call_functions', 'sandbox', 'bronze', 'iceberg'],
+    tags=['etl', 'call_functions', 'migration', 'bronze', 'iceberg'],
     params={
         'snapshot_date': Param(
             default=None,
@@ -75,9 +75,9 @@ dag = DAG(
             description='Drop serving table before loading (Full Refresh). WARNING: Destructive.'
         ),
         'source': Param(
-            default='sandbox',
+            default='migration',
             type='string',
-            description='Source type filter (e.g. sandbox, ERP)'
+            description='Source type filter (e.g. migration, ERP)'
         ),
         'target_conn_id': Param(
             default='dwh_product_new',
