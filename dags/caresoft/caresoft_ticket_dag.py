@@ -51,6 +51,17 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
+dwh_sandbox_uri = ''
+try:
+    hook_sandbox = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn_sandbox = hook_sandbox.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn_sandbox.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 # ============================================================================
 # DAG DEFINITION
 # ============================================================================
@@ -256,6 +267,7 @@ task_ticket_enrichment_old = KubernetesPodOperator(
     dag=dag,
 )
 
+
 # ============================================================================
 # TASK 3: SERVING - Ticket API to PostgreSQL DWH
 # ============================================================================
@@ -306,6 +318,33 @@ task_ticket_api_serving_old = KubernetesPodOperator(
         **common_env_vars,
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
         'POSTGRES_URI': dwh_product_uri,
+    },
+    
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+task_ticket_api_serving_sandbox = KubernetesPodOperator(
+    task_id='ticket_api_serving_layer_sandbox',
+    name='caresoft-ticket-api-serving-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_api_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_sandbox_uri,
     },
     
     container_resources=resource_requirements_serving,
@@ -399,18 +438,20 @@ task_ticket_source_metadata_serving_old = KubernetesPodOperator(
     dag=dag,
 )
 
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
 # Main Ticket Pipeline:
 # Main Ticket Pipeline:
+# Main Ticket Pipeline:
 # Ingestion -> Serving (API) -> Enrichment -> Source Metadata -> Serving (Metadata)
-task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old]
+task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox]
 
-# Both serving tasks (new/old) must finish before enrichment starts
-[task_ticket_api_serving, task_ticket_api_serving_old] >> task_ticket_enrichment
-[task_ticket_api_serving, task_ticket_api_serving_old] >> task_ticket_enrichment_old
+# All serving tasks must finish before enrichment starts
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment_old
 
 [task_ticket_enrichment, task_ticket_enrichment_old] >> task_ticket_source_metadata
 task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old]

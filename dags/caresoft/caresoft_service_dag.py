@@ -94,6 +94,17 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
+dwh_sandbox_uri = ''
+try:
+    hook_sandbox = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn_sandbox = hook_sandbox.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn_sandbox.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 # ============================================================================
 # DAG DEFINITION
 # ============================================================================
@@ -201,8 +212,29 @@ task_service_serving_old = KubernetesPodOperator(
     dag=dag,
 )
 
+task_service_serving_sandbox = KubernetesPodOperator(
+    task_id='service_serving_layer_sandbox',
+    name='caresoft-service-serving-layer-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/caresoft/service/service_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'],
+    volumes=[nfs_volume, duckdb_volume],
+    volume_mounts=[nfs_mount, duckdb_mount],
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_sandbox_uri,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
+    },
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-task_service_ingestion >> [task_service_serving, task_service_serving_old]
+task_service_ingestion >> [task_service_serving, task_service_serving_old, task_service_serving_sandbox]
