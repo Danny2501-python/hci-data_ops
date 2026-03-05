@@ -134,6 +134,8 @@ nfs_mount = k8s.V1VolumeMount(name='nfs-scripts', mount_path='/app', read_only=T
 temp_disk_volume = k8s.V1Volume(name='temp-disk', empty_dir=k8s.V1EmptyDirVolumeSource(medium='', size_limit='10Gi'))
 temp_disk_mount = k8s.V1VolumeMount(name='temp-disk', mount_path='/tmp', read_only=False)
 
+from airflow.operators.python import PythonOperator
+
 # ============================================================================
 # TASKS
 # ============================================================================
@@ -168,16 +170,23 @@ direct_ingestion = KubernetesPodOperator(
     dag=dag,
 )
 
-# 2. Call Postgres Functions
-call_functions = PostgresOperator(
+# 2. Call Postgres Functions with Results Logging
+def execute_report_functions(**kwargs):
+    hook = PostgresHook(postgres_conn_id='dwh_product_new')
+    statements = [
+        "SELECT public.report_ctv_kn1();",
+        "SELECT public.report_ctv_pr1();",
+        "SELECT public.bc_sales_paris();",
+        "SELECT public.op_convert_kangnam();"
+    ]
+    for sql in statements:
+        logger.info(f"Running: {sql}")
+        result = hook.get_first(sql)
+        logger.info(f"Result from DB: {result}")
+
+call_functions = PythonOperator(
     task_id='call_report_functions',
-    postgres_conn_id='dwh_product_new',
-    sql="""
-        SELECT public.report_ctv_kn1();
-        SELECT public.report_ctv_pr1();
-        SELECT public.bc_sales_paris();
-        SELECT public.op_convert_kangnam();
-    """,
+    python_callable=execute_report_functions,
     dag=dag,
 )
 
