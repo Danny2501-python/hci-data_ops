@@ -187,16 +187,16 @@ common_env_vars = {
 # LOAD DATABASE CONNECTIONS (Dynamic - Target & ERP Sources)
 # ============================================================================
 
-dwh_product_new_uri = ''
+dwh_sandbox_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='dwh_product_new')
-    conn = hook.get_connection('dwh_product_new')
-    dwh_product_new_uri = conn.get_uri()
-    if '?__extra__=' in dwh_product_new_uri:
-        dwh_product_new_uri = dwh_product_new_uri.split('?__extra__=')[0]
-    logger.info("✅ Loaded connection URI for dwh_product_new")
+    hook = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn = hook.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
 except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
 
 erp_configs = {}
 erp_conn_mapping = {
@@ -268,7 +268,7 @@ direct_ingestion = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         **erp_configs,
-        'POSTGRES_URI': dwh_product_new_uri,
+        'POSTGRES_URI': dwh_sandbox_uri,
         'TEMP_DIR': '/tmp',
     },
     container_resources=resource_requirements_serving,
