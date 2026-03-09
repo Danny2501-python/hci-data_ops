@@ -104,12 +104,24 @@ class SCDProcessor:
                     # Using CONCAT logic to generate the name_key string 'k1=v1,k2=v2'
                     name_key_sql = " || ',' || ".join([f"'{k}=' || CAST(w.\"{k}\" AS TEXT)" for k in key_list])
                     
+            # 3. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
+            key_join = " AND ".join([f"w.\"{k}\" = t.\"{k}\"" for k in key_list])
+            
+            logger.info("Logging changes into table_change_slowly...")
+            for col in diff_list:
+                if col in col_list:
+                    # Using CONCAT logic to generate the name_key string 'k1=v1,k2=v2'
+                    name_key_sql = " || ',' || ".join([f"'{k}=' || CAST(w.\"{k}\" AS TEXT)" for k in key_list])
+                    
+                    # 100% Old Logic: Use write_date if exists, otherwise use job start time (%s)
+                    log_date_sql = 'COALESCE(t."write_date", %s)' if 'write_date' in col_list else '%s'
+
                     log_sql = f"""
                         INSERT INTO table_change_slowly (table_name, table_warehouse, column_name, old_value, new_value, change_date, key_value)
                         SELECT 
                             '{src}', '{wh}', '{col}', 
                             CAST(w."{col}" AS TEXT), CAST(t."{col}" AS TEXT), 
-                            %s, 
+                            {log_date_sql}, 
                             {name_key_sql}
                         FROM {wh} w
                         JOIN {temp_table} t ON {key_join}
@@ -119,9 +131,13 @@ class SCDProcessor:
 
             # 4. CLOSE OLD RECORDS (status='Y' -> 'N')
             diff_cond = " OR ".join([f"w.\"{d}\" IS DISTINCT FROM t.\"{d}\"" for d in diff_list])
+            
+            # 100% Old Logic: Use write_date as expiration_date if exists (matching old logic)
+            expiry_date_sql = 'COALESCE(t."write_date", %s)' if 'write_date' in col_list else '%s'
+            
             close_sql = f"""
                 UPDATE {wh} w
-                SET status = 'N', expiration_date = %s
+                SET status = 'N', expiration_date = {expiry_date_sql}
                 FROM {temp_table} t
                 WHERE {key_join} AND w.status = 'Y' AND ({diff_cond})
             """
@@ -129,26 +145,49 @@ class SCDProcessor:
             
             # 5. INSERT NEW RECORDS ('Y' version for changed data + brand new records)
             # Find columns that exist in both temp and warehouse
-            cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{wh}'")
+            cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{wh.split('.')[-1]}' AND table_schema = '{wh.split('.')[0] if '.' in wh else 'public'}'")
             wh_all_cols = [r[0] for r in cursor.fetchall()]
             
             # Intersection of col_list and warehouse columns
             valid_cols = [c for c in col_list if c in wh_all_cols]
             
+            # 100% Old Logic for start_date: Priority write_date > create_date > now
+            if 'write_date' in col_list:
+                start_date_sql = 'COALESCE(t."write_date", %s)'
+            elif 'create_date' in col_list:
+                start_date_sql = 'COALESCE(t."create_date", %s)'
+            else:
+                start_date_sql = '%s'
+
+            # 100% Old Logic: If 'write_date' exists in target but NOT in source list, still write to it.
+            write_date_col_sql = ""
+            write_date_val_sql = ""
+            if 'write_date' in wh_all_cols and 'write_date' not in valid_cols:
+                write_date_col_sql = ", write_date"
+                write_date_val_sql = f", {start_date_sql}"
+
             insert_sql = f"""
-                INSERT INTO {wh} ({", ".join([f'"{c}"' for c in valid_cols])}, start_date, expiration_date, status)
+                INSERT INTO {wh} ({", ".join([f'"{c}"' for c in valid_cols])}, start_date, expiration_date, status {write_date_col_sql})
                 SELECT 
                     {", ".join([f't."{c}"' for c in valid_cols])}, 
-                    %s as start_date, 
+                    {start_date_sql} as start_date, 
                     %s as expiration_date, 
                     'Y' as status
+                    {write_date_val_sql}
                 FROM {temp_table} t
                 WHERE NOT EXISTS (
                     SELECT 1 FROM {wh} w 
                     WHERE {key_join} AND w.status = 'Y'
                 )
             """
-            cursor.execute(insert_sql, (self.now, self.default_expiry))
+            
+            # Prepare parameters based on SQL structure
+            # SELECT order: start_date_sql (1 param if fallback), %s, write_date_val_sql (1 param if fallback)
+            exec_params = [self.now, self.default_expiry]
+            if write_date_val_sql:
+                exec_params = [self.now, self.default_expiry, self.now]
+                
+            cursor.execute(insert_sql, tuple(exec_params))
             
             self.stg_db.commit()
             logger.success(f"✅ SCD2 Sync complete for {wh}")
