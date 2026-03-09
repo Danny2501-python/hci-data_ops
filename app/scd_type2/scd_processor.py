@@ -92,7 +92,8 @@ class SCDProcessor:
                 writer.writerow(row)
             
             output.seek(0)
-            cursor.copy_expert(f"COPY {temp_table} ({', '.join([f'\"{c}\"' for c in col_list])}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
+            cols_str = ', '.join([f'"{c}"' for c in col_list])
+            cursor.copy_expert(f"COPY {temp_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
             
             # 3. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
             key_join = " AND ".join([f"w.\"{k}\" = t.\"{k}\"" for k in key_list])
