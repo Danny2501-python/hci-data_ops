@@ -105,7 +105,7 @@ class SCDProcessor:
                     name_key_sql = " || ',' || ".join([f"'{k}=' || CAST(w.\"{k}\" AS TEXT)" for k in key_list])
                     
                     log_sql = f"""
-                        INSERT INTO table_change_slowly (source_table, warehouse_table, column_name, old_value, new_value, change_date, name_key)
+                        INSERT INTO table_change_slowly (table_name, table_warehouse, column_name, old_value, new_value, change_date, key_value)
                         SELECT 
                             '{src}', '{wh}', '{col}', 
                             CAST(w."{col}" AS TEXT), CAST(t."{col}" AS TEXT), 
