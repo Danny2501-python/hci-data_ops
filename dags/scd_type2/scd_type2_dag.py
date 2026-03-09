@@ -1,6 +1,7 @@
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.models.param import Param
 from kubernetes.client import models as k8s
 from datetime import datetime, timedelta
 import pendulum
