@@ -130,7 +130,7 @@ class SCDProcessor:
                     cursor.execute(log_sql, (self.now,))
 
             # 4. CLOSE OLD RECORDS (status='Y' -> 'N')
-            diff_cond = " OR ".join([f"w.\"{d}\" IS DISTINCT FROM t.\"{d}\"" for d in diff_list])
+            diff_cond = " OR ".join([f"w.\"{d}\" IS DISTINCT FROM t.\"{d}\"" for d in diff_list]) if diff_list else "1=0"
             
             # 100% Old Logic: Use write_date as expiration_date if exists (matching old logic)
             expiry_date_sql = 'COALESCE(t."write_date", %s)' if 'write_date' in col_list else '%s'
