@@ -53,9 +53,9 @@ class SCDProcessor:
                     self.stg_db.conn.rollback()
 
     def process_table_v2(self, src, wh, cols, keys, diffs):
-        key_list = [k.strip() for k in keys.split(',')]
-        diff_list = [d.strip() for d in diffs.split(',')]
-        col_list = [c.strip() for c in cols.split(',')]
+        key_list = [k.strip().replace('"', '') for k in keys.split(',')]
+        diff_list = [d.strip().replace('"', '') for d in diffs.split(',')]
+        col_list = [c.strip().replace('"', '') for c in cols.split(',')]
         
         # 1. Fetch ALL relevant data from ERP (Source)
         erp_sql = f"SELECT {cols} FROM {src}"
