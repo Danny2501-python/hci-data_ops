@@ -36,7 +36,7 @@ ETL_INSIGHT_URI = get_conn_uri('sci_insight')
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
 default_args = {
-    'owner': 'airflow',
+    'owner': 'data-engineering',
     'depends_on_past': False,
     'start_date': datetime(2024, 1, 1, tzinfo=local_tz),
     'email_on_failure': True,
