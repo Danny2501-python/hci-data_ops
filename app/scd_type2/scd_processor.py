@@ -49,6 +49,8 @@ class SCDProcessor:
                 self.process_table_v2(src, wh, cols, keys, diffs)
             except Exception as e:
                 logger.error(f"❌ Failed to process {src}: {e}")
+                if self.stg_db.conn:
+                    self.stg_db.conn.rollback()
 
     def process_table_v2(self, src, wh, cols, keys, diffs):
         key_list = [k.strip() for k in keys.split(',')]
@@ -87,23 +89,22 @@ class SCDProcessor:
                 row = []
                 for col in col_list:
                     val = rec.get(col)
-                    if val is None: row.append(NULL_MARKER)
-                    else: row.append(str(val).replace('\n', ' ').replace('\r', ' '))
+                    if pd.isna(val): 
+                        row.append(NULL_MARKER)
+                    elif isinstance(val, (float, int)):
+                        # Format numbers to avoid .0 for integers
+                        if isinstance(val, float) and val.is_integer():
+                            row.append(str(int(val)))
+                        else:
+                            row.append(str(val))
+                    else:
+                        row.append(str(val).replace('\n', ' ').replace('\r', ' '))
                 writer.writerow(row)
             
             output.seek(0)
             cols_str = ', '.join([f'"{c}"' for c in col_list])
             cursor.copy_expert(f"COPY {temp_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
             
-            # 3. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
-            key_join = " AND ".join([f"w.\"{k}\" = t.\"{k}\"" for k in key_list])
-            
-            logger.info("Logging changes into table_change_slowly...")
-            for col in diff_list:
-                if col in col_list:
-                    # Using CONCAT logic to generate the name_key string 'k1=v1,k2=v2'
-                    name_key_sql = " || ',' || ".join([f"'{k}=' || CAST(w.\"{k}\" AS TEXT)" for k in key_list])
-                    
             # 3. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
             key_join = " AND ".join([f"w.\"{k}\" = t.\"{k}\"" for k in key_list])
             
