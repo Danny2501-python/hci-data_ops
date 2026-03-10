@@ -86,7 +86,7 @@ with DAG(
     'scd_type2_daily_sync',
     default_args=default_args,
     description='ERP SCD Type 2 Sync (Replicated from erp_connector_backend)',
-    schedule_interval=None,
+    schedule_interval="45 3 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     tags=['erp', 'scd2'],
