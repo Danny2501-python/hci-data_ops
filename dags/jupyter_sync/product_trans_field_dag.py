@@ -51,7 +51,7 @@ default_args = {
 dag = DAG(
     dag_id='Product_huonghh_Trans_field_k8s',
     default_args=default_args,
-    schedule_interval=None,
+    schedule_interval="15 6 * * *",
     tags=['Product', 'Jupyter'],
     catchup=False
 )

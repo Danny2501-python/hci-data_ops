@@ -49,7 +49,7 @@ default_args = {
 dag = DAG(
     dag_id='Product_huonghh_erp_insight_k8s',
     default_args=default_args,
-    schedule_interval=None,
+    schedule_interval="0 6 * * *",
     tags=['Product', 'Insight', 'Jupyter'],
     catchup=False
 )
