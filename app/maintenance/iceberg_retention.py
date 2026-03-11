@@ -14,10 +14,7 @@ from loguru import logger
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from common.utils import get_current_timestamp_naive
 
-# Iceberg configuration
-ICEBERG_REST_URI_BRONZE = os.getenv('ICEBERG_REST_URI_BRONZE')
-CATALOG_NAME_BRONZE = os.getenv('CATALOG_NAME_BRONZE')
-
+# S3 / MinIO config (Required for physical file access via Iceberg)
 S3_ENDPOINT = os.getenv('S3_ENDPOINT')
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
@@ -35,12 +32,14 @@ class IcebergRetention:
     """
     
     
-    def __init__(self, retention_days: int = 3, target_uri: str = None, catalog_name: str = None):
+    def __init__(self, retention_days: int = 3, 
+                 target_uri: str = None, 
+                 catalog_name: str = None,
+                 namespace: str = None):
         self.retention_days = retention_days
-        
-        # Use provided URI/Catalog or fallback to env vars
-        self.target_uri = target_uri or ICEBERG_REST_URI_BRONZE
-        self.catalog_name = catalog_name or CATALOG_NAME_BRONZE
+        self.target_uri = target_uri or 'http://iceberg-rest-bronze-zone:8181'
+        self.catalog_name = catalog_name or 'bronze'
+        self.namespace = namespace or 'caresoft'
         
         if not self.target_uri or not self.catalog_name:
              raise ValueError("Iceberg REST URI and Catalog Name must be provided either via arguments or environment variables.")
@@ -64,11 +63,12 @@ class IcebergRetention:
         logger.info(f"Trino Connection: http://{TRINO_HOST}:{TRINO_PORT} (User: {TRINO_USER})")
         
     
-    def get_tables(self, namespace: str = "call_functions") -> List[tuple]:
+    def get_tables(self, namespace: str = None) -> List[tuple]:
         """List all tables in the given namespace"""
+        target_ns = namespace or self.namespace
         try:
-            # Returns list of identifiers (tuples) e.g., [('call_functions', 'table1'), ...]
-            identifiers = self.catalog.list_tables(namespace)
+            # Returns list of identifiers (tuples) e.g., [('caresoft', 'table1'), ...]
+            identifiers = self.catalog.list_tables(target_ns)
             return identifiers
         except Exception as e:
             logger.error(f"Failed to list tables in namespace {namespace}: {e}")
@@ -189,17 +189,18 @@ class IcebergRetention:
         except Exception as e:
             logger.error(f"❌ Failed to process table {identifier}: {e}")
 
-    def run(self, namespace: str = "call_functions"):
+    def run(self, namespace: str = None):
         """Run retention for all tables in namespace"""
+        target_ns = namespace or self.namespace
         logger.info("="*80)
         logger.info(f"Starting Iceberg Retention Cleanup")
         logger.info(f"Retention: {self.retention_days} days")
-        logger.info(f"Namespace: {namespace}")
+        logger.info(f"Namespace: {target_ns}")
         logger.info(f"Trino Catalog: {self.catalog_name}")
         logger.info("="*80)
         
-        identifiers = self.get_tables(namespace)
-        logger.info(f"Found {len(identifiers)} tables in namespace '{namespace}'")
+        identifiers = self.get_tables(target_ns)
+        logger.info(f"Found {len(identifiers)} tables in namespace '{target_ns}'")
         
         for identifier in identifiers:
             self.process_table(identifier)
@@ -212,13 +213,13 @@ if __name__ == "__main__":
     retention_days = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else 3
     target_uri = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
     catalog_name = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
-    namespace = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "call_functions"
+    namespace = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else "caresoft"
     
     logger.info(f"Arguments: Days={retention_days}, URI={target_uri}, Catalog={catalog_name}, Namespace={namespace}")
     
     try:
-        job = IcebergRetention(retention_days, target_uri, catalog_name)
-        job.run(namespace=namespace)
+        job = IcebergRetention(retention_days, target_uri, catalog_name, namespace)
+        job.run()
     except Exception as e:
         logger.error(f"Retention job failed: {e}")
         sys.exit(1)

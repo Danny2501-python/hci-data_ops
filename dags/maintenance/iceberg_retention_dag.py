@@ -50,17 +50,17 @@ dag = DAG(
             description='Retention period in days (delete data strictly older than this)',
         ),
         'target_uri': Param(
-            default=None,
-            type=['null', 'string'],
-            description='Iceberg REST URI (Optional). Defaults to Env Var.',
+            default='http://iceberg-rest-bronze-zone:8181',
+            type='string',
+            description='Iceberg REST URI.',
         ),
         'catalog_name': Param(
-            default=None,
-            type=['null', 'string'],
-            description='Catalog Name (Optional). Defaults to Env Var.',
+            default='bronze',
+            type='string',
+            description='Catalog Name.',
         ),
         'namespace': Param(
-            default='call_functions',
+            default='caresoft',
             type='string',
             description='Target Namespace to clean up.',
         ),
@@ -73,10 +73,6 @@ dag = DAG(
 
 # Environment variables (Iceberg + S3)
 env_vars = {
-    # Bronze zone (Target for cleanup)
-    'ICEBERG_REST_URI_BRONZE': 'http://iceberg-rest-bronze-zone:8181',
-    'CATALOG_NAME_BRONZE': 'bronze',
-    
     # MinIO config (Required for physical file access via Iceberg)
     'S3_ENDPOINT': 'http://10.152.183.65:9000',
     'AWS_ACCESS_KEY_ID': 'admin',
