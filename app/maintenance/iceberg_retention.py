@@ -168,20 +168,19 @@ class IcebergRetention:
                 # Here we assume self.catalog_name maps correctly to Trino catalog
                 trino_table_name = f"{self.catalog_name}.{identifier[0]}.{identifier[1]}"
                 
-                # A. Expire Snapshots
-                retention_threshold = f"'{self.retention_days}d'"
-                expire_sql = f"ALTER TABLE {trino_table_name} EXECUTE expire_snapshots(retention_threshold => {retention_threshold})"
+                # A. Expire Snapshots (Clean HISTORICAL snapshots to trigger physical delete of old data)
+                expire_sql = f"ALTER TABLE {trino_table_name} EXECUTE expire_snapshots(retention_threshold => '0s')"
                 logger.info(f"Executing Trino: {expire_sql}")
                 
-                if self.run_trino_query(expire_sql, session_props={f'{self.catalog_name}.expire_snapshots_min_retention': '0d'}):
-                    logger.success(f"✅ Expired snapshots via Trino for {table_name}")
+                if self.run_trino_query(expire_sql, session_props={f'{self.catalog_name}.expire_snapshots_min_retention': '0s'}):
+                    logger.success(f"✅ Physically deleted old snapshots (cleaned historical files) for {table_name}")
                 
-                # B. Remove Orphan Files (Optional but good for cleanup)
-                orphan_sql = f"ALTER TABLE {trino_table_name} EXECUTE remove_orphan_files(retention_threshold => '{self.retention_days + 1}d')"
+                # B. Remove Orphan Files (Clean files not referenced by ANY snapshot)
+                orphan_sql = f"ALTER TABLE {trino_table_name} EXECUTE remove_orphan_files(retention_threshold => '0s')"
                 logger.info(f"Executing Trino: {orphan_sql}")
                 
-                if self.run_trino_query(orphan_sql, session_props={f'{self.catalog_name}.remove_orphan_files_min_retention': '0d'}):
-                    logger.success(f"✅ Removed orphan files via Trino for {table_name}")
+                if self.run_trino_query(orphan_sql, session_props={f'{self.catalog_name}.remove_orphan_files_min_retention': '0s'}):
+                    logger.success(f"✅ Cleaned orphan/unused files for {table_name}")
 
             except Exception as e:
                 logger.error(f"⚠️ Physical cleanup failed for {table_name}: {e}")
