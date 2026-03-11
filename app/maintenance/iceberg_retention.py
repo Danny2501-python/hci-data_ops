@@ -126,6 +126,12 @@ class IcebergRetention:
         """
         try:
             table_name = ".".join(identifier)
+            
+            # Skip error tables
+            if "_error" in table_name.lower():
+                logger.info(f"⏭️ Skipping error table: {table_name}")
+                return
+                
             logger.info(f"Processing table: {table_name}")
             
             table = self.catalog.load_table(identifier)
