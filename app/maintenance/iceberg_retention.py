@@ -190,23 +190,34 @@ class IcebergRetention:
             logger.error(f"❌ Failed to process table {identifier}: {e}")
 
     def run(self, namespace: str = None):
-        """Run retention for all tables in namespace"""
-        target_ns = namespace or self.namespace
+        """Run retention for all tables in namespace(s)"""
+        raw_ns = namespace or self.namespace
+        
+        # Determine list of namespaces
+        if isinstance(raw_ns, str):
+            ns_list = [n.strip() for n in raw_ns.split(',') if n.strip()]
+        elif isinstance(raw_ns, list):
+            ns_list = raw_ns
+        else:
+            ns_list = [raw_ns]
+
         logger.info("="*80)
         logger.info(f"Starting Iceberg Retention Cleanup")
         logger.info(f"Retention: {self.retention_days} days")
-        logger.info(f"Namespace: {target_ns}")
+        logger.info(f"Target Namespaces: {ns_list}")
         logger.info(f"Trino Catalog: {self.catalog_name}")
         logger.info("="*80)
         
-        identifiers = self.get_tables(target_ns)
-        logger.info(f"Found {len(identifiers)} tables in namespace '{target_ns}'")
-        
-        for identifier in identifiers:
-            self.process_table(identifier)
-            time.sleep(1) # Extra buffer between tables
+        for ns in ns_list:
+            logger.info(f"📂 Processing Namespace: {ns}")
+            identifiers = self.get_tables(ns)
+            logger.info(f"Found {len(identifiers)} tables in namespace '{ns}'")
             
-        logger.success("✅ Iceberg Retention Cleanup Completed")
+            for identifier in identifiers:
+                self.process_table(identifier)
+                time.sleep(1) # Extra buffer between tables
+            
+        logger.success(f"✅ Iceberg Retention Cleanup Completed for {self.catalog_name}")
 
 if __name__ == "__main__":
     # Args: 1=retention_days, 2=target_uri, 3=catalog_name, 4=namespace
