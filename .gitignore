@@ -24,10 +24,6 @@ Thumbs.db
 .env
 .env.local
 
-# Dev Environment
-dags/dev/
-app/dev/
-
 # Temporary
 *.tmp
 *.temp
