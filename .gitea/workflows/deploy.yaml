@@ -14,17 +14,17 @@ jobs:
       - name: Deploy DAGs
         run: |
           echo "🚀 Deploying DAGs to NFS..."
-          # Sync dags, delete file thừa, nhưng GIỮ LẠI __pycache__
-          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' dags/ /mnt/nfs_share/airflow/dags/
+          # Sync dags, delete file thừa, nhưng GIỮ LẠI __pycache__ và thư mục dev
+          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' --exclude='dev/' dags/ /mnt/nfs_share/airflow/dags/
           
-          # Fix quyền cho Airflow đọc được (Skip __pycache__ to avoid race conditions with running processes)
-          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -exec chown 50000:0 {} + || true
-          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -exec chmod 755 {} + || true
+          # Fix quyền cho Airflow đọc được (Skip __pycache__ và thư mục dev để tránh race conditions)
+          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -path "*/dev" -prune -o -exec chown 50000:0 {} + || true
+          find /mnt/nfs_share/airflow/dags -path "*/__pycache__" -prune -o -path "*/dev" -prune -o -exec chmod 755 {} + || true
           
           echo "✅ DAGs deployed successfully!"
 
       - name: Deploy App
         run: |
           echo "🚀 Deploying App..."
-          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' app/ /mnt/nfs_share/app/
-          echo "✅ App deployed successfully!"
+          rsync -av --delete --exclude='__pycache__' --exclude='*.pyc' --exclude='dev/' app/ /mnt/nfs_share/app/
+          echo "✅ App deployed successfully!"
