@@ -190,8 +190,19 @@ class ServiceIngestion:
             
             # Extract fb_page_id from detail if exists
             fb_page_id = None
-            if isinstance(detail_obj, dict):
-                fb_page_id = safe_str(detail_obj.get("page_id"))
+            temp_detail = detail_obj
+            if isinstance(temp_detail, str):
+                try:
+                    import ast
+                    try:
+                        temp_detail = json.loads(temp_detail)
+                    except:
+                        temp_detail = ast.literal_eval(temp_detail)
+                except:
+                    pass
+
+            if isinstance(temp_detail, dict):
+                fb_page_id = safe_str(temp_detail.get("page_id"))
 
             record = {
                 "service_id": service.get("service_id"),  # Note: API uses 'service_id' not 'id'
