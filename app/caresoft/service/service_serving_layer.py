@@ -83,6 +83,14 @@ class ServiceServingLayer:
                 self.pg_conn.commit()
             except Exception:
                 self.pg_conn.rollback()
+            
+            # Ensure all columns exist (Evolution)
+            for col in columns:
+                try:
+                    cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD COLUMN IF NOT EXISTS "{col}" TEXT;')
+                    self.pg_conn.commit()
+                except Exception:
+                    self.pg_conn.rollback()
                 
         except Exception as e:
             self.pg_conn.rollback()
@@ -137,6 +145,7 @@ class ServiceServingLayer:
                 type,
                 status,
                 detail,
+                fb_page_id,
                 brand_id,
                 snapshot_date,
                 ingestion_timestamp

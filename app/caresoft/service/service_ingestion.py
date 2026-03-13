@@ -73,6 +73,14 @@ class ServiceIngestion:
         try:
             table = self.bronze_catalog.load_table(SERVICE_BRONZE_TABLE)
             logger.info(f"Table {SERVICE_BRONZE_TABLE} already exists")
+            
+            # Evolution: Add fb_page_id if missing
+            if "fb_page_id" not in table.schema().column_names:
+                logger.info(f"Adding column fb_page_id to {SERVICE_BRONZE_TABLE}")
+                with table.update_schema() as update:
+                    update.add_column("fb_page_id", StringType())
+                table = self.bronze_catalog.load_table(SERVICE_BRONZE_TABLE) # Reload after schema change
+                
             return table
         except Exception:
             logger.info(f"Creating table {SERVICE_BRONZE_TABLE}")
@@ -91,6 +99,7 @@ class ServiceIngestion:
                 # Metadata fields
                 NestedField(9, "snapshot_date", DateType(), required=True),
                 NestedField(10, "ingestion_timestamp", TimestampType(), required=True),
+                NestedField(11, "fb_page_id", StringType(), required=False),
             )
             
             # Partition by snapshot_date
@@ -178,6 +187,11 @@ class ServiceIngestion:
             # Handle detail field (convert dict to json string)
             detail_obj = service.get("detail")
             detail_str = json.dumps(detail_obj, ensure_ascii=False) if detail_obj else None
+            
+            # Extract fb_page_id from detail if exists
+            fb_page_id = None
+            if isinstance(detail_obj, dict):
+                fb_page_id = safe_str(detail_obj.get("page_id"))
 
             record = {
                 "service_id": service.get("service_id"),  # Note: API uses 'service_id' not 'id'
@@ -186,6 +200,7 @@ class ServiceIngestion:
                 "type": service.get("type"), # Keep as int
                 "status": service.get("status"), # Keep as int
                 "detail": detail_str,
+                "fb_page_id": fb_page_id,
                 "brand_id": brand_erp_id,
                 # "raw_data": json.dumps(service, ensure_ascii=False), # Removed due to size
                 "snapshot_date": self.snapshot_date,
