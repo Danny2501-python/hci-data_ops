@@ -132,38 +132,16 @@ nfs_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
-# Task 1: Google Sheet Bronze Ingestion
-googlesheet_bronze_ingestion = KubernetesPodOperator(
-    task_id='googlesheet_bronze_ingestion',
-    name='googlesheet-bronze-ingestion',
+# Task: Google Sheet Direct to Serving Ingestion
+googlesheet_postgres_direct = KubernetesPodOperator(
+    task_id='googlesheet_postgres_direct',
+    name='googlesheet-postgres-direct',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/call_functions/googlesheet_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("sheet_id") | default("", true) }}',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements_bronze,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# Task 2: Google Sheet Serving Layer
-googlesheet_serving_layer = KubernetesPodOperator(
-    task_id='googlesheet_serving_layer',
-    name='googlesheet-serving-layer',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/call_functions/googlesheet_serving.py',
+        '/app/call_functions/googlesheet_postgres_direct.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("sheet_id") | default("", true) }}',
         '{{ "true" if dag_run.conf.get("drop_table") else "false" }}',
@@ -184,5 +162,5 @@ googlesheet_serving_layer = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Bronze -> Serving pipeline
-googlesheet_bronze_ingestion >> googlesheet_serving_layer
+# Single step pipeline
+googlesheet_postgres_direct
