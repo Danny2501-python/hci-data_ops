@@ -24,7 +24,7 @@ CLEANUP_ZONES = [
         'id': 'bronze', 
         'uri': 'http://iceberg-rest-bronze-zone:8181', 
         'catalog': 'bronze', 
-        'ns': 'call_functions, caresoft'
+        'ns': 'caresoft'
     },
     {
         'id': 'silver', 
@@ -36,7 +36,7 @@ CLEANUP_ZONES = [
         'id': 'gold', 
         'uri': 'http://iceberg-rest-gold-zone:8181', 
         'catalog': 'gold', 
-        'ns': 'call_functions, caresoft'
+        'ns': 'caresoft'
     },
 ]
 
