@@ -92,7 +92,14 @@ class DirectTechcombankToPostgres:
         df = df.loc[:, df.columns != '']
         df = df.loc[:, ~df.columns.str.startswith('unnamed:')]
         
-        # Replace empty strings with None
+        # Ensure numeric columns are properly converted and filled with 0 if null
+        # Matching old logic specifically for these columns
+        num_cols = ['itemid', 'bidratetm', 'bidrateck', 'askrate', 'askratetm']
+        for col in num_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int64')
+
+        # Replace empty strings with None for text columns
         df = df.replace({"": None})
         
         return df
