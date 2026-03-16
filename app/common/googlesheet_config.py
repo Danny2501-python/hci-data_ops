@@ -141,5 +141,8 @@ def get_active_googlesheet_configs(sheet_id: Optional[int] = None,
             }
             configs.append(config)
     
+    # Sort configs by ID in ascending order
+    configs.sort(key=lambda x: x.get('id', 0) if x.get('id') is not None else float('inf'))
+    
     logger.info(f"Loaded {len(configs)} active Google Sheet configurations from {GOOGLESHEET_CONFIG_TABLE}")
     return configs

@@ -77,7 +77,7 @@ class GoogleSheetIngestion:
             self.gsheet_client = gspread.authorize(credentials)
             logger.info("Connected to Google Sheets API")
         except Exception as e:
-            logger.error(f"Failed to connect to Google Sheets: {e}")
+            logger.exception("Failed to connect to Google Sheets")
             raise
     
     def read_google_sheet(self, spreadsheet_id: str, sheet_name: str, 
@@ -153,7 +153,7 @@ class GoogleSheetIngestion:
             return df
             
         except Exception as e:
-            logger.error(f"Failed to read Google Sheet: {e}")
+            logger.exception("Failed to read Google Sheet")
             raise
     
     def infer_iceberg_schema(self, df: pd.DataFrame, table_name: str) -> Schema:
@@ -291,7 +291,7 @@ class GoogleSheetIngestion:
             logger.success(f"✅ Successfully wrote {len(df)} rows to {table_name}")
             
         except Exception as e:
-            logger.error(f"Failed to write to Iceberg: {e}")
+            logger.exception(f"Failed to write to Iceberg: {table_name}")
             raise
     
     def process_sheet(self, config: Dict):
@@ -351,7 +351,7 @@ class GoogleSheetIngestion:
             )
             
         except Exception as e:
-            logger.error(f"Failed to process sheet {name}: {e}")
+            logger.exception(f"Failed to process sheet {name}")
             raise
     
     def get_sheet_configs(self, sheet_id: Optional[int] = None) -> List[Dict]:
@@ -376,7 +376,7 @@ class GoogleSheetIngestion:
             try:
                 self.process_sheet(config)
             except Exception as e:
-                logger.error(f"Failed to process {config['name']}: {e}")
+                logger.exception(f"Failed to process {config['name']}")
 
 
 def main():
@@ -389,7 +389,7 @@ def main():
         job = GoogleSheetIngestion(snapshot_date)
         job.run(sheet_id)
     except Exception as e:
-        logger.error(f"Job failed: {e}")
+        logger.exception("Job failed")
         sys.exit(1)
 
 
