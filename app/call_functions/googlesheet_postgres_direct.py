@@ -97,17 +97,42 @@ class DirectGoogleSheetToPostgres:
                     except Exception as e:
                         logger.warning(f"Failed to parse rename column: {e}")
                         
-                df.columns = df.columns.astype(str).str.lower()
+                df.columns = df.columns.astype(str).str.lower().str.strip()
+                # Drop columns with empty headers
+                df = df.loc[:, df.columns != '']
+                df = df.loc[:, ~df.columns.str.startswith('unnamed:')]
+                
                 df = df.replace({"": None})
                 
                 return df
-                
+            
+            except gspread.exceptions.SpreadsheetNotFound as e:
+                logger.warning(f"Spreadsheet not found for {spreadsheet_id}: {e}")
+                return pd.DataFrame()
+            except gspread.exceptions.WorksheetNotFound as e:
+                logger.warning(f"Worksheet not found '{sheet_name}': {e}")
+                return pd.DataFrame()
+            except gspread.exceptions.APIError as e:
+                error_msg = str(e)
+                if "404" in error_msg:
+                    logger.warning(f"Spreadsheet/API not found (404) for {spreadsheet_id}: {e}")
+                    return pd.DataFrame()
+                if "429" in error_msg or "Quota" in error_msg:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"API Rate Limit Exceeded (429). Retrying in {retry_delay} seconds... (Attempt {attempt+1}/{max_retries})")
+                        time.sleep(retry_delay)
+                        continue
+                raise
             except Exception as e:
                 error_msg = str(e)
                 if ("429" in error_msg or "Quota" in error_msg) and attempt < max_retries - 1:
                     logger.warning(f"API Rate Limit Exceeded (429). Retrying in {retry_delay} seconds... (Attempt {attempt+1}/{max_retries})")
                     time.sleep(retry_delay)
                     continue
+                # Also handle <Response [404]> if it comes as generic Exception
+                if "404" in error_msg:
+                    logger.warning(f"Not found (404) for {spreadsheet_id}: {e}")
+                    return pd.DataFrame()
                 raise
 
     def ensure_target_table_exists_from_df(self, df: pd.DataFrame, target_table: str):
