@@ -165,19 +165,10 @@ class DirectGoogleSheetToPostgres:
             self.target_conn.commit()
         logger.success(f"Target table {target_table} is ready.")
 
-    def stream_and_upsert(self, config: Dict, target_table: str):
+    def stream_and_upsert(self, config: Dict, target_table: str, df: pd.DataFrame):
         # 1. Config & Mapping
-        spreadsheet_id = config.get('spreadsheet_id')
-        sheet_name = config.get('sheet')
         pk_columns = [k.strip() for k in config.get('key', '').split(',')] if config.get('key') else []
-        remove_col = config.get('remove_column')
-        rename_col = config.get('rename_column')
         
-        df = self.get_google_sheet_data(spreadsheet_id, sheet_name, remove_col, rename_col)
-        if df is None or len(df) == 0:
-            logger.warning(f"No data for {target_table}")
-            return 0
-            
         target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
         target_table_name = target_table.split('.')[-1]
         staging_table = f"{target_table_name}_staging_{uuid.uuid4().hex[:8]}"
@@ -305,13 +296,26 @@ class DirectGoogleSheetToPostgres:
                 self.connect_target()
                 target_table = config['table_data'].lower()
                 
+                # Fetch data first to verify it exists and is valid
+                df = self.get_google_sheet_data(
+                    config.get('spreadsheet_id'), 
+                    config.get('sheet'), 
+                    config.get('remove_column'), 
+                    config.get('rename_column')
+                )
+                
+                if df is None or len(df) == 0:
+                    logger.warning(f"No data for {target_table}, skipping table preparation and upsert.")
+                    continue
+                
+                # If we have data, prepare & stream
                 self.prepare_target(config, drop_table)
-                self.stream_and_upsert(config, target_table)
+                self.stream_and_upsert(config, target_table, df)
+                
                 time.sleep(2)
                 logger.success(f"✅ Completed {config['name']}")
                 
             except Exception as e:
-                err_msg = str(e)
                 logger.error(f"Failed {config['name']}: {e}")
             finally:
                 if self.target_conn:
