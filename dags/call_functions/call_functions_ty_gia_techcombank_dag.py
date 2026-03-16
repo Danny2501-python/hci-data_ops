@@ -153,56 +153,29 @@ nfs_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
-# Task: Ty Gia Techcombank Bronze Ingestion
-ty_gia_techcombank_bronze_ingestion = KubernetesPodOperator(
-    task_id='ty_gia_techcombank_bronze_ingestion',
-    name='ty-gia-techcombank-bronze-ingestion',
+# Task: Ty Gia Techcombank Direct Ingestion (API -> PostgreSQL)
+ty_gia_techcombank_direct_ingestion = KubernetesPodOperator(
+    task_id='ty_gia_techcombank_direct_ingestion',
+    name='ty-gia-techcombank-direct-ingestion',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/call_functions/ty_gia_techcombank_ingestion.py',
-        # Argument 1: snapshot_date (for partitioning)
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        # Argument 2: start_date (for API fetching)
-        '{{ dag_run.conf.get("start_date") or days_30_ago_tz() }}',
-        # Argument 3: end_date (for API fetching)
-        '{{ dag_run.conf.get("end_date") or yesterday_tz() }}',
-        # Argument 4: table_name
-        '{{ dag_run.conf.get("table_name") or "ty_gia_techcombank" }}',
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_mount],
-    env_vars=common_env_vars,
-    container_resources=resource_requirements_bronze,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# Task: Ty Gia Techcombank Serving Layer
-ty_gia_techcombank_serving_layer = KubernetesPodOperator(
-    task_id='ty_gia_techcombank_serving_layer',
-    name='ty-gia-techcombank-serving-layer',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/call_functions/ty_gia_techcombank_serving.py',
+        '/app/call_functions/ty_gia_techcombank_direct.py',
         # Argument 1: snapshot_date
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        # Argument 2: source_table (Iceberg)
+        # Argument 2: start_date
+        '{{ dag_run.conf.get("start_date") or days_30_ago_tz() }}',
+        # Argument 3: end_date
+        '{{ dag_run.conf.get("end_date") or yesterday_tz() }}',
+        # Argument 4: target_table
         '{{ dag_run.conf.get("table_name") or "ty_gia_techcombank" }}',
-        # Argument 3: target_table (PostgreSQL)
-        'ty_gia_techcombank',
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_mount],
     env_vars={
         **common_env_vars,
-        # PostgreSQL config from Airflow connection
         'POSTGRES_URI': dwh_product_new_uri,
     },
     container_resources=resource_requirements_serving,
@@ -215,5 +188,4 @@ ty_gia_techcombank_serving_layer = KubernetesPodOperator(
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Bronze -> Serving
-ty_gia_techcombank_bronze_ingestion >> ty_gia_techcombank_serving_layer
+ty_gia_techcombank_direct_ingestion
