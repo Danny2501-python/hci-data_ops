@@ -133,6 +133,11 @@ class DirectGoogleSheetToPostgres:
                 if "404" in error_msg:
                     logger.warning(f"Not found (404) for {spreadsheet_id}: {e}")
                     return pd.DataFrame()
+                # Handle generic WorksheetNotFound exceptions (e.g. error message IS exactly the sheet name)
+                if error_msg.strip() == sheet_name.strip() or "WorksheetNotFound" in error_msg:
+                    logger.warning(f"Worksheet not found/matching exact exception name: '{sheet_name}'. Source may be deleted.")
+                    return pd.DataFrame()
+                
                 raise
 
     def ensure_target_table_exists_from_df(self, df: pd.DataFrame, target_table: str):
