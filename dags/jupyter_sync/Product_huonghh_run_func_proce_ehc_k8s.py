@@ -92,7 +92,7 @@ def create_k8s_task(task_id, sync_task_name):
         image_pull_policy='IfNotPresent',
         cmds=['python'],
         arguments=[
-            '/app/jupyter_sync/product_ehc_sync.py',
+            '/app/jupyter_sync/Product_huonghh_run_func_proce_ehc.py',
             '--task', sync_task_name
         ],
         volumes=[nfs_volume, temp_disk_volume],

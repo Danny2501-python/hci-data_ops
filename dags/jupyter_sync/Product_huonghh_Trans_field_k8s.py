@@ -95,7 +95,7 @@ def create_k8s_task(task_id, sync_task_name):
         image_pull_policy='IfNotPresent',
         cmds=['python'],
         arguments=[
-            '/app/jupyter_sync/product_trans_field.py',
+            '/app/jupyter_sync/Product_huonghh_Trans_field.py',
             '--task', sync_task_name
         ],
         volumes=[nfs_volume, temp_disk_volume],

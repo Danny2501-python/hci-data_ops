@@ -95,7 +95,7 @@ def create_transfer_task(task_id, sync_task_name):
         image_pull_policy='IfNotPresent',
         cmds=['python'],
         arguments=[
-            '/app/jupyter_sync/stag_mail_message_erp.py',
+            '/app/jupyter_sync/Product_dungtv_job_stag_mail_message_erp.py',
             '--task', sync_task_name
         ],
         volumes=[nfs_volume, temp_disk_volume],
