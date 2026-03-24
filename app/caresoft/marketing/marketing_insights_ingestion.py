@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common.brand_config import get_active_brands
 from common.caresoft_api import call_caresoft_api_post
 from common.database import PostgreSQLHelper
+from common.utils import bulk_load
 
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 TARGET_TABLE = 'public.cs_facebook_insight'
@@ -116,7 +117,7 @@ class MarketingInsightsIngestion:
 
     def save_to_postgres(self, records: List[Dict[str, Any]], brand_id: int):
         """
-        Save records to PostgreSQL using Upsert logic (Delete then Insert)
+        Save records to PostgreSQL using standardized bulk_load (Delete then Insert)
         """
         if not records:
             logger.warning(f"No records to save for brand {brand_id}")
@@ -129,47 +130,40 @@ class MarketingInsightsIngestion:
             "clicks", "reach", "brand_etl"
         ]
         
-        insert_query = f"INSERT INTO {TARGET_TABLE} ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})"
-        
-        # Prepare parameters for bulk delete (composite key)
-        # Use unnest for performance on large batches
-        delete_query = f"""
-            DELETE FROM {TARGET_TABLE} 
-            WHERE (date, facebook_page_id, ad_account_id, ad_campaign_id, adset_id, ad_id, country, region, brand_etl) IN (
-                SELECT unnest(%s::date[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]), 
-                       unnest(%s::varchar[]),
-                       unnest(%s::int[])
-            )
-        """
-        
-        delete_params = (
-            [r["date"] for r in records],
-            [r["facebook_page_id"] for r in records],
-            [r["ad_account_id"] for r in records],
-            [r["ad_campaign_id"] for r in records],
-            [r["adset_id"] for r in records],
-            [r["ad_id"] for r in records],
-            [r["country"] for r in records],
-            [r["region"] for r in records],
-            [r["brand_etl"] for r in records]
-        )
-        
-        insert_params = [tuple(record[col] for col in cols) for record in records]
+        conflict_cols = [
+            "date", "facebook_page_id", "ad_account_id", "ad_campaign_id", 
+            "adset_id", "ad_id", "country", "region", "brand_etl"
+        ]
         
         try:
             with PostgreSQLHelper(POSTGRES_URI) as db:
-                # 1. Delete existing records by composite key
-                db.execute(delete_query, delete_params)
+                cursor = db.conn.cursor()
                 
-                # 2. Insert new data
-                db.execute_many(insert_query, insert_params)
+                # Use bulk_load for high performance
+                # Divide into manageable chunks if needed (e.g., 10,000 records per chunk)
+                chunk_size = 10000
+                total_records = len(records)
                 
+                for i in range(0, total_records, chunk_size):
+                    chunk = records[i:i + chunk_size]
+                    logger.info(f"Bulk loading chunk {i//chunk_size + 1} ({len(chunk)} records)...")
+                    
+                    bulk_load(
+                        cursor=cursor,
+                        target_table=TARGET_TABLE,
+                        records=chunk,
+                        columns=cols,
+                        conflict_columns=conflict_cols,
+                        method='delete_insert'
+                    )
+                    
+                    # Small sleep to avoid temp table name collision in common.utils.bulk_load 
+                    # which uses timestamp in seconds
+                    if i + chunk_size < total_records:
+                        time.sleep(1.1)
+                
+                db.conn.commit()
+                cursor.close()
                 logger.success(f"Successfully saved {len(records)} records to {TARGET_TABLE} for brand {brand_id}")
         except Exception as e:
             logger.error(f"Failed to save to PostgreSQL: {e}")
