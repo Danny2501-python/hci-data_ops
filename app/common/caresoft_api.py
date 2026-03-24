@@ -104,3 +104,35 @@ def call_caresoft_api(
     except Exception as e:
         return None, str(e)
 
+def call_caresoft_api_post(
+    brand: dict,
+    endpoint: str,
+    data: dict,
+    timeout: int = 30
+) -> Tuple[Optional[Any], Optional[str]]:
+    """
+    Function to call CareSoft API using POST method with JSON data
+    
+    Args:
+        brand: Brand configuration dict
+        endpoint: API endpoint (e.g., 'marketing/insights')
+        data: JSON data to send in the request body
+        timeout: Request timeout in seconds (default: 30)
+    
+    Returns:
+        Tuple of (data, error)
+    """
+    url = get_api_url(brand, endpoint)
+    headers = get_api_headers(brand)
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=timeout)
+        
+        if response.status_code == 200:
+            return response.json(), None
+        else:
+            error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
+            return None, error_msg
+            
+    except Exception as e:
+        return None, str(e)
