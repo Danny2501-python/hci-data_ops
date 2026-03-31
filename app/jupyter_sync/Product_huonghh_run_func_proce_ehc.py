@@ -420,7 +420,7 @@ class EHCSyncManager:
             where
                 ti.huyphieu_status = 0
         """
-        self.sync_table(query, 'public.tieuhoaviet_doanhso_ehc', conn_source='tieuhoaviet', conn_dest='dwh_product')
+        self.sync_table(query, 'public.tieuhoaviet_doanhso_ehc', conn_source='tieuhoaviet', conn_dest='staging_sci')
 
 
 if __name__ == "__main__":
