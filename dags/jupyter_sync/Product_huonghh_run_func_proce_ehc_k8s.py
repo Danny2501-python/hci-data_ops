@@ -31,6 +31,8 @@ def get_conn_uri(conn_id):
 
 STAGING_SCI_URI = get_conn_uri('dwh_product_new')
 EHC_URI = get_conn_uri('sci_EHC')
+TIEUHOAVIET_URI = get_conn_uri('tieuhoaviet')
+DWH_PRODUCT_URI = get_conn_uri('dwh_product')
 
 # Local timezone for Vietnam
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
@@ -100,6 +102,8 @@ def create_k8s_task(task_id, sync_task_name):
         env_vars={
             'STAGING_SCI_URI': STAGING_SCI_URI,
             'EHC_URI': EHC_URI,
+            'TIEUHOAVIET_URI': TIEUHOAVIET_URI,
+            'DWH_PRODUCT_URI': DWH_PRODUCT_URI,
             'TEMP_DIR': '/tmp'
         },
         container_resources=resource_requirements,
@@ -111,6 +115,7 @@ def create_k8s_task(task_id, sync_task_name):
 # --- Define Tasks ---
 task_doanhso = create_k8s_task('task_HongHa_doanhso_EHC', 'write_HongHa_doanhso_EHC')
 task_thuchien = create_k8s_task('task_stag_thuchien_doanhso_hongha', 'write_stag_thuchien_doanhso_hongha')
+task_tieuhoaviet = create_k8s_task('task_tieuhoaviet_doanhso_ehc', 'write_tieuhoaviet_doanhso_ehc')
 
 # --- Dependencies ---
-task_doanhso >> task_thuchien
+task_doanhso >> task_thuchien >> task_tieuhoaviet

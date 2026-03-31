@@ -87,7 +87,7 @@ class EHCSyncManager:
         finally:
             connection.close()
 
-    def sync_table(self, query_sp, table_dich, conn_source='ehc'):
+    def sync_table(self, query_sp, table_dich, conn_source='ehc', conn_dest='staging_sci'):
         dfc = self.query_df(conn_source, query_sp)
         if dfc.empty:
             logger.info(f"No data to sync for {table_dich}")
@@ -97,9 +97,9 @@ class EHCSyncManager:
             dfc['book'] = np.nan
 
         temp_table = f"{table_dich}_1xjs2qcuj"
-        self.process_table_1('staging_sci', temp_table, table_dich)
+        self.process_table_1(conn_dest, temp_table, table_dich)
 
-        existing_columns = self.query_df('staging_sci', f"SELECT * FROM {table_dich} LIMIT 0", ret='column')
+        existing_columns = self.query_df(conn_dest, f"SELECT * FROM {table_dich} LIMIT 0", ret='column')
         insert_query = f"COPY {temp_table} ({', '.join(existing_columns)}) FROM STDIN WITH CSV HEADER DELIMITER ','"
 
         df = dfc.applymap(self.format_value)
@@ -115,13 +115,13 @@ class EHCSyncManager:
             f_name = temp_file.name
 
         try:
-            connection = self.get_conn('staging_sci')
+            connection = self.get_conn(conn_dest)
             with connection.cursor() as cursor:
                 with open(f_name, 'r', encoding='utf-8') as f:
                     cursor.copy_expert(insert_query, f)
                 connection.commit()
             connection.close()
-            self.process_table_2('staging_sci', temp_table, table_dich)
+            self.process_table_2(conn_dest, temp_table, table_dich)
             logger.info(f"COMPLETED! Updated {table_dich}")
         finally:
             if os.path.exists(f_name):
@@ -361,6 +361,67 @@ class EHCSyncManager:
         """
         self.sync_table(query, 'stag_thuchien_doanhso_hongha')
 
+    def write_tieuhoaviet_doanhso_ehc(self):
+        query = """
+            SELECT-- Doanh số bc 001-cọc
+                2 as "ut",
+                ti.patientrecordid as patientrecordid,
+                ti.invoiceid as invoiceid,
+                date(ti.invoicedate) as ngay,
+                tp2.patientname as ten_bn,
+                tp2.patientcode as ma_bn,
+                case
+                    when ti.dm_invoice_typeid = 2 then -ti.sotienphieu
+                    when ti3.invoicerequestid is not null
+                    and ti.dm_invoice_typeid = 1 then 0
+                    else ti.sotienphieu
+                end as "thanh_toan",
+                tn.nguoigioithieuname as nguon,
+                NULL as book
+            from
+                tb_invoice ti
+            left join tb_patientrecord tp on
+                tp.patientrecordid = ti.patientrecordid
+            left join tb_patient tp2 on
+                tp2.patientid = tp.patientid
+            left join tb_nguoigioithieu tn on
+                tn.nguoigioithieuid = tp.nguoigioithieuid
+            left join tb_dm_invoice_hinhthuc tdih on
+                tdih.dm_invoice_hinhthucid = ti.dm_invoice_hinhthucid
+            left join tb_invoicerequest ti3 on
+                ti3.invoiceid = ti.invoiceid
+            where
+                ti.huyphieu_status = 0
+                and ti.invoicegroupcode <> 'so_thu_tien_bm'
+            
+            union all
+            
+            select -- doanh số nhà thuốc 
+                99 as "ut",
+                ti.patientrecordid as patientrecordid,
+                ti.invoicemedicineid as invoiceid,
+                date(ti.invoicemedicinedate) as ngay,
+                tp2.patientname as ten_bn,
+                tp2.patientcode as ma_bn,
+                case
+                    when ti.dm_invoice_typeid = 1 then ti.sotienphieu
+                    when ti.dm_invoice_typeid = 2 then -ti.sotienphieu
+                end as "Thanh_toan",
+                tn.nguoigioithieuname as nguon,
+                NULL as book
+            from
+                tb_invoicemedicine ti
+            left join tb_patientrecord tp on
+                tp.patientrecordid = ti.patientrecordid
+            left join tb_patient tp2 on
+                tp2.patientid = tp.patientid
+            left join tb_nguoigioithieu tn on
+                tn.nguoigioithieuid = tp.nguoigioithieuid
+            where
+                ti.huyphieu_status = 0
+        """
+        self.sync_table(query, 'public.tieuhoaviet_doanhso_ehc', conn_source='tieuhoaviet', conn_dest='dwh_product')
+
 
 if __name__ == "__main__":
     import argparse
@@ -371,7 +432,9 @@ if __name__ == "__main__":
 
     conn_uris = {
         'staging_sci': os.getenv('STAGING_SCI_URI'),
-        'ehc': os.getenv('EHC_URI')
+        'ehc': os.getenv('EHC_URI'),
+        'tieuhoaviet': os.getenv('TIEUHOAVIET_URI'),
+        'dwh_product': os.getenv('DWH_PRODUCT_URI')
     }
 
     manager = EHCSyncManager(conn_uris=conn_uris)
@@ -380,5 +443,7 @@ if __name__ == "__main__":
         manager.write_HongHa_doanhso_EHC()
     elif args.task == 'write_stag_thuchien_doanhso_hongha':
         manager.write_stag_thuchien_doanhso_hongha()
+    elif args.task == 'write_tieuhoaviet_doanhso_ehc':
+        manager.write_tieuhoaviet_doanhso_ehc()
     else:
         logger.error(f"Unknown task: {args.task}")
