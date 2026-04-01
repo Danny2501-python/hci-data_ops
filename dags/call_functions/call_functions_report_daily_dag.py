@@ -58,7 +58,7 @@ dag = DAG(
             description='Override snapshot date (YYYY-MM-DD). Leave empty to use T-1.',
         ),
         'table_id': Param(
-            default=[593, 614],
+            default=[593, 613, 614],
             type=['null', 'string', 'array'],
             description='Table IDs to process (e.g. [593, 614] or "593,614").',
         ),
