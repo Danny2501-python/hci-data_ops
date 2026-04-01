@@ -51,6 +51,17 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
+dwh_sandbox_uri = ''
+try:
+    hook_sandbox = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn_sandbox = hook_sandbox.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn_sandbox.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 # ============================================================================
 # DAG DEFINITION
 # ============================================================================
@@ -256,11 +267,38 @@ task_contact_enrichment_old = KubernetesPodOperator(
     dag=dag,
 )
 
+task_contact_enrichment_sandbox = KubernetesPodOperator(
+    task_id='contact_enrichment_silver_sandbox',
+    name='caresoft-contact-enrichment-silver-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/contact/contact_detail_enrichment.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_sandbox_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
 # Contact Pipeline Flow:
 # 1. Bronze Ingestion → Serving Enrichments (Parallel)
-task_contact_ingestion >> [task_contact_enrichment, task_contact_enrichment_old]
+task_contact_ingestion >> [task_contact_enrichment, task_contact_enrichment_old, task_contact_enrichment_sandbox]
 
