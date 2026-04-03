@@ -267,6 +267,33 @@ task_ticket_enrichment_old = KubernetesPodOperator(
     dag=dag,
 )
 
+task_ticket_enrichment_sandbox = KubernetesPodOperator(
+    task_id='ticket_enrichment_silver_sandbox',
+    name='caresoft-ticket-enrichment-silver-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_detail_enrichment.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_sandbox_uri,
+    },
+    
+    container_resources=resource_requirements_silver,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 
 # ============================================================================
 # TASK 3: SERVING - Ticket API to PostgreSQL DWH
@@ -438,21 +465,44 @@ task_ticket_source_metadata_serving_old = KubernetesPodOperator(
     dag=dag,
 )
 
+task_ticket_source_metadata_serving_sandbox = KubernetesPodOperator(
+    task_id='ticket_source_metadata_serving_layer_sandbox',
+    name='caresoft-ticket-source-metadata-serving-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/ticket/ticket_source_metadata_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'POSTGRES_URI': dwh_sandbox_uri,
+    },
+    
+    container_resources=resource_requirements_serving,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 
 # ============================================================================
 # TASK DEPENDENCIES
 # ============================================================================
 
-# Main Ticket Pipeline:
-# Main Ticket Pipeline:
-# Main Ticket Pipeline:
 # Ingestion -> Serving (API) -> Enrichment -> Source Metadata -> Serving (Metadata)
 task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox]
 
 # All serving tasks must finish before enrichment starts
-[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment
-[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment_old
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> [task_ticket_enrichment, task_ticket_enrichment_old, task_ticket_enrichment_sandbox]
 
-[task_ticket_enrichment, task_ticket_enrichment_old] >> task_ticket_source_metadata
-task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old]
+[task_ticket_enrichment, task_ticket_enrichment_old, task_ticket_enrichment_sandbox] >> task_ticket_source_metadata
+task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old, task_ticket_source_metadata_serving_sandbox]
 
