@@ -124,7 +124,7 @@ common_env_vars = {
         'password': 'QtdlxxrisA@!sfsgo#2024',
         'host': '10.10.10.214',
         'port': 5432,
-        'dbname': 'staging_sci'
+        'dbname': 'new_product'
     }),
     'CUSTOM_DB_DEV_CONFIG': json.dumps({
         'user': 'admin',
