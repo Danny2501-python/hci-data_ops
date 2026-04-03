@@ -182,6 +182,17 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
+dwh_sandbox_uri = ''
+try:
+    hook_sandbox = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn_sandbox = hook_sandbox.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn_sandbox.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
+    logger.info("✅ Loaded connection URI for dwh_sandbox")
+except Exception as e:
+    logger.warning(f"⚠️  Could not load dwh_sandbox connection: {e}")
+
 
 
 # ============================================================================
@@ -342,6 +353,34 @@ task_refresh_serving_layer_v2_old = KubernetesPodOperator(
     dag=dag,
 )
 
+task_refresh_serving_layer_v2_sandbox = KubernetesPodOperator(
+    task_id='refresh_serving_layer_v2_sandbox',
+    name='caresoft-refresh-serving-layer-v2-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_detail_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_sandbox_uri,
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'SERVING_TABLE_NAME': 'cs_deal_detail_api_v2',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 
 # ============================================================================
 # TASK 5: Transform Deal Comments (JSON → Flat Table)
@@ -432,4 +471,31 @@ task_deal_comments_serving_layer_old = KubernetesPodOperator(
     dag=dag,
 )
 
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer_v2, task_refresh_serving_layer_v2_old] >> task_deal_comments_transformation >> [task_deal_comments_serving_layer, task_deal_comments_serving_layer_old]
+task_deal_comments_serving_layer_sandbox = KubernetesPodOperator(
+    task_id='deal_comments_serving_layer_sandbox',
+    name='caresoft-deal-comments-serving-sandbox',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=[
+        '/app/caresoft/deal/deal_comments_serving_layer.py',
+        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+    ],
+    
+    volumes=[nfs_volume, duckdb_temp_volume],
+    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
+    
+    env_vars={
+        **common_env_vars,
+        'POSTGRES_URI': dwh_sandbox_uri,
+        'SERVING_TABLE_NAME': 'cs_deal_api_trans_comments',
+    },
+    
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer_v2, task_refresh_serving_layer_v2_old, task_refresh_serving_layer_v2_sandbox] >> task_deal_comments_transformation >> [task_deal_comments_serving_layer, task_deal_comments_serving_layer_old, task_deal_comments_serving_layer_sandbox]
