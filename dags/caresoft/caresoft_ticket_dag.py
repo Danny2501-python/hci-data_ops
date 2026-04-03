@@ -501,7 +501,9 @@ task_ticket_source_metadata_serving_sandbox = KubernetesPodOperator(
 task_ticket_ingestion >> [task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox]
 
 # All serving tasks must finish before enrichment starts
-[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> [task_ticket_enrichment, task_ticket_enrichment_old, task_ticket_enrichment_sandbox]
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment_old
+[task_ticket_api_serving, task_ticket_api_serving_old, task_ticket_api_serving_sandbox] >> task_ticket_enrichment_sandbox
 
 [task_ticket_enrichment, task_ticket_enrichment_old, task_ticket_enrichment_sandbox] >> task_ticket_source_metadata
 task_ticket_source_metadata >> [task_ticket_source_metadata_serving, task_ticket_source_metadata_serving_old, task_ticket_source_metadata_serving_sandbox]
