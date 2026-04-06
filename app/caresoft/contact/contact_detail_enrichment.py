@@ -183,13 +183,19 @@ class ContactDetailEnrichment:
                 except:
                     pass
 
-    def run(self, brand: dict):
-        """Standard pipeline logic with Peak RAM optimizations and Direct Postgres Upsert"""
+    def run(self, brand: dict, manual_contact_ids: list = None):
+        """Standard pipeline logic with Peak RAM optimizations and Direct Postgres Upsert
+        Supports manual contact_ids for backfilling.
+        """
         if not self.pg_uri:
             logger.critical("❌ POSTGRES_URI environment variable missing")
             return
 
-        contact_ids = self.get_contact_ids_to_enrich(brand["erp_id"])
+        if manual_contact_ids:
+            contact_ids = manual_contact_ids
+        else:
+            contact_ids = self.get_contact_ids_to_enrich(brand["erp_id"])
+            
         if not contact_ids:
             logger.warning(f"No contacts to enrich for brand {brand.get('name') or brand.get('erp_id')}")
             return
@@ -357,8 +363,14 @@ class ContactDetailEnrichment:
 
 
 def main():
-    """Main entry point"""
+    """
+    Main entry point
+    Usage: python contact_detail_enrichment.py <snapshot_date> [contact_ids] [brand_id]
+    """
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+    contact_ids_str = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
+    brand_id_str = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+
     snapshot_date = snapshot_date_str if snapshot_date_str else (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
     
     brands = get_active_brands()
@@ -367,11 +379,30 @@ def main():
         return
         
     job = ContactDetailEnrichment(snapshot_date)
-    for brand in brands:
-        try:
-            job.run(brand)
-        except Exception as e:
-            logger.error(f"Global Failure for brand {brand['erp_id']}: {e}")
+
+    # Backfill mode if contact_ids_str is provided
+    if contact_ids_str and contact_ids_str != "":
+        manual_ids = [cid.strip() for cid in contact_ids_str.split(',')]
+        logger.info(f"🚀 Running BACKFILL mode for {len(manual_ids)} Contact IDs: {manual_ids}")
+
+        if brand_id_str and brand_id_str != "":
+            brands = [b for b in brands if str(b['erp_id']) == str(brand_id_str)]
+            if not brands:
+                logger.error(f"Brand ID {brand_id_str} not found in active brands")
+                return
+
+        for brand in brands:
+            try:
+                job.run(brand, manual_contact_ids=manual_ids)
+            except Exception as e:
+                logger.error(f"Failure backfilling brand {brand['erp_id']}: {e}")
+    else:
+        # Standard run
+        for brand in brands:
+            try:
+                job.run(brand)
+            except Exception as e:
+                logger.error(f"Global Failure for brand {brand['erp_id']}: {e}")
 
 
 if __name__ == "__main__":
