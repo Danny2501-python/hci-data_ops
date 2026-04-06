@@ -41,6 +41,7 @@ AWS_REGION = os.getenv('AWS_REGION')
 
 # PostgreSQL configuration
 POSTGRES_URI = os.getenv('POSTGRES_URI')
+SOURCE_PG_URI = os.getenv('SOURCE_PG_URI')
 
 # Source and target tables
 CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
@@ -182,6 +183,27 @@ class ContactDetailEnrichment:
                     os.remove(temp_parquet)
                 except:
                     pass
+
+    def get_contact_ids_from_table(self, table_name: str) -> list:
+        """Fetch contact IDs from a specific PostgreSQL table (defaults to SOURCE_PG_URI if set)"""
+        uri = SOURCE_PG_URI if SOURCE_PG_URI else self.pg_uri
+        if not uri:
+            return []
+            
+        try:
+            pg_conn = psycopg2.connect(uri)
+            cursor = pg_conn.cursor()
+            query = f"SELECT DISTINCT requester_id FROM {table_name}"
+            logger.info(f"Fetching IDs from {table_name} in {uri.split('@')[-1]}...")
+            cursor.execute(query)
+            # Use fetchall and convert to string to avoid JSON serializable issues later
+            contact_ids = [str(r[0]) for r in cursor.fetchall() if r[0]]
+            cursor.close()
+            pg_conn.close()
+            return contact_ids
+        except Exception as e:
+            logger.error(f"Error fetching IDs from table {table_name}: {e}")
+            return []
 
     def run(self, brand: dict, manual_contact_ids: list = None):
         """Standard pipeline logic with Peak RAM optimizations and Direct Postgres Upsert
@@ -370,6 +392,7 @@ def main():
     snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     contact_ids_str = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
     brand_id_str = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+    from_table_str = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
 
     snapshot_date = snapshot_date_str if snapshot_date_str else (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
     
@@ -380,10 +403,16 @@ def main():
         
     job = ContactDetailEnrichment(snapshot_date)
 
-    # Backfill mode if contact_ids_str is provided
+    # Resolve manual_ids from either comma-separated string OR from a table
+    manual_ids = None
     if contact_ids_str and contact_ids_str != "":
         manual_ids = [cid.strip() for cid in contact_ids_str.split(',')]
-        logger.info(f"🚀 Running BACKFILL mode for {len(manual_ids)} Contact IDs: {manual_ids}")
+    elif from_table_str and from_table_str != "":
+        manual_ids = job.get_contact_ids_from_table(from_table_str)
+        
+    # Backfill mode if manual_ids is resolved
+    if manual_ids:
+        logger.info(f"🚀 Running BACKFILL mode for {len(manual_ids)} Contact IDs")
 
         if brand_id_str and brand_id_str != "":
             brands = [b for b in brands if str(b['erp_id']) == str(brand_id_str)]

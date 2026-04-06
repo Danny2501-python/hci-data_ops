@@ -105,12 +105,17 @@ dag = DAG(
         'contact_ids': Param(
             default=None,
             type=['null', 'string'],
-            description='Comma-separated list of Contact IDs for backfill. If provided, ingestion is skipped.',
+            description='Comma-separated list of Contact IDs for manual backfill. If provided, ingestion is skipped.',
         ),
         'brand_id': Param(
             default=None,
             type=['null', 'integer', 'string'],
             description='Optional: Filter by Brand ID when backfilling.',
+        ),
+        'from_table': Param(
+            default=None,
+            type=['null', 'string'],
+            description='Optional: Source table (in target DB) to pull IDs from (columns expected: requester_id).',
         )
     },
     user_defined_macros={'yesterday_tz': get_yesterday_tz},
@@ -165,9 +170,10 @@ duckdb_temp_volume_mount = k8s.V1VolumeMount(name='duckdb-temp', mount_path='/tm
 def decide_etl_flow(**kwargs):
     conf = kwargs.get('dag_run').conf or {}
     contact_ids = conf.get('contact_ids')
+    from_table = conf.get('from_table')
     
-    if contact_ids and contact_ids != "":
-        logger.info(f"🚀 Manual Contact IDs provided: {contact_ids}. Bypassing ingestion.")
+    if (contact_ids and contact_ids != "") or (from_table and from_table != ""):
+        logger.info(f"🚀 Manual backfill detected (IDs or Table). Bypassing ingestion.")
         return ['contact_enrichment_silver', 'contact_enrichment_silver_old_dwh', 'contact_enrichment_silver_sandbox']
     else:
         logger.info("📅 No manual IDs provided. Proceeding with standard ingestion.")
@@ -212,11 +218,17 @@ task_contact_enrichment = KubernetesPodOperator(
         '/app/caresoft/contact/contact_detail_enrichment.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("contact_ids") or "" }}',
-        '{{ dag_run.conf.get("brand_id") or "" }}'
+        '{{ dag_run.conf.get("brand_id") or "" }}',
+        '{{ dag_run.conf.get("from_table") or "" }}'
     ],
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb', 'POSTGRES_URI': dwh_product_new_uri},
+    env_vars={
+        **common_env_vars, 
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb', 
+        'POSTGRES_URI': dwh_product_new_uri,
+        'SOURCE_PG_URI': dwh_product_new_uri # Always look in New DWH for IDs
+    },
     container_resources=resource_requirements_silver,
     is_delete_operator_pod=True,
     get_logs=True,
@@ -234,11 +246,17 @@ task_contact_enrichment_old = KubernetesPodOperator(
         '/app/caresoft/contact/contact_detail_enrichment.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("contact_ids") or "" }}',
-        '{{ dag_run.conf.get("brand_id") or "" }}'
+        '{{ dag_run.conf.get("brand_id") or "" }}',
+        '{{ dag_run.conf.get("from_table") or "" }}'
     ],
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb', 'POSTGRES_URI': dwh_product_uri},
+    env_vars={
+        **common_env_vars, 
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb', 
+        'POSTGRES_URI': dwh_product_uri,
+        'SOURCE_PG_URI': dwh_product_new_uri # Always look in New DWH for IDs
+    },
     container_resources=resource_requirements_silver,
     is_delete_operator_pod=True,
     get_logs=True,
@@ -256,11 +274,17 @@ task_contact_enrichment_sandbox = KubernetesPodOperator(
         '/app/caresoft/contact/contact_detail_enrichment.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("contact_ids") or "" }}',
-        '{{ dag_run.conf.get("brand_id") or "" }}'
+        '{{ dag_run.conf.get("brand_id") or "" }}',
+        '{{ dag_run.conf.get("from_table") or "" }}'
     ],
     volumes=[nfs_volume, duckdb_temp_volume],
     volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    env_vars={**common_env_vars, 'DUCKDB_TEMP_DIR': '/tmp/duckdb', 'POSTGRES_URI': dwh_sandbox_uri},
+    env_vars={
+        **common_env_vars, 
+        'DUCKDB_TEMP_DIR': '/tmp/duckdb', 
+        'POSTGRES_URI': dwh_sandbox_uri,
+        'SOURCE_PG_URI': dwh_product_new_uri # Always look in New DWH for IDs
+    },
     container_resources=resource_requirements_silver,
     is_delete_operator_pod=True,
     get_logs=True,
