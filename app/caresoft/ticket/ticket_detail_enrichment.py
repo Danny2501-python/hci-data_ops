@@ -32,7 +32,6 @@ from common.caresoft_api import call_caresoft_api
 
 # Table names
 TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
-TICKET_DETAIL_ERROR_TABLE = 'caresoft.cs_ticket_source_error_api'
 TARGET_PG_TABLE = 'cs_ticket_source_api'
 
 class TicketDetailEnrichment:
@@ -68,27 +67,6 @@ class TicketDetailEnrichment:
         self.target_pg_table = TARGET_PG_TABLE
         logger.info(f"Initialized TicketDetailEnrichment (Final Polish) for {self.snapshot_date}")
 
-    def ensure_ticket_detail_error_table_exists(self):
-        """Create ticket error table in Iceberg if not exists"""
-        try:
-            return self.silver_catalog.load_table(TICKET_DETAIL_ERROR_TABLE)
-        except:
-            logger.info(f"Creating error table {TICKET_DETAIL_ERROR_TABLE} in Iceberg...")
-            schema = Schema(
-                NestedField(field_id=1, name="ticket_id", field_type=LongType(), required=False),
-                NestedField(field_id=2, name="brand_id", field_type=IntegerType(), required=False),
-                NestedField(field_id=3, name="error_message", field_type=StringType(), required=False),
-                NestedField(field_id=4, name="snapshot_date", field_type=StringType(), required=False),
-                NestedField(field_id=5, name="ingestion_timestamp", field_type=TimestampType(), required=False),
-            )
-            partition_spec = PartitionSpec(
-                PartitionField(source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
-            )
-            return self.silver_catalog.create_table(
-                identifier=TICKET_DETAIL_ERROR_TABLE,
-                schema=schema,
-                partition_spec=partition_spec
-            )
 
     def get_ticket_ids_to_enrich(self, brand_erp_id):
         """Scan Bronze Iceberg for tickets with streaming Parquet writing"""
@@ -138,12 +116,7 @@ class TicketDetailEnrichment:
         if not ticket_ids: return
             
         logger.info(f"Enriching {len(ticket_ids)} tickets directly to PostgreSQL...")
-        error_table = self.ensure_ticket_detail_error_table_exists()
         
-        # Parity: Delete old error records for this run
-        try: error_table.delete(And(EqualTo("snapshot_date", self.snapshot_date), EqualTo("brand_id", brand["erp_id"])))
-        except: pass
-
         try:
             pg_conn = psycopg2.connect(self.pg_uri)
             cursor = pg_conn.cursor()
@@ -162,7 +135,6 @@ class TicketDetailEnrichment:
             ]
             
             batch_records = []
-            batch_error_records = []
             total_success = 0
             total_errors = 0
             MICRO_BATCH_SIZE = 100
@@ -203,21 +175,14 @@ class TicketDetailEnrichment:
                     batch_records.append(record)
                     del ticket_data
                 else:
-                    batch_error_records.append({
-                        "ticket_id": ticket_id, "brand_id": brand["erp_id"], "error_message": str(error)[:1000],
-                        "snapshot_date": self.snapshot_date, "ingestion_timestamp": get_current_timestamp_naive()
-                    })
                     total_errors += 1
+                    logger.warning(f"Failed to fetch ticket {ticket_id}: {error}")
                 
                 # Flush Cycle
                 if len(batch_records) >= MICRO_BATCH_SIZE:
                     self._upsert_to_postgres(cursor, batch_records, columns)
                     pg_conn.commit(); total_success += len(batch_records)
                     batch_records = []; gc.collect()
-
-                if len(batch_error_records) >= MICRO_BATCH_SIZE:
-                    error_table.append(pa.Table.from_pylist(batch_error_records))
-                    batch_error_records = []; gc.collect()
                 
                 if (i+1) % 50 == 0: logger.info(f"Progress: {i+1}/{len(ticket_ids)} Done.")
                 time.sleep(0.01)
@@ -226,8 +191,6 @@ class TicketDetailEnrichment:
             if batch_records:
                 self._upsert_to_postgres(cursor, batch_records, columns); pg_conn.commit()
                 total_success += len(batch_records)
-            if batch_error_records:
-                error_table.append(pa.Table.from_pylist(batch_error_records))
                 
             logger.success(f"Execution complete. Success: {total_success}, Errors: {total_errors}")
             
