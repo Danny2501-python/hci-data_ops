@@ -82,31 +82,7 @@ class ContactDetailEnrichment:
         self.target_pg_table = TARGET_PG_TABLE
         
         logger.info(f"Initialized ContactDetailEnrichment (Postgres-Direct) for snapshot_date={self.snapshot_date}")
-        
-        # Ensure error table exists in Iceberg
-        self.ensure_contact_detail_error_table_exists()
     
-    def ensure_contact_detail_error_table_exists(self):
-        """Create contact detail error table in Iceberg if not exists"""
-        try:
-            return self.silver_catalog.load_table(CONTACT_DETAIL_ERROR_TABLE)
-        except Exception:
-            logger.info(f"Creating error table {CONTACT_DETAIL_ERROR_TABLE} in Iceberg...")
-            schema = Schema(
-                NestedField(1, "id", IntegerType(), required=True),
-                NestedField(2, "brand_id", IntegerType(), required=True),
-                NestedField(3, "trangthai", IntegerType(), required=False),
-                NestedField(4, "snapshot_date", DateType(), required=True),
-                NestedField(5, "error_timestamp", TimestampType(), required=True),
-            )
-            partition_spec = PartitionSpec(
-                PartitionField(source_id=4, field_id=1000, transform=IdentityTransform(), name="snapshot_date")
-            )
-            return self.silver_catalog.create_table(
-                identifier=CONTACT_DETAIL_ERROR_TABLE,
-                schema=schema,
-                partition_spec=partition_spec
-            )
 
     def ensure_target_pg_table_exists(self, cursor, columns):
         """Ensure the target PostgreSQL table exists with the correct primary key"""
@@ -223,20 +199,7 @@ class ContactDetailEnrichment:
             return
             
         logger.info(f"Enriching {len(contact_ids)} contacts directly to PostgreSQL for brand {brand.get('name') or brand.get('erp_id')}...")
-        error_table = self.ensure_contact_detail_error_table_exists()
-        error_pa_schema = schema_to_pyarrow(error_table.schema())
         
-        # Delete old error records for this partition
-        try:
-            error_table.delete(
-                And(
-                    EqualTo("snapshot_date", self.snapshot_date),
-                    EqualTo("brand_id", brand["erp_id"])
-                )
-            )
-        except Exception:
-            pass
-
         try:
             pg_conn = psycopg2.connect(self.pg_uri)
             cursor = pg_conn.cursor()
@@ -261,7 +224,6 @@ class ContactDetailEnrichment:
             pg_conn.commit()
 
             batch_records = []
-            batch_error_records = []
             total_success = 0
             total_errors = 0
             MICRO_BATCH_SIZE = 100
@@ -303,14 +265,8 @@ class ContactDetailEnrichment:
                     batch_records.append(record)
                     del contact_data
                 else:
-                    batch_error_records.append({
-                        "id": int(contact_id), 
-                        "brand_id": int(brand["erp_id"]), 
-                        "trangthai": 1,
-                        "snapshot_date": self.snapshot_date, 
-                        "error_timestamp": get_current_timestamp_naive()
-                    })
                     total_errors += 1
+                    logger.warning(f"Failed to fetch contact {contact_id} for brand {brand['erp_id']}")
                 
                 # Flush Cycle
                 if len(batch_records) >= MICRO_BATCH_SIZE:
@@ -318,11 +274,6 @@ class ContactDetailEnrichment:
                     pg_conn.commit()
                     total_success += len(batch_records)
                     batch_records = []
-                    gc.collect()
-
-                if len(batch_error_records) >= MICRO_BATCH_SIZE:
-                    error_table.append(pa.Table.from_pylist(batch_error_records, schema=error_pa_schema))
-                    batch_error_records = []
                     gc.collect()
                 
                 if (i+1) % 50 == 0:
@@ -336,9 +287,6 @@ class ContactDetailEnrichment:
                 self._upsert_to_postgres(cursor, batch_records, columns)
                 pg_conn.commit()
                 total_success += len(batch_records)
-            
-            if batch_error_records:
-                error_table.append(pa.Table.from_pylist(batch_error_records, schema=error_pa_schema))
                 
             logger.success(f"Enrichment complete for {brand.get('name') or brand.get('erp_id')}. Success: {total_success}, Errors: {total_errors}")
             
