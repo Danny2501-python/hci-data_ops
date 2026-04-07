@@ -80,7 +80,7 @@ dag = DAG(
             description='Source type filter (e.g. caresoft, ERP)'
         ),
         'target_conn_id': Param(
-            default='dwh_product_new',
+            default='dwh_product',
             type='string',
             description='Target Postgres Connection ID (e.g. dwh_sandbox, dwh_product_new)'
         )
@@ -124,7 +124,7 @@ common_env_vars = {
         'password': 'QtdlxxrisA@!sfsgo#2024',
         'host': '10.10.10.214',
         'port': 5432,
-        'dbname': 'staging_sci'
+        'dbname': 'new_product'
     }),
     'CUSTOM_DB_DEV_CONFIG': json.dumps({
         'user': 'admin',
