@@ -141,34 +141,34 @@ from airflow.operators.python import PythonOperator
 # ============================================================================
 
 # 1. Direct Ingestion (Bypassing Iceberg)
-direct_ingestion = KubernetesPodOperator(
-    task_id='direct_ingestion',
-    name='etl-report-daily-direct-ingestion',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/call_functions/direct_postgres_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ params.table_id }}',
-        '{{ params.source }}',
-        '{{ dag_run.conf.get("load_type") or "incremental" }}',
-        '{{ params.drop_table }}'
-    ],
-    volumes=[nfs_volume, temp_disk_volume],
-    volume_mounts=[nfs_mount, temp_disk_mount],
-    env_vars={
-        **common_env_vars,
-        **erp_configs,
-        'POSTGRES_URI': dwh_product_new_uri,
-        'TEMP_DIR': '/tmp',
-    },
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
+# direct_ingestion = KubernetesPodOperator(
+#     task_id='direct_ingestion',
+#     name='etl-report-daily-direct-ingestion',
+#     namespace=NAMESPACE,
+#     image=PYTHON_ETL_IMAGE,
+#     image_pull_policy='IfNotPresent',
+#     cmds=['python'],
+#     arguments=[
+#         '/app/call_functions/direct_postgres_ingestion.py',
+#         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
+#         '{{ params.table_id }}',
+#         '{{ params.source }}',
+#         '{{ dag_run.conf.get("load_type") or "incremental" }}',
+#         '{{ params.drop_table }}'
+#     ],
+#     volumes=[nfs_volume, temp_disk_volume],
+#     volume_mounts=[nfs_mount, temp_disk_mount],
+#     env_vars={
+#         **common_env_vars,
+#         **erp_configs,
+#         'POSTGRES_URI': dwh_product_new_uri,
+#         'TEMP_DIR': '/tmp',
+#     },
+#     container_resources=resource_requirements,
+#     is_delete_operator_pod=True,
+#     get_logs=True,
+#     dag=dag,
+# )
 
 # 2. Call Postgres Functions with Results Logging
 def execute_report_functions(**kwargs):
@@ -204,4 +204,4 @@ call_functions = PythonOperator(
     dag=dag,
 )
 
-direct_ingestion >> call_functions
+call_functions
