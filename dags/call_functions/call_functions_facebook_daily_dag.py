@@ -43,12 +43,12 @@ def get_yesterday_tz():
 dag = DAG(
     'call_functions_facebook_daily_dag',
     default_args=default_args,
-    description='Daily Facebook ETL: Facebook Source → DWH Product New & Sandbox',
+    description='Daily Facebook ETL: Facebook Source → DWH Sandbox',
     schedule_interval='30 7 * * *', 
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'facebook', 'daily', 'product_new', 'sandbox'],
+    tags=['etl', 'facebook', 'daily', 'sandbox'],
     params={
         'snapshot_date': Param(default=None, type=['null', 'string']),
         'table_id': Param(default=None, type=['null', 'string', 'array']),
@@ -144,5 +144,4 @@ def create_ingestion_task(target_conn_id):
         dag=dag,
     )
 
-task_product_new = create_ingestion_task('dwh_product_new')
 task_sandbox = create_ingestion_task('dwh_sandbox')
