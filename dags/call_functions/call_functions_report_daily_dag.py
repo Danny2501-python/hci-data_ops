@@ -46,7 +46,7 @@ dag = DAG(
     'call_functions_report_daily_dag',
     default_args=default_args,
     description='ETL & Report Daily: Ingestion IDs (593,614) + Call 4 Functions',
-    schedule_interval='30 4 * * *', # 4:30 AM daily
+    schedule_interval='0 5 * * *', # 5:00 AM daily
     start_date=datetime(2026, 3, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

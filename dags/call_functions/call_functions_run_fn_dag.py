@@ -26,7 +26,7 @@ dag = DAG(
     'call_functions_run_fn_dag',
     default_args=default_args,
     description='Run function in dwh',
-    schedule_interval='0 5 * * *',  # 5:00 AM daily
+    schedule_interval='15 4 * * *',  # 5:00 AM daily
     start_date=datetime(2026, 3, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
