@@ -37,7 +37,7 @@ dag = DAG(
     'data_serving_etl',
     default_args=default_args,
     description='Run Data Serving ETL Pipeline',
-    schedule_interval="25 8 * * *",
+    schedule_interval="25 8,11 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
