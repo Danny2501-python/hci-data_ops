@@ -57,7 +57,7 @@ dag = DAG(
     'caresoft_marketing_insights_dag',
     default_args=default_args,
     description='CareSoft Marketing Insights Ingestion: API -> PostgreSQL',
-    schedule_interval='30 7 * * *',
+    schedule_interval='30 7,12 * * *',
     start_date=datetime(2026, 3, 20, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

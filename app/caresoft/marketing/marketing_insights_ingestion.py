@@ -24,16 +24,19 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 TARGET_TABLE = 'public.cs_facebook_insight'
 
 class MarketingInsightsIngestion:
-    def __init__(self, snapshot_date: date = None):
-        self.snapshot_date = snapshot_date or (date.today() - timedelta(days=1))
-        logger.info(f"Initialized MarketingInsightsIngestion for {self.snapshot_date}")
+    def __init__(self, since_date: date = None, until_date: date = None):
+        # Mặc định: until là T-1, since là T-3
+        self.until_date = until_date or (date.today() - timedelta(days=1))
+        self.since_date = since_date or (date.today() - timedelta(days=3))
+        
+        logger.info(f"Initialized MarketingInsightsIngestion from {self.since_date} to {self.until_date}")
 
-    def fetch_insights(self, brand: dict) -> List[Dict[str, Any]]:
+    def fetch_insights(self, brand: dict, target_date: date) -> List[Dict[str, Any]]:
         """
-        Fetch marketing insights from CareSoft API
+        Fetch marketing insights from CareSoft API for a specific date
         """
         endpoint = "marketing/insights"
-        date_str = self.snapshot_date.strftime("%d-%m-%Y")
+        date_str = target_date.strftime("%d-%m-%Y")
         
         # Request body based on user requirements
         payload = {
@@ -82,7 +85,7 @@ class MarketingInsightsIngestion:
             
         return all_data
 
-    def transform_record(self, record: Dict[str, Any], brand_etl: int) -> Dict[str, Any]:
+    def transform_record(self, record: Dict[str, Any], brand_etl: int, target_date: date) -> Dict[str, Any]:
         """
         Transform API record to match database schema
         """
@@ -95,7 +98,7 @@ class MarketingInsightsIngestion:
                 return None
 
         return {
-            "date": self.snapshot_date,
+            "date": target_date,
             "facebook_page_id": record.get("facebook_page_id"),
             "page_name": record.get("page_name"),
             "ad_account_id": record.get("ad_account_id"),
@@ -171,48 +174,55 @@ class MarketingInsightsIngestion:
 
     def run(self):
         """
-        Execute the ingestion process for all active brands
+        Execute the ingestion process for all active brands across the date range
         """
         brands = get_active_brands()
         if not brands:
             logger.error("No active brands found")
             return
 
+        # Tạo danh sách các ngày cần xử lý
+        delta = self.until_date - self.since_date
+        date_list = [self.since_date + timedelta(days=i) for i in range(delta.days + 1)]
+        
         total_records = 0
-        for brand in brands:
-            try:
-                # Optional: Filter for specific brand if needed, for now process all
-                # The user's example used kangnam2
-                
-                raw_data = self.fetch_insights(brand)
-                if not raw_data:
-                    logger.info(f"No insights found for brand {brand['name']}")
+        
+        for target_date in date_list:
+            logger.info(f"===> Processing date: {target_date} <===")
+            for brand in brands:
+                try:
+                    raw_data = self.fetch_insights(brand, target_date)
+                    if not raw_data:
+                        logger.info(f"No insights found for brand {brand['name']} on {target_date}")
+                        continue
+                    
+                    transformed_records = [self.transform_record(record, brand["erp_id"], target_date) for record in raw_data]
+                    self.save_to_postgres(transformed_records, brand["erp_id"])
+                    total_records += len(transformed_records)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing brand {brand['name']} on {target_date}: {e}")
                     continue
-                
-                transformed_records = [self.transform_record(record, brand["erp_id"]) for record in raw_data]
-                self.save_to_postgres(transformed_records, brand["erp_id"])
-                total_records += len(transformed_records)
-                
-            except Exception as e:
-                logger.error(f"Error processing brand {brand['name']}: {e}")
-                continue
                 
         logger.success(f"Ingestion completed. Total records saved: {total_records}")
 
 if __name__ == "__main__":
-    # Get snapshot_date from command line arguments
-    # Usage: python marketing_insights_ingestion.py 2026-03-22
-    snapshot_date_str = sys.argv[1] if len(sys.argv) > 1 else None
+    # Nhận tham số từ Airflow hoặc CLI
+    # Usage: python marketing_insights_ingestion.py 2026-03-20 2026-03-22
+    since_str = sys.argv[1] if len(sys.argv) > 1 else None
+    until_str = sys.argv[2] if len(sys.argv) > 2 else None
     
-    if snapshot_date_str:
-        try:
-            snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            logger.error(f"Invalid date format: {snapshot_date_str}. Use YYYY-MM-DD")
-            sys.exit(1)
-    else:
-        # Default to yesterday
-        snapshot_date = date.today() - timedelta(days=1)
+    since_date = None
+    until_date = None
+
+    try:
+        if since_str:
+            since_date = datetime.strptime(since_str, "%Y-%m-%d").date()
+        if until_str:
+            until_date = datetime.strptime(until_str, "%Y-%m-%d").date()
+    except ValueError as e:
+        logger.error(f"Invalid date format. Use YYYY-MM-DD. Error: {e}")
+        sys.exit(1)
         
-    job = MarketingInsightsIngestion(snapshot_date)
+    job = MarketingInsightsIngestion(since_date=since_date, until_date=until_date)
     job.run()
