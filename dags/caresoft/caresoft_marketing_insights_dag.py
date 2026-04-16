@@ -48,10 +48,15 @@ default_args = {
 
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
-def get_yesterday_tz():
+def get_t_1_tz():
     now = datetime.now(local_tz)
-    yesterday = now - timedelta(days=1)
-    return yesterday.strftime('%Y-%m-%d')
+    t_1 = now - timedelta(days=1)
+    return t_1.strftime('%Y-%m-%d')
+
+def get_t_3_tz():
+    now = datetime.now(local_tz)
+    t_3 = now - timedelta(days=3)
+    return t_3.strftime('%Y-%m-%d')
 
 dag = DAG(
     'caresoft_marketing_insights_dag',
@@ -63,13 +68,21 @@ dag = DAG(
     max_active_runs=1,
     tags=['caresoft', 'marketing', 'facebook', 'insight'],
     params={
-        'snapshot_date': Param(
+        'since': Param(
             default=None,
             type=['null', 'string'],
-            description='Override date for backfill (YYYY-MM-DD). Leave empty to use yesterday.',
+            description='Start date for backfill (YYYY-MM-DD). Default is T-3.',
+        ),
+        'until': Param(
+            default=None,
+            type=['null', 'string'],
+            description='End date for backfill (YYYY-MM-DD). Default is T-1.',
         )
     },
-    user_defined_macros={'yesterday_tz': get_yesterday_tz},
+    user_defined_macros={
+        't_3_tz': get_t_3_tz,
+        't_1_tz': get_t_1_tz
+    },
 )
 
 # ============================================================================
@@ -118,7 +131,8 @@ task_marketing_insights = KubernetesPodOperator(
     cmds=['python'],
     arguments=[
         '/app/caresoft/marketing/marketing_insights_ingestion.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
+        '{{ params.since or t_3_tz() }}',
+        '{{ params.until or t_1_tz() }}'
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_volume_mount],
