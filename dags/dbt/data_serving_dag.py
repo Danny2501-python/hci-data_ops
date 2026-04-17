@@ -69,15 +69,17 @@ nfs_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
-dbt_run_task = KubernetesPodOperator(
-    task_id='dbt_run_data_serving',
-    name='dbt-data-serving-run',
+# Task for Kangnam (KN)
+dbt_run_kn = KubernetesPodOperator(
+    task_id='dbt_run_kn',
+    name='dbt-kn-run',
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
     image_pull_policy='IfNotPresent',
     cmds=['dbt'],
     arguments=[
         'run',
+        '--select', 'tag:report_kn',
         '--project-dir', '/app/data_serving',
         '--profiles-dir', '/app/data_serving',
     ],
@@ -88,3 +90,28 @@ dbt_run_task = KubernetesPodOperator(
     get_logs=True,
     dag=dag,
 )
+
+# Task for Paris (PR)
+dbt_run_pr = KubernetesPodOperator(
+    task_id='dbt_run_pr',
+    name='dbt-pr-run',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['dbt'],
+    arguments=[
+        'run',
+        '--select', 'tag:report_pr',
+        '--project-dir', '/app/data_serving',
+        '--profiles-dir', '/app/data_serving',
+    ],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+# Parallel execution
+[dbt_run_kn, dbt_run_pr]
