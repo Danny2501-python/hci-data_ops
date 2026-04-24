@@ -60,7 +60,7 @@ nfs_volume = k8s.V1Volume(
 nfs_mount = k8s.V1VolumeMount(
     name='nfs-dbt-data-serving', 
     mount_path='/app/data_serving', 
-    read_only=False
+    read_only=True   # source code only — target/logs ghi vào /tmp trong pod
 )
 
 # ============================================================================
@@ -79,6 +79,8 @@ dbt_run_kn = KubernetesPodOperator(
         '--select', 'tag:report_kn',
         '--project-dir', '/app/data_serving',
         '--profiles-dir', '/app/data_serving',
+        '--target-path', '/tmp/dbt_target',  # ghi vào pod local, không ra NFS
+        '--log-path',    '/tmp/dbt_logs',    # ghi vào pod local, không ra NFS
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_mount],
