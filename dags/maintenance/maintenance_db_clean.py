@@ -2,8 +2,8 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 
-# Cấu hình: Giữ lại dữ liệu trong vòng 0 ngày (Xóa sạch lịch sử)
-RETENTION_DAYS = 0
+# Cấu hình: Giữ lại dữ liệu trong vòng 30 ngày
+RETENTION_DAYS = 30
 
 default_args = {
     'owner': 'airflow',
