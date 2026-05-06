@@ -42,7 +42,7 @@ dag = DAG(
     start_date=datetime(2026, 4, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['maintenance', 'delete-sync'],
+    tags=['call_functions', 'delete-sync'],
 )
 
 # ============================================================================
