@@ -3,7 +3,7 @@ from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 
 # Cấu hình: Giữ lại dữ liệu trong vòng 30 ngày
-RETENTION_DAYS = 30
+RETENTION_DAYS = 1000
 
 default_args = {
     'owner': 'airflow',
