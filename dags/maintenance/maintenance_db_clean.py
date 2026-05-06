@@ -29,7 +29,11 @@ with DAG(
     clean_db = BashOperator(
         task_id='clean_airflow_db',
         bash_command=f"""
+        # Bước 1: Dọn dữ liệu cũ vào bảng archived
         airflow db clean --clean-before-timestamp $(date -d '{RETENTION_DAYS} days ago' +%Y-%m-%d) --yes
+        
+        # Bước 2: Xóa hẳn các bảng archived để giải phóng dung lượng đĩa
+        airflow db drop-archived --yes
         """,
     )
 

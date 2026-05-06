@@ -35,7 +35,7 @@ default_args = {
 local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 
 dag = DAG(
-    'maintenance_sync_delete_dag',
+    'call_functions_sync_delete_dag',
     default_args=default_args,
     description='Sync Delete from DWH auditlog_log to DWH tables (Hard Delete)',
     schedule_interval=None,
