@@ -27,7 +27,7 @@ def delete_old_logs():
         obj = s3_hook.get_key(key, BUCKET_NAME)
         # obj.last_modified trả về datetime ở dạng UTC
         if obj.last_modified.replace(tzinfo=None) < cutoff_date:
-            s3_hook.delete_objects(bucket_name=BUCKET_NAME, keys=[key])
+            s3_hook.delete_objects(bucket=BUCKET_NAME, keys=[key])
             deleted_count += 1
             logging.info(f"Đã xóa: {key} (Sửa đổi lần cuối: {obj.last_modified})")
 
