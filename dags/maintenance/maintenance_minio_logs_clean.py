@@ -6,7 +6,7 @@ import logging
 
 # Cấu hình
 BUCKET_NAME = 'airflow-logs'
-RETENTION_DAYS = 0
+RETENTION_DAYS = 30
 CONN_ID = 'minio_logs_conn'
 
 def delete_old_logs():
