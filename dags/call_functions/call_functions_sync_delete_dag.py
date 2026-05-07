@@ -95,7 +95,7 @@ for code, etl_id, full_name in brands:
         cmds=['python'],
         arguments=[
             '/app/call_functions/trans_data_delete.py',
-            '250',  # Look back 15 days
+            '15',  # Look back 15 days
         ],
         volumes=[nfs_volume],
         volume_mounts=[nfs_mount],

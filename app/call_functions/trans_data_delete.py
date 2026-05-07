@@ -111,7 +111,9 @@ class TransDataDelete:
 
         success_count = 0
         not_found_count = 0
-        for _, row in data_delete.iterrows():
+        total_records = len(data_delete)
+        for i, (_, row) in enumerate(data_delete.iterrows(), 1):
+            logger.info(f"[{self.source_log}] [{i}/{total_records}] Processing: {row['model']} (ResID: {row['res_id']}, LogID: {row['id']})")
             try:
                 # 1. Fetch current data from Target for backup
                 fetch_query = f"SELECT * FROM {row['model']} WHERE id = %s AND brand_etl = %s"
@@ -252,7 +254,7 @@ if __name__ == "__main__":
     try:
         # Mặc định chạy 15 ngày cho sync mới và 5 ngày cho retry
         days_sync = int(sys.argv[1]) if len(sys.argv) > 1 else 15
-        days_retry = 250
+        days_retry = 5
         
         # 1. Chạy sync xóa mới
         worker.run_trans_delete_data(date=days_sync)
