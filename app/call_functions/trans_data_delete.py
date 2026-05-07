@@ -166,15 +166,15 @@ class TransDataDelete:
     def _ensure_logging_table(self, table_name):
         query = f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
-                id BIGINT,
-                table_name VARCHAR(255),
-                create_date TIMESTAMP,
-                write_date TIMESTAMP,
-                res_id BIGINT,
-                raw_data TEXT,
-                brand_etl INTEGER,
-                has_retry_delete BOOLEAN,
-                ingestion_timestamp TIMESTAMP,
+                id numeric(20) NOT NULL,
+                table_name varchar(250) NULL,
+                create_date timestamp NULL,
+                write_date timestamp NULL,
+                res_id numeric(20) NOT NULL,
+                raw_data text NULL,
+                brand_etl int4 NOT NULL,
+                has_retry_delete bool NULL,
+                ingestion_timestamp timestamp NULL,
                 PRIMARY KEY (id, res_id, brand_etl)
             )
         """
