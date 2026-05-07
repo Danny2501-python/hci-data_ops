@@ -104,11 +104,13 @@ class TransDataDelete:
 
         def convert_to_json(row):
             try:
-                return json.dumps(row.to_dict(), default=str)
-            except Exception:
+                return json.dumps(row.to_dict(), default=str, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"Error converting to JSON: {e}")
                 return None
 
         success_count = 0
+        not_found_count = 0
         for _, row in data_delete.iterrows():
             try:
                 # 1. Fetch current data from Target for backup
@@ -120,6 +122,7 @@ class TransDataDelete:
                 cursor.close()
 
                 if df_backup.empty:
+                    not_found_count += 1
                     # Record already gone or never existed in target
                     df_log = pd.DataFrame([{
                         'id': row['id'],
@@ -160,7 +163,7 @@ class TransDataDelete:
                 logger.error(f"[{self.source_log}] Failed to process row {row['id']} for table {row['model']}: {e}")
 
         end_time = perf_counter()
-        logger.success(f"[{self.source_log}] Deleted {success_count} records in {end_time - start_time:.2f}s")
+        logger.success(f"[{self.source_log}] Sync Finished: {success_count} deleted/backed-up, {not_found_count} already missing in target. (Time: {end_time - start_time:.2f}s)")
         return True
 
     def _ensure_logging_table(self, table_name):
