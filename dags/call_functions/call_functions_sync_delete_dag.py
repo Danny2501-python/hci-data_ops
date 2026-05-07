@@ -38,7 +38,7 @@ dag = DAG(
     'call_functions_sync_delete_dag',
     default_args=default_args,
     description='Sync Delete from DWH auditlog_log to DWH tables (Hard Delete)',
-    schedule_interval=None,
+    schedule_interval='45 3 * * *', #Daily at 3:45 AM
     start_date=datetime(2026, 4, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
