@@ -11,6 +11,7 @@ from loguru import logger
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from common.database import PostgreSQLHelper
+from common.utils import get_current_timestamp_naive
 
 class TransDataDelete:
     def __init__(self, target_uri: str, brand_name: str, brand_etl: int = None):
@@ -173,13 +174,18 @@ class TransDataDelete:
                 raw_data TEXT,
                 brand_etl INTEGER,
                 has_retry_delete BOOLEAN,
+                ingestion_timestamp TIMESTAMP,
                 PRIMARY KEY (id, res_id, brand_etl)
             )
         """
         self.target_db.execute(query)
 
     def _copy_to_logging(self, df, table_name):
-        cols = ['id', 'table_name', 'create_date', 'write_date', 'res_id', 'raw_data', 'brand_etl', 'has_retry_delete']
+        # Thêm timestamp tại thời điểm thực hiện đổ dữ liệu
+        df = df.copy() # Tránh SettingWithCopyWarning
+        df['ingestion_timestamp'] = get_current_timestamp_naive()
+        
+        cols = ['id', 'table_name', 'create_date', 'write_date', 'res_id', 'raw_data', 'brand_etl', 'has_retry_delete', 'ingestion_timestamp']
         df_to_save = df[cols]
         
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
