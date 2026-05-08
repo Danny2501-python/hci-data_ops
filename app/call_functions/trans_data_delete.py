@@ -76,17 +76,17 @@ class TransDataDelete:
             logger.error(f"[{self.source_log}] Error in check_data_delete: {e}")
             raise e
 
-    def delete_data_in_target(self, table, res_id, brand_etl):
-        """
-        Perform the actual delete in the Target DWH.
-        """
-        try:
-            query = f"DELETE FROM {table} WHERE id = %s AND brand_etl = %s"
-            self.target_db.execute(query, (res_id, brand_etl))
-            return True
-        except Exception as e:
-            logger.error(f"[{self.source_log}] Error deleting from {table} (ID: {res_id}): {e}")
-            return False
+    # def delete_data_in_target(self, table, res_id, brand_etl):
+    #     """
+    #     Perform the actual delete in the Target DWH.
+    #     """
+    #     try:
+    #         query = f"DELETE FROM {table} WHERE id = %s AND brand_etl = %s"
+    #         self.target_db.execute(query, (res_id, brand_etl))
+    #         return True
+    #     except Exception as e:
+    #         logger.error(f"[{self.source_log}] Error deleting from {table} (ID: {res_id}): {e}")
+    #         return False
 
     def insert_data_delete(self, data_delete, table_logging='logging_delete'):
         """
@@ -149,8 +149,9 @@ class TransDataDelete:
                     df_log['id'] = row['id']
                     df_log['brand_etl'] = row['brand_etl']
                     
-                    # 2. Execute Delete in Target
-                    df_log['has_retry_delete'] = self.delete_data_in_target(row['model'], row['res_id'], row['brand_etl'])
+                    # 2. Execute Delete in Target (DISABLED for safety)
+                    # df_log['has_retry_delete'] = self.delete_data_in_target(row['model'], row['res_id'], row['brand_etl'])
+                    df_log['has_retry_delete'] = True
 
                 # 3. Save Log to Target logging_delete
                 # First remove old log if exists to avoid PK conflict (id is from auditlog_log)
