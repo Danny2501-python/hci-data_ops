@@ -170,7 +170,7 @@ class DirectPostgresToPostgres:
             self.target_conn.commit()
 
         # 2. Streaming Loop
-        BATCH_SIZE, total_rows = 20000, 0
+        BATCH_SIZE, total_rows = 200000, 0
         temp_dir = os.getenv('TEMP_DIR', tempfile.gettempdir())
         
         try:
