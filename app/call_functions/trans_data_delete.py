@@ -228,7 +228,7 @@ class TransDataDelete:
             FROM 
                 logging_delete 
             WHERE 
-                (raw_data IS NULL OR has_retry_delete = false)
+                raw_data IS NULL AND has_retry_delete = false
                 AND DATE(write_date) >= CURRENT_DATE - INTERVAL '{date} days'
                 {f"AND brand_etl = {self.brand_etl}" if self.brand_etl else ""}
             ORDER BY table_name 
