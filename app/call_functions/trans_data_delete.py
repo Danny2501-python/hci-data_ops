@@ -113,7 +113,8 @@ class TransDataDelete:
         not_found_count = 0
         total_records = len(data_delete)
         for i, (_, row) in enumerate(data_delete.iterrows(), 1):
-            logger.info(f"[{self.source_log}] [{i}/{total_records}] Processing: {row['model']} (ResID: {row['res_id']}, LogID: {row['id']})")
+            if i % 100 == 0 or i == 1 or i == total_records:
+                logger.info(f"[{self.source_log}] [{i}/{total_records}] Processing: {row['model']} (ResID: {row['res_id']}, LogID: {row['id']})")
             try:
                 # 1. Fetch current data from Target for backup
                 fetch_query = f"SELECT * FROM {row['model']} WHERE id = %s AND brand_etl = %s"
