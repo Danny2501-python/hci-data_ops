@@ -174,6 +174,7 @@ from airflow.operators.python import PythonOperator
 def execute_report_functions(**kwargs):
     hook = PostgresHook(postgres_conn_id='dwh_product_new')
     statements = [
+        "SELECT public.report_discount_review();",
         "SELECT public.report_ctv_kn1();",
         "SELECT public.report_ctv_pr1();",
         "SELECT public.bc_sales_paris();",
