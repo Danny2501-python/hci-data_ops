@@ -24,7 +24,6 @@ NFS_PATH = '/srv/nfs_share/app'
 
 # DWH Connections (for serving layer)
 dwh_uri = ''
-dwh_old_uri = ''
 
 try:
     hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
@@ -36,15 +35,6 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
 
-try:
-    hook_old = PostgresHook(postgres_conn_id='dwh_product')
-    conn_old = hook_old.get_connection('dwh_product')
-    dwh_old_uri = conn_old.get_uri()
-    if '?__extra__=' in dwh_old_uri:
-        dwh_old_uri = dwh_old_uri.split('?__extra__=')[0]
-    logger.info("✅ Loaded connection URI for dwh_product")
-except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
@@ -193,30 +183,6 @@ task_ticket_custom_field_serving = KubernetesPodOperator(
     dag=dag,
 )
 
-task_ticket_custom_field_serving_old = KubernetesPodOperator(
-    task_id='ticket_custom_field_serving_layer_old_dwh',
-    name='caresoft-ticket-custom-field-serving-old-dwh',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        'ticket'  # field_type
-    ],
-    volumes=[nfs_volume, duckdb_volume],
-    volume_mounts=[nfs_mount, duckdb_mount],
-    env_vars={
-        **common_env_vars,
-        'POSTGRES_URI': dwh_old_uri,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
-    },
-    container_resources=resource_requirements_serving,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
 
 # Contact Custom Fields - Ingestion
 task_contact_custom_field_ingestion = KubernetesPodOperator(
@@ -266,30 +232,6 @@ task_contact_custom_field_serving = KubernetesPodOperator(
     dag=dag,
 )
 
-task_contact_custom_field_serving_old = KubernetesPodOperator(
-    task_id='contact_custom_field_serving_layer_old_dwh',
-    name='caresoft-contact-custom-field-serving-old-dwh',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/custom_field/custom_field_serving_layer.py', 
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        'contact'  # field_type
-    ],
-    volumes=[nfs_volume, duckdb_volume],
-    volume_mounts=[nfs_mount, duckdb_mount],
-    env_vars={
-        **common_env_vars,
-        'POSTGRES_URI': dwh_old_uri,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
-    },
-    container_resources=resource_requirements_serving,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
 
 # ============================================================================
 # TASK DEPENDENCIES
@@ -299,5 +241,5 @@ task_contact_custom_field_serving_old = KubernetesPodOperator(
 task_ticket_custom_field_ingestion >> task_contact_custom_field_ingestion
 
 # 2. Serving layers run as soon as their respective data is ready
-task_ticket_custom_field_ingestion >> [task_ticket_custom_field_serving, task_ticket_custom_field_serving_old]
-task_contact_custom_field_ingestion >> [task_contact_custom_field_serving, task_contact_custom_field_serving_old]
+task_ticket_custom_field_ingestion >> task_ticket_custom_field_serving
+task_contact_custom_field_ingestion >> task_contact_custom_field_serving

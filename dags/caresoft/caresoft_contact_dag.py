@@ -30,7 +30,6 @@ NFS_PATH = '/srv/nfs_share/app'
 
 # DWH Product Connections (for serving layer)
 dwh_product_new_uri = ''
-dwh_product_uri = ''
 
 try:
     hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
@@ -42,15 +41,6 @@ try:
 except Exception as e:
     logger.warning(f"⚠️  Could not load dwh_product_new connection: {e}")
 
-try:
-    hook_old = PostgresHook(postgres_conn_id='dwh_product')
-    conn_old = hook_old.get_connection('dwh_product')
-    dwh_product_uri = conn_old.get_uri()
-    if '?__extra__=' in dwh_product_uri:
-        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
-    logger.info("✅ Loaded connection URI for dwh_product")
-except Exception as e:
-    logger.warning(f"⚠️  Could not load dwh_product connection: {e}")
 
 dwh_sandbox_uri = ''
 try:
@@ -174,7 +164,7 @@ def decide_etl_flow(**kwargs):
     
     if (contact_ids and contact_ids != "") or (from_table and from_table != ""):
         logger.info(f"🚀 Manual backfill detected (IDs or Table). Bypassing ingestion.")
-        return ['contact_enrichment_silver', 'contact_enrichment_silver_old_dwh', 'contact_enrichment_silver_sandbox']
+        return ['contact_enrichment_silver', 'contact_enrichment_silver_sandbox']
     else:
         logger.info("📅 No manual IDs provided. Proceeding with standard ingestion.")
         return 'contact_ingestion_bronze'
@@ -236,33 +226,6 @@ task_contact_enrichment = KubernetesPodOperator(
     dag=dag,
 )
 
-task_contact_enrichment_old = KubernetesPodOperator(
-    task_id='contact_enrichment_silver_old_dwh',
-    name='caresoft-contact-enrichment-silver-old-dwh',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/contact/contact_detail_enrichment.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
-        '{{ dag_run.conf.get("contact_ids") or "" }}',
-        '{{ dag_run.conf.get("brand_id") or "" }}',
-        '{{ dag_run.conf.get("from_table") or "" }}'
-    ],
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    env_vars={
-        **common_env_vars, 
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb', 
-        'POSTGRES_URI': dwh_product_uri,
-        'SOURCE_PG_URI': dwh_product_new_uri # Always look in New DWH for IDs
-    },
-    container_resources=resource_requirements_silver,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    trigger_rule='none_failed_min_one_success',
-    dag=dag,
-)
 
 task_contact_enrichment_sandbox = KubernetesPodOperator(
     task_id='contact_enrichment_silver_sandbox',
@@ -296,5 +259,5 @@ task_contact_enrichment_sandbox = KubernetesPodOperator(
 # DEPENDENCIES
 # ============================================================================
 
-branch_task >> task_contact_ingestion >> [task_contact_enrichment, task_contact_enrichment_old, task_contact_enrichment_sandbox]
-branch_task >> [task_contact_enrichment, task_contact_enrichment_old, task_contact_enrichment_sandbox]
+branch_task >> task_contact_ingestion >> [task_contact_enrichment, task_contact_enrichment_sandbox]
+branch_task >> [task_contact_enrichment, task_contact_enrichment_sandbox]

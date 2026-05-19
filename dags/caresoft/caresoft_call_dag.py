@@ -20,7 +20,6 @@ NFS_PATH = '/srv/nfs_share/app'
 
 # Get Postgres Connections
 dwh_product_new_uri = ''
-dwh_product_uri = ''
 
 try:
     hook_new = PostgresHook(postgres_conn_id='dwh_product_new')
@@ -31,14 +30,6 @@ try:
 except Exception as e:
     logger.warning(f"Could not load dwh_product_new connection: {e}")
 
-try:
-    hook_old = PostgresHook(postgres_conn_id='dwh_product')
-    conn_old = hook_old.get_connection('dwh_product')
-    dwh_product_uri = conn_old.get_uri()
-    if '?__extra__=' in dwh_product_uri:
-        dwh_product_uri = dwh_product_uri.split('?__extra__=')[0]
-except Exception as e:
-    logger.warning(f"Could not load dwh_product connection: {e}")
 
 # ============================================================================
 # DAG DEFINITION
@@ -175,26 +166,6 @@ task_call_serving = KubernetesPodOperator(
     dag=dag,
 )
 
-task_call_serving_old = KubernetesPodOperator(
-    task_id='call_serving_layer_old_dwh',
-    name='caresoft-call-serving-layer-old-dwh',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=['/app/caresoft/call/call_serving_layer.py', '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'],
-    volumes=[nfs_volume, duckdb_volume],
-    volume_mounts=[nfs_mount, duckdb_mount],
-    env_vars={
-        **common_env_vars,
-        'POSTGRES_URI': dwh_product_uri,
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb'
-    },
-    container_resources=resource_requirements_serving,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
 
 # DEPS
-task_call_ingestion >> [task_call_serving, task_call_serving_old]
+task_call_ingestion >> task_call_serving
