@@ -212,6 +212,190 @@ class TicketIngestion:
         logger.success(f"✅ Fetched {len(all_tickets)} tickets ({fetch_type})")
         return all_tickets
     
+    def _transform_and_write(self, ticket_table, tickets: list, fetch_type: str, brand: dict, ingestion_timestamp, pyarrow_schema):
+        """
+        Transform a list of raw API tickets and write to Iceberg in batches.
+        Called immediately after each fetch to avoid accumulating all_records in RAM.
+        """
+        import json
+        import re
+
+        if not tickets:
+            return
+
+        def safe_int(val):
+            if val is None:
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
+        def safe_str(val):
+            if val is None:
+                return None
+            return str(val)
+
+        def safe_ts(val):
+            if val is None:
+                return None
+            try:
+                return datetime.fromisoformat(val.replace('Z', '+00:00')) if isinstance(val, str) else val
+            except (ValueError, TypeError):
+                return None
+
+        def safe_bool(val):
+            if val is None:
+                return None
+            if isinstance(val, bool):
+                return val
+            return str(val).lower() in ('true', '1', 'yes')
+
+        def extract_ad_id(tags):
+            """Extract ad_id value from tags array
+
+            Tags format: [{"name": "ad_id.123456"}, {"name": "other_tag"}]
+            Returns: "123456" or empty string
+            """
+            if not tags:
+                return '[]'  # Empty list as string (matching old system)
+            try:
+                if isinstance(tags, str):
+                    tags = json.loads(tags)
+                all_names = ' '.join(item.get('name', '') for item in tags if isinstance(item, dict))
+                matches = re.findall(r"ad_id\.(\w+)", all_names)
+                return str(matches)  # "['123456']" or "[]"
+            except Exception:
+                return '[]'  # Empty list as string on error
+
+        def extract_custom_fields(custom_fields, brand_config):
+            """Extract specific custom field values using brand config
+
+            Args:
+                custom_fields: List of custom field objects or JSON string
+                brand_config: Dict with custom_field_mappings JSON
+
+            Returns:
+                Dict with extracted values: {
+                    'ghi_chu': '...',
+                    'id_value_phan_loai_ket_noi': '...',
+                    'id_value_muc_do_hai_long': '...',
+                    'id_value_dich_vu_chi_tiet': '...'
+                }
+            """
+            result = {
+                'ghi_chu': '',  # Default to empty string (matching old system)
+                'id_value_phan_loai_ket_noi': '',
+                'id_value_muc_do_hai_long': '',
+                'id_value_dich_vu_chi_tiet': '',
+            }
+            if not custom_fields:
+                return result
+            try:
+                if isinstance(custom_fields, str):
+                    custom_fields = json.loads(custom_fields)
+                mappings = {}
+                if brand_config.get('custom_field_mappings'):
+                    try:
+                        mappings = json.loads(brand_config['custom_field_mappings'])
+                    except:
+                        pass
+                if not mappings:
+                    return result
+                for item in custom_fields:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = item.get('id')
+                    item_value = item.get('value')
+                    if item_id is None:
+                        continue
+                    if item_value is None:
+                        item_value = ''
+                    item_id_str = str(item_id)
+                    if mappings.get('ghi_chu') is not None and item_id_str == str(mappings.get('ghi_chu')):
+                        result['ghi_chu'] = item_value
+                    elif mappings.get('phan_loai_ket_noi') is not None and item_id_str == str(mappings.get('phan_loai_ket_noi')):
+                        result['id_value_phan_loai_ket_noi'] = item_value
+                    elif mappings.get('muc_do_hai_long') is not None and item_id_str == str(mappings.get('muc_do_hai_long')):
+                        result['id_value_muc_do_hai_long'] = item_value
+                    elif mappings.get('dich_vu_chi_tiet') is not None and item_id_str == str(mappings.get('dich_vu_chi_tiet')):
+                        result['id_value_dich_vu_chi_tiet'] = item_value
+                return result
+            except Exception as e:
+                logger.warning(f"Error extracting custom fields: {e}")
+                return result
+
+        def serialize_for_json(obj):
+            """Convert date/datetime objects to ISO format strings for JSON serialization"""
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            elif isinstance(obj, date):
+                return obj.isoformat()
+            return obj
+
+        # Transform tickets to records
+        transformed_records = []
+        for ticket in tickets:
+            extracted_custom_fields = extract_custom_fields(ticket.get("custom_fields", []), brand)
+            record = {
+                # Core IDs (matching old table)
+                "ticket_id": ticket.get("ticket_id"),
+                "ticket_no": safe_int(ticket.get("ticket_no")),
+                "requester_id": ticket.get("requester_id"),
+                "assignee_id": ticket.get("assignee_id"),
+                "incident_id": safe_int(ticket.get("incident_id")),
+                "service_id": ticket.get("service_id"),
+                "campaign_id": safe_str(ticket.get("campaign_id")),
+                # Status and classification (matching old table)
+                "ticket_status": safe_str(ticket.get("ticket_status")),
+                "ticket_priority": safe_str(ticket.get("ticket_priority")),
+                "ticket_source": safe_str(ticket.get("ticket_source")),
+                "ticket_source_end_status": safe_str(ticket.get("ticket_source_end_status")),
+                # Text fields (matching old table)
+                "ticket_subject": safe_str(ticket.get("ticket_subject")),
+                "campaign": safe_str(ticket.get("campaign")),
+                "duedate": safe_str(ticket.get("duedate")),
+                # Timestamps (matching old table)
+                "created_at": safe_ts(ticket.get("created_at")),
+                "updated_at": safe_ts(ticket.get("updated_at")),
+                # JSON fields (matching old table - stored as JSON strings)
+                "custom_fields": json.dumps(ticket.get("custom_fields", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("custom_fields") else None,
+                "assignee": json.dumps(ticket.get("assignee", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("assignee") else None,
+                "requester": json.dumps(ticket.get("requester", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("requester") else None,
+                "tags": json.dumps(ticket.get("tags", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("tags") else None,
+                # Brand and metadata (matching old table)
+                "brand_id": safe_int(brand["erp_id"]),  # From brand config, not ticket
+                # "raw_data": json.dumps(ticket, ensure_ascii=False, default=serialize_for_json), # Removed due to size
+                "ghi_chu": extracted_custom_fields['ghi_chu'],  # Extracted from custom_fields
+                # Custom extracted fields (matching old table)
+                "id_value_phan_loai_ket_noi": extracted_custom_fields['id_value_phan_loai_ket_noi'],  # Extracted from custom_fields
+                "id_value_muc_do_hai_long": extracted_custom_fields['id_value_muc_do_hai_long'],  # Extracted from custom_fields
+                "ad_id_value": extract_ad_id(ticket.get("tags", [])),  # Extract from tags
+                "id_value_dich_vu_chi_tiet": extracted_custom_fields['id_value_dich_vu_chi_tiet'],  # Extracted from custom_fields
+                # NEW: Metadata for Lakehouse (added here, not in original ticket)
+                "snapshot_date": self.snapshot_date,  # date object
+                "ingestion_timestamp": ingestion_timestamp,  # datetime object
+                "fetch_type": fetch_type,  # From tuple unpacking
+            }
+            transformed_records.append(record)
+
+        # Write to Iceberg in batches
+        BATCH_SIZE = 5000
+        total_records = len(transformed_records)
+        logger.info(f"[{fetch_type}] Writing {total_records} records in batches of {BATCH_SIZE}...")
+
+        for i in range(0, total_records, BATCH_SIZE):
+            batch = transformed_records[i:i + BATCH_SIZE]
+            batch_num = (i // BATCH_SIZE) + 1
+            total_batches = (total_records + BATCH_SIZE - 1) // BATCH_SIZE
+            logger.info(f"[{fetch_type}] Writing batch {batch_num}/{total_batches} ({len(batch)} records)...")
+            df = pa.Table.from_pylist(batch, schema=pyarrow_schema)
+            ticket_table.append(df)
+            del df, batch
+            gc.collect()
+
+        logger.success(f"✅ [{fetch_type}] Wrote {total_records} records to {TICKET_BRONZE_TABLE}")
+
     def run(self, brand: dict, days_ago: int = 1):
         """
         Execute ticket ingestion pipeline for a single brand
@@ -251,10 +435,13 @@ class TicketIngestion:
         except Exception as e:
             logger.warning(f"Could not delete old data (table might be empty): {e}")
         
-        # Fetch tickets in 3 loops (matching old system logic)
-        # Store as list of tuples: (ticket, fetch_type)
-        all_records = []
-        
+        # Single timestamp for entire job run
+        ingestion_timestamp = get_current_timestamp_naive()
+        pyarrow_schema = schema_to_pyarrow(ticket_table.schema())
+
+        # Fetch and write immediately per fetch type to avoid accumulating all_records in RAM
+        total_written = 0
+
         # Loop 1: UPDATED tickets (yesterday → today)
         tickets_updated = self.fetch_tickets(
             brand=brand,
@@ -262,8 +449,11 @@ class TicketIngestion:
             date_since=date_yesterday,
             date_to=date_today
         )
-        all_records.extend([(ticket, 'updated') for ticket in tickets_updated])
-        
+        self._transform_and_write(ticket_table, tickets_updated, 'updated', brand, ingestion_timestamp, pyarrow_schema)
+        total_written += len(tickets_updated)
+        del tickets_updated
+        gc.collect()
+
         # Loop 2: CREATED tickets (yesterday → today)
         tickets_created = self.fetch_tickets(
             brand=brand,
@@ -271,8 +461,11 @@ class TicketIngestion:
             date_since=date_yesterday,
             date_to=date_today
         )
-        all_records.extend([(ticket, 'created') for ticket in tickets_created])
-        
+        self._transform_and_write(ticket_table, tickets_created, 'created', brand, ingestion_timestamp, pyarrow_schema)
+        total_written += len(tickets_created)
+        del tickets_created
+        gc.collect()
+
         # Loop 3: CREATED tickets (day before yesterday → yesterday)
         tickets_created_prev = self.fetch_tickets(
             brand=brand,
@@ -280,236 +473,14 @@ class TicketIngestion:
             date_since=date_day_before,
             date_to=date_yesterday
         )
-        all_records.extend([(ticket, 'created_prev') for ticket in tickets_created_prev])
-        
-        # Write to Iceberg
-        if all_records:
-            import json
-            
-            # Helper functions for safe type conversion
-            def safe_int(val):
-                if val is None:
-                    return None
-                try:
-                    return int(val)
-                except (ValueError, TypeError):
-                    return None
-            
-            def safe_str(val):
-                if val is None:
-                    return None
-                return str(val)
-            
-            def safe_ts(val):
-                if val is None:
-                    return None
-                try:
-                    return datetime.fromisoformat(val.replace('Z', '+00:00')) if isinstance(val, str) else val
-                except (ValueError, TypeError):
-                    return None
-            
-            def safe_bool(val):
-                if val is None:
-                    return None
-                if isinstance(val, bool):
-                    return val
-                return str(val).lower() in ('true', '1', 'yes')
-            
-            def extract_ad_id(tags):
-                """Extract ad_id value from tags array
-                
-                Tags format: [{"name": "ad_id.123456"}, {"name": "other_tag"}]
-                Returns: "123456" or empty string
-                """
-                if not tags:
-                    return '[]'  # Empty list as string (matching old system)
-                
-                try:
-                    # Parse JSON if string
-                    if isinstance(tags, str):
-                        import json
-                        tags = json.loads(tags)
-                    
-                    # Join all 'name' values
-                    all_names = ' '.join(item.get('name', '') for item in tags if isinstance(item, dict))
-                    
-                    # Extract ad_id using regex
-                    import re
-                    matches = re.findall(r"ad_id\.(\w+)", all_names)
-                    
-                    # Return string representation of list (matching old system: .astype(str))
-                    return str(matches)  # "['123456']" or "[]"
-                except Exception:
-                    return '[]'  # Empty list as string on error
-            
-            
-            def extract_custom_fields(custom_fields, brand_config):
-                """Extract specific custom field values using brand config
-                
-                Args:
-                    custom_fields: List of custom field objects or JSON string
-                    brand_config: Dict with custom_field_mappings JSON
-                
-                Returns:
-                    Dict with extracted values: {
-                        'ghi_chu': '...',
-                        'id_value_phan_loai_ket_noi': '...',
-                        'id_value_muc_do_hai_long': '...',
-                        'id_value_dich_vu_chi_tiet': '...'
-                    }
-                """
-                result = {
-                    'ghi_chu': '',  # Default to empty string (matching old system)
-                    'id_value_phan_loai_ket_noi': '',
-                    'id_value_muc_do_hai_long': '',
-                    'id_value_dich_vu_chi_tiet': '',
-                }
-                
-                if not custom_fields:
-                    return result
-                
-                try:
-                    # Parse custom_fields if string
-                    if isinstance(custom_fields, str):
-                        custom_fields = json.loads(custom_fields)
-                    
-                    # Parse brand config mappings
-                    mappings = {}
-                    if brand_config.get('custom_field_mappings'):
-                        try:
-                            mappings = json.loads(brand_config['custom_field_mappings'])
-                        except:
-                            pass
-                    
-                    # If no mappings, return empty
-                    if not mappings:
-                        return result
-                    
-                    # Extract values by matching IDs
-                    for item in custom_fields:
-                        if not isinstance(item, dict):
-                            continue
-                        
-                        item_id = item.get('id')
-                        item_value = item.get('value')
-                        
-                        # Skip if no ID
-                        if item_id is None:
-                            continue
-                        
-                        # Convert None to empty string (matching old system behavior)
-                        if item_value is None:
-                            item_value = ''
-                        
-                        # Convert both to string for comparison
-                        # This handles: int vs int, int vs str, str vs str, any number including 0
-                        item_id_str = str(item_id)
-                        
-                        # Match against configured IDs (convert mapping values to str too)
-                        if mappings.get('ghi_chu') is not None and item_id_str == str(mappings.get('ghi_chu')):
-                            result['ghi_chu'] = item_value
-                        elif mappings.get('phan_loai_ket_noi') is not None and item_id_str == str(mappings.get('phan_loai_ket_noi')):
-                            result['id_value_phan_loai_ket_noi'] = item_value
-                        elif mappings.get('muc_do_hai_long') is not None and item_id_str == str(mappings.get('muc_do_hai_long')):
-                            result['id_value_muc_do_hai_long'] = item_value
-                        elif mappings.get('dich_vu_chi_tiet') is not None and item_id_str == str(mappings.get('dich_vu_chi_tiet')):
-                            result['id_value_dich_vu_chi_tiet'] = item_value
-                    
-                    return result
-                    
-                except Exception as e:
-                    logger.warning(f"Error extracting custom fields: {e}")
-                    return result
-            
-            def serialize_for_json(obj):
-                """Convert date/datetime objects to ISO format strings for JSON serialization"""
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-                elif isinstance(obj, date):
-                    return obj.isoformat()
-                return obj
-            
-            # Transform records to match schema (legacy cs_ticket_api fields)
-            transformed_records = []
-            ingestion_timestamp = get_current_timestamp_naive()  # Single timestamp for entire batch (UTC+7)
-            
-            for ticket, fetch_type in all_records:
-                # Extract custom field values using brand config
-                extracted_custom_fields = extract_custom_fields(ticket.get("custom_fields", []), brand)
-                
-                record = {
-                    # Core IDs (matching old table)
-                    "ticket_id": ticket.get("ticket_id"),
-                    "ticket_no": safe_int(ticket.get("ticket_no")),
-                    "requester_id": ticket.get("requester_id"),
-                    "assignee_id": ticket.get("assignee_id"),
-                    "incident_id": safe_int(ticket.get("incident_id")),
-                    "service_id": ticket.get("service_id"),
-                    "campaign_id": safe_str(ticket.get("campaign_id")),
-                    
-                    # Status and classification (matching old table)
-                    "ticket_status": safe_str(ticket.get("ticket_status")),
-                    "ticket_priority": safe_str(ticket.get("ticket_priority")),
-                    "ticket_source": safe_str(ticket.get("ticket_source")),
-                    "ticket_source_end_status": safe_str(ticket.get("ticket_source_end_status")),
-                    
-                    # Text fields (matching old table)
-                    "ticket_subject": safe_str(ticket.get("ticket_subject")),
-                    "campaign": safe_str(ticket.get("campaign")),
-                    "duedate": safe_str(ticket.get("duedate")),
-                    
-                    # Timestamps (matching old table)
-                    "created_at": safe_ts(ticket.get("created_at")),
-                    "updated_at": safe_ts(ticket.get("updated_at")),
-                    
-                    # JSON fields (matching old table - stored as JSON strings)
-                    "custom_fields": json.dumps(ticket.get("custom_fields", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("custom_fields") else None,
-                    "assignee": json.dumps(ticket.get("assignee", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("assignee") else None,
-                    "requester": json.dumps(ticket.get("requester", {}), ensure_ascii=False, default=serialize_for_json) if ticket.get("requester") else None,
-                    "tags": json.dumps(ticket.get("tags", []), ensure_ascii=False, default=serialize_for_json) if ticket.get("tags") else None,
-                    
-                    # Brand and metadata (matching old table)
-                    "brand_id": safe_int(brand["erp_id"]),  # From brand config, not ticket
-                    # "raw_data": json.dumps(ticket, ensure_ascii=False, default=serialize_for_json), # Removed due to size
-                    "ghi_chu": extracted_custom_fields['ghi_chu'],  # Extracted from custom_fields
-                    
-                    # Custom extracted fields (matching old table)
-                    "id_value_phan_loai_ket_noi": extracted_custom_fields['id_value_phan_loai_ket_noi'],  # Extracted from custom_fields
-                    "id_value_muc_do_hai_long": extracted_custom_fields['id_value_muc_do_hai_long'],  # Extracted from custom_fields
-                    "ad_id_value": extract_ad_id(ticket.get("tags", [])),  # Extract from tags
-                    "id_value_dich_vu_chi_tiet": extracted_custom_fields['id_value_dich_vu_chi_tiet'],  # Extracted from custom_fields
-                    
-                    # NEW: Metadata for Lakehouse (added here, not in original ticket)
-                    "snapshot_date": self.snapshot_date,  # date object
-                    "ingestion_timestamp": ingestion_timestamp,  # datetime object
-                    "fetch_type": fetch_type,  # From tuple unpacking
-                }
-                transformed_records.append(record)
-            
-            # Write to Iceberg in batches to avoid OOM
-            BATCH_SIZE = 5000
-            total_records = len(transformed_records)
-            pyarrow_schema = schema_to_pyarrow(ticket_table.schema())
+        self._transform_and_write(ticket_table, tickets_created_prev, 'created_prev', brand, ingestion_timestamp, pyarrow_schema)
+        total_written += len(tickets_created_prev)
+        del tickets_created_prev
+        gc.collect()
 
-            logger.info(f"Writing {total_records} records in batches of {BATCH_SIZE}...")
-
-            for i in range(0, total_records, BATCH_SIZE):
-                batch = transformed_records[i:i + BATCH_SIZE]
-                batch_num = (i // BATCH_SIZE) + 1
-                total_batches = (total_records + BATCH_SIZE - 1) // BATCH_SIZE
-
-                logger.info(f"Writing batch {batch_num}/{total_batches} ({len(batch)} records)...")
-
-                df = pa.Table.from_pylist(batch, schema=pyarrow_schema)
-                ticket_table.append(df)
-
-                del df, batch
-                gc.collect()
-
-            logger.success(f"✅ Wrote {total_records} tickets to {TICKET_BRONZE_TABLE}")
-        else:
+        if total_written == 0:
             logger.warning("No tickets fetched")
-        
+
         gc.collect()
         logger.success(f"Ticket ingestion completed for brand {brand['erp_id']}")
 
