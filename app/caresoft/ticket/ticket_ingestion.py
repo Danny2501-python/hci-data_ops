@@ -420,6 +420,10 @@ class TicketIngestion:
             del df, batch
             gc.collect()
 
+        # Free transformed_records immediately after writing — don't wait for function return
+        del transformed_records
+        gc.collect()
+
         logger.success(f"✅ [{fetch_type}] Wrote {total_records} records to {TICKET_BRONZE_TABLE}")
 
     def run(self, brand: dict, days_ago: int = 1):
