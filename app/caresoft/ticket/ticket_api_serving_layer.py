@@ -148,7 +148,6 @@ class TicketApiServingLayer:
                         WHERE ticket_id IS NOT NULL
                     ) sub
                     WHERE rn = 1
-                    ORDER BY brand_id, ticket_id
                 ) TO '{temp_parquet_dedup}' (FORMAT PARQUET)
             """
             con.execute(query)
