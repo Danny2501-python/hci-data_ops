@@ -141,7 +141,7 @@ class TicketIngestion:
     # Note: get_api_url and get_api_headers are now imported from common.caresoft_api
     
     
-    def fetch_tickets(self, brand: dict, fetch_type: str, date_since: str, date_to: str):
+    def fetch_tickets(self, brand: dict, fetch_type: str, date_since: str, date_to: str, flush_callback=None):
         """
         Fetch tickets from CareSoft API with pagination
         
@@ -150,9 +150,12 @@ class TicketIngestion:
             fetch_type: 'updated', 'created', or 'created_prev'
             date_since: Start date in ISO format (e.g. '2026-01-12T00:00:00Z')
             date_to: End date in ISO format
+            flush_callback: Optional callable(page_tickets) invoked per page.
+                            When provided, tickets are NOT accumulated in RAM;
+                            returns total count instead of list.
         
         Returns:
-            List of ticket records
+            List of ticket records (flush_callback=None) OR total count (flush_callback set)
         """
         brand_id = brand["erp_id"]
         
@@ -174,12 +177,15 @@ class TicketIngestion:
         
         logger.info(f"Fetching tickets ({fetch_type}): {date_since} to {date_to}")
         
-        all_tickets = []
+        all_tickets = []  # Only used when flush_callback is None
+        page_buffer = []  # Buffer for flush mode: accumulate N pages before flushing
+        FLUSH_EVERY_PAGES = 10
+        total_fetched = 0
         page = 1
-        
+
         while True:
             params['page'] = page
-            
+
             try:
                 response = requests.get(
                     get_api_url(brand, "tickets"),
@@ -187,30 +193,50 @@ class TicketIngestion:
                     headers=get_api_headers(brand),
                     timeout=30
                 )
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     tickets = data.get('tickets', [])
-                    
+
                     if not tickets:
                         break
-                    
-                    all_tickets.extend(tickets)
-                    logger.info(f"Page {page}: fetched {len(tickets)} tickets (total: {len(all_tickets)})")
-                    
+
+                    total_fetched += len(tickets)
+
+                    if flush_callback:
+                        # Stream mode: accumulate FLUSH_EVERY_PAGES pages then flush
+                        page_buffer.extend(tickets)
+                        logger.info(f"Page {page}: fetched {len(tickets)} tickets (total: {total_fetched}, buffer: {len(page_buffer)})")
+                        if page % FLUSH_EVERY_PAGES == 0:
+                            flush_callback(page_buffer)
+                            page_buffer = []
+                            gc.collect()
+                    else:
+                        all_tickets.extend(tickets)
+                        logger.info(f"Page {page}: fetched {len(tickets)} tickets (total: {len(all_tickets)})")
+
                     page += 1
                     time.sleep(2)  # Rate limiting
-                    
+
                 else:
                     logger.error(f"API Error {response.status_code}: {response.text[:200]}")
                     break
-                    
+
             except Exception as e:
                 logger.error(f"Exception fetching page {page}: {e}")
                 break
-        
-        logger.success(f"✅ Fetched {len(all_tickets)} tickets ({fetch_type})")
-        return all_tickets
+
+        if flush_callback:
+            # Flush any remaining pages in buffer
+            if page_buffer:
+                flush_callback(page_buffer)
+                page_buffer = []
+                gc.collect()
+            logger.success(f"✅ Fetched & flushed {total_fetched} tickets ({fetch_type})")
+            return total_fetched
+        else:
+            logger.success(f"✅ Fetched {len(all_tickets)} tickets ({fetch_type})")
+            return all_tickets
     
     def _transform_and_write(self, ticket_table, tickets: list, fetch_type: str, brand: dict, ingestion_timestamp, pyarrow_schema):
         """
@@ -443,39 +469,39 @@ class TicketIngestion:
         total_written = 0
 
         # Loop 1: UPDATED tickets (yesterday → today)
-        tickets_updated = self.fetch_tickets(
+        total_written += self.fetch_tickets(
             brand=brand,
             fetch_type='updated',
             date_since=date_yesterday,
-            date_to=date_today
+            date_to=date_today,
+            flush_callback=lambda page_tickets: self._transform_and_write(
+                ticket_table, page_tickets, 'updated', brand, ingestion_timestamp, pyarrow_schema
+            )
         )
-        self._transform_and_write(ticket_table, tickets_updated, 'updated', brand, ingestion_timestamp, pyarrow_schema)
-        total_written += len(tickets_updated)
-        del tickets_updated
         gc.collect()
 
         # Loop 2: CREATED tickets (yesterday → today)
-        tickets_created = self.fetch_tickets(
+        total_written += self.fetch_tickets(
             brand=brand,
             fetch_type='created',
             date_since=date_yesterday,
-            date_to=date_today
+            date_to=date_today,
+            flush_callback=lambda page_tickets: self._transform_and_write(
+                ticket_table, page_tickets, 'created', brand, ingestion_timestamp, pyarrow_schema
+            )
         )
-        self._transform_and_write(ticket_table, tickets_created, 'created', brand, ingestion_timestamp, pyarrow_schema)
-        total_written += len(tickets_created)
-        del tickets_created
         gc.collect()
 
         # Loop 3: CREATED tickets (day before yesterday → yesterday)
-        tickets_created_prev = self.fetch_tickets(
+        total_written += self.fetch_tickets(
             brand=brand,
             fetch_type='created_prev',
             date_since=date_day_before,
-            date_to=date_yesterday
+            date_to=date_yesterday,
+            flush_callback=lambda page_tickets: self._transform_and_write(
+                ticket_table, page_tickets, 'created_prev', brand, ingestion_timestamp, pyarrow_schema
+            )
         )
-        self._transform_and_write(ticket_table, tickets_created_prev, 'created_prev', brand, ingestion_timestamp, pyarrow_schema)
-        total_written += len(tickets_created_prev)
-        del tickets_created_prev
         gc.collect()
 
         if total_written == 0:
