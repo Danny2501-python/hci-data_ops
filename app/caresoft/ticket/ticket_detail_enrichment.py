@@ -97,7 +97,12 @@ class TicketDetailEnrichment:
             if writer: writer.close()
             if total_rows == 0: return []
             
-            con = duckdb.connect()
+            temp_dir = os.environ.get('DUCKDB_TEMP_DIR', tempfile.gettempdir())
+            con = duckdb.connect(config={
+                'memory_limit': '512MB',  # Query chỉ 2 cột nên nhẹ, nhưng giới hạn cho an toàn
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
             query = f"SELECT ticket_id FROM read_parquet('{temp_parquet}') WHERE ticket_id IS NOT NULL GROUP BY ticket_id ORDER BY max(updated_at) DESC NULLS LAST"
             ticket_ids = con.execute(query).fetch_arrow_table().column('ticket_id').to_pylist()
             con.close()
