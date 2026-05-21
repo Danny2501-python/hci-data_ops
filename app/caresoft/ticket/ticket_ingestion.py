@@ -405,20 +405,13 @@ class TicketIngestion:
             }
             transformed_records.append(record)
 
-        # Write to Iceberg in batches
-        BATCH_SIZE = 5000
+        # Write to Iceberg — input is already bounded by FLUSH_EVERY_PAGES × CARESOFT_PAGE_SIZE
+        # (10 pages × 500 = 5000 records max), so no need to split further
         total_records = len(transformed_records)
-        logger.info(f"[{fetch_type}] Writing {total_records} records in batches of {BATCH_SIZE}...")
-
-        for i in range(0, total_records, BATCH_SIZE):
-            batch = transformed_records[i:i + BATCH_SIZE]
-            batch_num = (i // BATCH_SIZE) + 1
-            total_batches = (total_records + BATCH_SIZE - 1) // BATCH_SIZE
-            logger.info(f"[{fetch_type}] Writing batch {batch_num}/{total_batches} ({len(batch)} records)...")
-            df = pa.Table.from_pylist(batch, schema=pyarrow_schema)
-            ticket_table.append(df)
-            del df, batch
-            gc.collect()
+        logger.info(f"[{fetch_type}] Writing {total_records} records to Iceberg...")
+        df = pa.Table.from_pylist(transformed_records, schema=pyarrow_schema)
+        ticket_table.append(df)
+        del df
 
         # Free transformed_records immediately after writing — don't wait for function return
         del transformed_records
