@@ -84,91 +84,92 @@ class TicketApiServingLayer:
     
     def get_today_tickets(self):
         """
-        Read TODAY's snapshot from Bronze and deduplicate using DuckDB
-        
-        Logic:
-        - Scan ONLY today's snapshot_date
-        - Write to Parquet (avoid OOM)
-        - Deduplicate by ticket_id (MAX updated_at) using DuckDB
-        - Return deduplicated rows
+        Read TODAY's snapshot from Bronze, stream to Parquet (avoid OOM),
+        then deduplicate using DuckDB.
+
+        Returns:
+            (columns, temp_parquet_path) — caller must delete temp file after use
+            Returns ([], None) if no data found.
         """
         logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
         table = self.bronze_catalog.load_table(SOURCE_TABLE)
-        
+
         # Temp file for Parquet
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
         os.makedirs(temp_dir, exist_ok=True)
-        temp_parquet = os.path.join(temp_dir, f"ticket_api_serving_{os.getpid()}.parquet")
-        
+        temp_parquet_raw = os.path.join(temp_dir, f"ticket_api_raw_{os.getpid()}.parquet")
+        temp_parquet_dedup = os.path.join(temp_dir, f"ticket_api_dedup_{os.getpid()}.parquet")
+
         try:
             logger.info(f"Scanning today's snapshot: {self.snapshot_date}")
-            
-            # Scan ONLY today's snapshot
+
             scan = table.scan(
                 row_filter=EqualTo("snapshot_date", self.snapshot_date),
             )
-            
-            # Collect all batches and write to Parquet
-            batches = []
+
+            # Stream batches directly to Parquet — never accumulate in RAM
+            writer = None
+            total_raw = 0
             for batch in scan.to_arrow_batch_reader():
                 if len(batch) > 0:
-                    batches.append(batch)
-            
-            if not batches:
-                logger.info(f"No tickets found in today's snapshot")
-                return [], []
-            
-            # Combine and write to Parquet
-            combined = pa.Table.from_batches(batches)
-            pq.write_table(combined, temp_parquet)
-            
-            logger.info(f"Written {len(combined)} rows to Parquet, deduplicating...")
-            
-            # DuckDB deduplication
+                    t = pa.Table.from_batches([batch])
+                    if writer is None:
+                        writer = pq.ParquetWriter(temp_parquet_raw, t.schema)
+                    writer.write_table(t)
+                    total_raw += len(batch)
+                    del t
+            if writer:
+                writer.close()
+
+            if total_raw == 0:
+                logger.info("No tickets found in today's snapshot")
+                return [], None
+
+            logger.info(f"Streamed {total_raw} raw rows to Parquet, deduplicating...")
+
+            # DuckDB deduplication — write result to a second Parquet file (not into RAM)
             con = duckdb.connect(config={
-                'memory_limit': '2GB',
+                'memory_limit': '1GB',
                 'preserve_insertion_order': 'false',
                 'temp_directory': temp_dir,
-                'threads': '1'
+                'threads': '2'
             })
-            
-            # Deduplicate: keep row with MAX updated_at per (ticket_id, brand_id)
-            # Use ROW_NUMBER() to handle exact duplicates (same updated_at) to avoid cardinality violation
+
             query = f"""
-                SELECT * EXCLUDE (rn)
-                FROM (
-                    SELECT *,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY ticket_id, brand_id 
-                            ORDER BY updated_at DESC NULLS LAST
-                        ) as rn
-                    FROM read_parquet('{temp_parquet}')
-                    WHERE ticket_id IS NOT NULL
-                ) sub
-                WHERE rn = 1
-                ORDER BY brand_id, ticket_id
+                COPY (
+                    SELECT * EXCLUDE (rn)
+                    FROM (
+                        SELECT *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY ticket_id, brand_id
+                                ORDER BY updated_at DESC NULLS LAST
+                            ) as rn
+                        FROM read_parquet('{temp_parquet_raw}')
+                        WHERE ticket_id IS NOT NULL
+                    ) sub
+                    WHERE rn = 1
+                    ORDER BY brand_id, ticket_id
+                ) TO '{temp_parquet_dedup}' (FORMAT PARQUET)
             """
-            
-            result = con.execute(query).fetch_arrow_table()
+            con.execute(query)
+
+            # Read just the schema (column names) without loading data
+            result_meta = con.execute(f"SELECT * FROM read_parquet('{temp_parquet_dedup}') LIMIT 0").description
+            columns = [col[0] for col in result_meta]
+            total_dedup = con.execute(f"SELECT COUNT(*) FROM read_parquet('{temp_parquet_dedup}')").fetchone()[0]
             con.close()
-            
-            logger.success(f"✅ After deduplication: {len(result)} unique tickets")
-            
-            # Convert to columns and rows
-            columns = result.schema.names
-            rows = []
-            for i in range(len(result)):
-                row = tuple(result.column(j)[i].as_py() for j in range(len(columns)))
-                rows.append(row)
-            
-            return columns, rows
-            
+
+            logger.success(f"✅ After deduplication: {total_dedup} unique tickets (from {total_raw} raw rows)")
+            return columns, temp_parquet_dedup
+
         finally:
-            if os.path.exists(temp_parquet):
+            # Always clean up raw parquet
+            if os.path.exists(temp_parquet_raw):
                 try:
-                    os.remove(temp_parquet)
+                    os.remove(temp_parquet_raw)
                 except:
                     pass
+
     
     def ensure_serving_table_exists(self, columns):
         """Create serving table if not exists with proper schema and constraints"""
@@ -222,42 +223,76 @@ class TicketApiServingLayer:
         finally:
             cursor.close()
     
-    def upsert_serving_table(self, columns, rows):
+    def upsert_serving_table(self, columns, parquet_path):
         """
-        UPSERT data into serving table using high-performance Bulk Upsert
+        UPSERT data into serving table in chunks to avoid loading all rows into RAM.
+        Reads from the deduplicated Parquet file in batches via DuckDB.
         """
-        if not rows:
+        if not parquet_path:
             logger.warning("No data to upsert")
             return
-        
-        # Ensure table exists
+
+        temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
+
+        # Ensure table exists (need column list — fetch from Parquet schema)
         self.ensure_serving_table_exists(columns)
-        
+
         cursor = self.pg_conn.cursor()
-        
+        UPSERT_CHUNK_SIZE = 5000
+
         try:
-            logger.info(f"Bulk Upserting {len(rows)} rows into {TARGET_TABLE}...")
-            
-            bulk_load(
-                cursor=cursor,
-                target_table=TARGET_TABLE,
-                records=rows,
-                columns=columns,
-                conflict_columns=['ticket_id', 'brand_id'],
-                method='upsert',
-                update_condition=f'{TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {TARGET_TABLE}."updated_at" IS NULL'
-            )
-            
-            # Commit transaction
-            self.pg_conn.commit()
-            logger.success(f"✅ Bulk Upserted {len(rows)} rows into {TARGET_TABLE}")
-            
+            con = duckdb.connect(config={
+                'memory_limit': '512MB',
+                'temp_directory': temp_dir,
+                'threads': '1'
+            })
+            total_rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')").fetchone()[0]
+            logger.info(f"Upserting {total_rows} rows into {TARGET_TABLE} in chunks of {UPSERT_CHUNK_SIZE}...")
+
+            offset = 0
+            total_upserted = 0
+            while offset < total_rows:
+                chunk_arrow = con.execute(
+                    f"SELECT * FROM read_parquet('{parquet_path}') LIMIT {UPSERT_CHUNK_SIZE} OFFSET {offset}"
+                ).fetch_arrow_table()
+
+                # Convert Arrow chunk to list of dicts for bulk_load
+                chunk_records = chunk_arrow.to_pylist()
+                del chunk_arrow
+
+                bulk_load(
+                    cursor=cursor,
+                    target_table=TARGET_TABLE,
+                    records=chunk_records,
+                    columns=columns,
+                    conflict_columns=['ticket_id', 'brand_id'],
+                    method='upsert',
+                    update_condition=f'{TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {TARGET_TABLE}."updated_at" IS NULL'
+                )
+                self.pg_conn.commit()
+
+                total_upserted += len(chunk_records)
+                offset += UPSERT_CHUNK_SIZE
+                del chunk_records
+                gc.collect()
+
+                logger.info(f"Upserted {total_upserted}/{total_rows} rows...")
+
+            con.close()
+            logger.success(f"✅ Bulk Upserted {total_upserted} rows into {TARGET_TABLE}")
+
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"❌ Error upserting data: {e}")
             raise
         finally:
             cursor.close()
+            # Clean up dedup Parquet file
+            if parquet_path and os.path.exists(parquet_path):
+                try:
+                    os.remove(parquet_path)
+                except:
+                    pass
     
     def run(self):
         """Execute the incremental serving layer refresh"""
@@ -271,11 +306,11 @@ class TicketApiServingLayer:
             self.connect_iceberg()
             self.connect_postgres()
             
-            # Get today's tickets from Bronze (deduplicated)
-            columns, rows = self.get_today_tickets()
-            
-            # Upsert into PostgreSQL serving table
-            self.upsert_serving_table(columns, rows)
+            # Get today's tickets from Bronze (deduplicated Parquet path)
+            columns, parquet_path = self.get_today_tickets()
+
+            # Upsert into PostgreSQL serving table (chunked, no full RAM load)
+            self.upsert_serving_table(columns, parquet_path)
             
             logger.success("=" * 80)
             logger.success("Ticket API Serving Layer Refresh Completed Successfully")
