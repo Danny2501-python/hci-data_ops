@@ -138,7 +138,8 @@ class TicketDetailEnrichment:
             total_success = 0
             total_errors = 0
             MICRO_BATCH_SIZE = 100
-            
+            ingestion_timestamp = get_current_timestamp_naive()  # Compute once, reuse for all tickets
+
             for i, ticket_id in enumerate(ticket_ids):
                 ticket_data, error = call_caresoft_api(brand, 'tickets', ticket_id, response_key='ticket')
                 
@@ -170,10 +171,10 @@ class TicketDetailEnrichment:
                         "brand_id": int(brand["erp_id"]),
                         # "raw_data": json.dumps(ticket_data, ensure_ascii=False), # Removed due to size
                         "snapshot_date": self.snapshot_date,
-                        "ingestion_timestamp": get_current_timestamp_naive()
+                        "ingestion_timestamp": ingestion_timestamp
                     }
                     batch_records.append(record)
-                    del ticket_data
+                    del ticket_data; gc.collect()
                 else:
                     total_errors += 1
                     logger.warning(f"Failed to fetch ticket {ticket_id}: {error}")
