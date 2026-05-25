@@ -245,6 +245,7 @@ class DirectGoogleSheetToPostgres:
                             cur.execute(f"TRUNCATE TABLE {staging_table}")
                             self.target_conn.commit()
                     except Exception as e:
+                        self.target_conn.rollback()  # Reset connection trước khi re-raise
                         raise RuntimeError(f"TARGET_DB_ERROR: {e}")
                 
                 row_count = len(chunk_df)
@@ -256,9 +257,17 @@ class DirectGoogleSheetToPostgres:
                 
             return total_rows
         finally:
-            with self.target_conn.cursor() as cur:
-                cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-                self.target_conn.commit()
+            # Rollback bất kỳ transaction lỗi nào trước khi dọn staging table
+            try:
+                self.target_conn.rollback()
+            except Exception:
+                pass
+            try:
+                with self.target_conn.cursor() as cur:
+                    cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                    self.target_conn.commit()
+            except Exception as cleanup_err:
+                logger.warning(f"Could not drop staging table {staging_table}: {cleanup_err}")
             
     def prepare_target(self, config: Dict, drop_table: bool):
         target_table = config['table_data'].lower()
