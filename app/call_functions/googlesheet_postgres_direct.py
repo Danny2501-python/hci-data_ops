@@ -262,30 +262,36 @@ class DirectGoogleSheetToPostgres:
             
     def prepare_target(self, config: Dict, drop_table: bool):
         target_table = config['table_data'].lower()
-        
-        with self.target_conn.cursor() as cur:
-            if drop_table:
+
+        # --- Bước 1: DROP (nếu cần) --- dùng cursor riêng
+        if drop_table:
+            with self.target_conn.cursor() as cur:
                 logger.warning(f"Dropping target table {target_table} (CASCADE) as requested.")
                 cur.execute(f"DROP TABLE IF EXISTS {target_table} CASCADE")
                 self.target_conn.commit()
 
-            if config.get('method_data', False):
-                logger.info(f"Truncating target table {target_table} as requested.")
-                try:
+        # --- Bước 2: TRUNCATE (nếu cần) --- cursor riêng, rollback không ảnh hưởng bước sau
+        if config.get('method_data', False):
+            logger.info(f"Truncating target table {target_table} as requested.")
+            try:
+                with self.target_conn.cursor() as cur:
                     cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
                     self.target_conn.commit()
-                except Exception as e:
-                    self.target_conn.rollback()
+            except Exception as e:
+                self.target_conn.rollback()
+                logger.warning(f"Could not truncate {target_table} (may not exist yet): {e}")
 
-            pk_columns = [k.strip() for k in config.get('key', '').split(',')] if config.get('key') else []
-            if pk_columns:
-                target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
-                target_table_name = target_table.split('.')[-1]
-                
+        # --- Bước 3: Tạo index PK (nếu cần) --- cursor mới, hoàn toàn sạch
+        pk_columns = [k.strip() for k in config.get('key', '').split(',')] if config.get('key') else []
+        if pk_columns:
+            target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
+            target_table_name = target_table.split('.')[-1]
+
+            with self.target_conn.cursor() as cur:
                 cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{target_table_name}' AND table_schema='{target_schema}'")
                 existing_cols = [r[0].lower() for r in cur.fetchall()]
                 valid_pk = [c for c in pk_columns if c.lower() in existing_cols]
-                
+
                 if valid_pk:
                     idx_name = f"idx_{target_table.replace('.', '_')}_pk"[:63]
                     pk_cols_str = ", ".join(['"' + c + '"' for c in valid_pk])
