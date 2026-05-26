@@ -36,7 +36,7 @@ dag = DAG(
     'data_serving_kn_dvda_etl',
     default_args=default_args,
     description='Run Data Serving ETL Pipeline - Kangnam DVDA Marketing',
-    schedule_interval="30 8,11 * * *",
+    schedule_interval="30 8 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
