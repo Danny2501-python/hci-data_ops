@@ -178,8 +178,7 @@ def execute_report_functions(**kwargs):
         "SELECT public.report_ctv_kn1();",
         "SELECT public.report_ctv_pr1();",
         "SELECT public.bc_sales_paris();",
-        "SELECT public.op_convert_kangnam();",
-        "SELECT public.bc_sales_kangnam();"
+        "SELECT public.op_convert_kangnam();"
     ]
     
     errors = []
