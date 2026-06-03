@@ -281,6 +281,7 @@ class DirectPostgresToPostgres:
                 self.target_conn.commit()
             
     def prepare_target(self, engine, config: Dict, drop_table: bool):
+        """Setup schema và index cho bảng đích. Không xử lý xóa dữ liệu."""
         target_table, source_table = config['table_name'], config['table_name_source']
         rename_map = json.loads(config.get('rename_column') or '{}')
         
@@ -293,8 +294,10 @@ class DirectPostgresToPostgres:
             # 1. Ensure table exists with correct schema
             self.ensure_target_table_exists_from_source(engine, source_table, target_table, rename_map=rename_map)
 
-            # 2. Handle Truncate (Wipe existing data for Full Reload)
-            if config.get('truncate'):
+            # 2. Handle Truncate (Non-ERP only: xóa sạch toàn bảng)
+            # ERP bỏ qua ở đây vì process_erp tự xử lý DELETE per brand_etl
+            is_erp = str(config.get('source', '')).upper() == 'ERP'
+            if config.get('truncate') and not is_erp:
                 logger.info(f"Truncating target table {target_table} as requested.")
                 cur.execute(f"TRUNCATE TABLE {target_table} CASCADE")
                 self.target_conn.commit()
@@ -335,8 +338,17 @@ class DirectPostgresToPostgres:
                     continue
 
                 if not initialized:
-                    self.prepare_target(engine, config, drop_table)
+                    # Setup schema/index chỉ 1 lần dựa trên brand đầu tiên tìm thấy
+                    # prepare_target KHÔNG xóa dữ liệu ERP (đã bỏ truncate khỏi đây)
+                    self.prepare_target(engine, config, drop_table=drop_table)
                     initialized = True
+
+                # ERP: xóa dữ liệu của từng brand trước khi stream (tránh ảnh hưởng brand khác)
+                if config.get('truncate'):
+                    with self.target_conn.cursor() as cur:
+                        logger.info(f"ERP mode: Deleting rows in {target_table} where brand_etl = {info['brand_etl']} (brand: {name}).")
+                        cur.execute(f"DELETE FROM {target_table} WHERE brand_etl = %s", (info['brand_etl'],))
+                        self.target_conn.commit()
                 
                 try:
                     total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
