@@ -45,7 +45,7 @@ dag = DAG(
     'call_functions_erp_direct_dag_sandbox',
     default_args=default_args,
     description='ETL ERP SCI: Source DBs → Direct Postgres Ingestion',
-    schedule_interval=None,
+    schedule_interval='0 3 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
