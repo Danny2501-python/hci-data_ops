@@ -104,15 +104,15 @@ common_env_vars = {
     'PORTAL_GUIDE_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.230', 'port': 5432, 'dbname': 'portal_guide'}),
 }
 
-sandbox_old_uri = ''
+dwh_sandbox_uri = ''
 try:
-    hook = PostgresHook(postgres_conn_id='sandbox_old')
-    conn = hook.get_connection('sandbox_old')
-    sandbox_old_uri = conn.get_uri()
-    if '?__extra__=' in sandbox_old_uri:
-        sandbox_old_uri = sandbox_old_uri.split('?__extra__=')[0]
+    hook = PostgresHook(postgres_conn_id='dwh_sandbox')
+    conn = hook.get_connection('dwh_sandbox')
+    dwh_sandbox_uri = conn.get_uri()
+    if '?__extra__=' in dwh_sandbox_uri:
+        dwh_sandbox_uri = dwh_sandbox_uri.split('?__extra__=')[0]
 except Exception as e:
-    logger.warning(f"Could not load sandbox_old connection: {e}")
+    logger.warning(f"Could not load dwh_sandbox connection: {e}")
 
 erp_configs = {}
 erp_conn_mapping = {'ERP_SCI_URI': 'sci_erp_sci', 'ERP_KN_URI': 'sci_erp_kn_old', 'ERP_PR_URI': 'sci_erp_pr_old', 'ERP_HH_URI': 'sci_erp_hh'}
@@ -156,7 +156,7 @@ direct_ingestion = KubernetesPodOperator(
     env_vars={
         **common_env_vars,
         **erp_configs,
-        'POSTGRES_URI': sandbox_old_uri,
+        'POSTGRES_URI': dwh_sandbox_uri,
         'TEMP_DIR': '/tmp',
     },
     container_resources=resource_requirements,
