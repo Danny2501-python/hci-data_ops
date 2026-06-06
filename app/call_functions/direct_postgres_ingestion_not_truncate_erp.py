@@ -276,9 +276,20 @@ class DirectPostgresToPostgres:
                         break
             return total_rows
         finally:
-            with self.target_conn.cursor() as cur:
-                cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-                self.target_conn.commit()
+            try:
+                self.target_conn.rollback()  # Reset aborted transaction trước khi cleanup
+            except Exception:
+                pass
+            try:
+                with self.target_conn.cursor() as cur:
+                    cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                    self.target_conn.commit()
+            except Exception as e:
+                logger.warning(f"Could not drop staging table {staging_table}: {e}")
+                try:
+                    self.target_conn.rollback()
+                except Exception:
+                    pass
             
     def prepare_target(self, engine, config: Dict, drop_table: bool):
         """Setup schema và index cho bảng đích. Không xử lý xóa dữ liệu."""
@@ -356,6 +367,11 @@ class DirectPostgresToPostgres:
                     err_msg = str(e)
                     db_side = "Source" if "SOURCE_" in err_msg else ("Target" if "TARGET_" in err_msg else "Logic/Unknown")
                     logger.error(f"Failed to ingest {target_table} from {name} ({db_side} side): {e}")
+                    # Reset connection để brand tiếp theo không bị ảnh hưởng bởi aborted transaction
+                    try:
+                        self.target_conn.rollback()
+                    except Exception:
+                        pass
             finally:
                 engine.dispose()
         
