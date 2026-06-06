@@ -144,7 +144,7 @@ direct_ingestion = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/call_functions/direct_postgres_ingestion.py',
+        '/app/call_functions/direct_postgres_ingestion_not_truncate_erp.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}',
         '{{ dag_run.conf.get("table_id") | default("", true) }}',
         '{{ params.source }}',
