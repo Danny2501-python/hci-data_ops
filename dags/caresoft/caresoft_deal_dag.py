@@ -94,8 +94,8 @@ common_env_vars = {
 
 # Resource requirements (optimized for cluster capacity)
 resource_requirements = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'},   # Reduced to fit available memory
-    limits={'cpu': '2000m', 'memory': '4Gi'}     # Sufficient for DuckDB transformations
+    requests={'cpu': '1000m', 'memory': '23Gi'},   # Reduced to fit available memory
+    limits={'cpu': '2000m', 'memory': '6Gi'}     # Sufficient for DuckDB transformations
 )
 
 # NFS Volume (for scripts)
