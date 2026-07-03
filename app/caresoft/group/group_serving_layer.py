@@ -26,12 +26,10 @@ AWS_REGION = os.getenv('AWS_REGION')
 # PostgreSQL configuration
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Table names
-SOURCE_TABLE = 'caresoft.cs_groups_api'
-TARGET_TABLE = 'cs_groups'
-
 class GroupServingLayer:
     """Refresh Group serving layer from Bronze (Simple API Flow)"""
+    SOURCE_TABLE = 'caresoft.cs_groups_api'
+    TARGET_TABLE = 'cs_groups'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -65,7 +63,7 @@ class GroupServingLayer:
             column_defs = [f'"{col}" TEXT' for col in columns]
             
             sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {self.TARGET_TABLE} (
                 {', '.join(column_defs)},
                 PRIMARY KEY ("group_id", "brand_id")
             )
@@ -75,7 +73,7 @@ class GroupServingLayer:
             
             # Ensure PK if table existed without it
             try:
-                cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("group_id", "brand_id");')
+                cursor.execute(f'ALTER TABLE {self.TARGET_TABLE} ADD PRIMARY KEY ("group_id", "brand_id");')
                 self.pg_conn.commit()
             except:
                 self.pg_conn.rollback()
@@ -89,7 +87,7 @@ class GroupServingLayer:
     def get_groups_for_date(self):
         """Read Bronze group data for snapshot_date, dedup with DuckDB"""
         logger.info(f"Reading groups for {self.snapshot_date}")
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
         
         # Temp dir
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
@@ -167,11 +165,11 @@ class GroupServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            logger.info(f"Bulk Upserting {len(rows)} groups into {TARGET_TABLE}...")
+            logger.info(f"Bulk Upserting {len(rows)} groups into {self.TARGET_TABLE}...")
             
             bulk_load(
                 cursor=cursor,
-                target_table=TARGET_TABLE,
+                target_table=self.TARGET_TABLE,
                 records=rows,
                 columns=columns,
                 conflict_columns=['group_id', 'brand_id'],

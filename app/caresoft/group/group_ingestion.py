@@ -44,11 +44,11 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
-GROUP_BRONZE_TABLE = 'caresoft.cs_groups_api'
 
 
 class GroupIngestion:
     """Pull Group data from CareSoft API and store in Bronze Iceberg table"""
+    GROUP_BRONZE_TABLE = 'caresoft.cs_groups_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -73,10 +73,10 @@ class GroupIngestion:
     def ensure_table_exists(self):
         """Create group bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(GROUP_BRONZE_TABLE)
-            logger.info(f"Table {GROUP_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.GROUP_BRONZE_TABLE)
+            logger.info(f"Table {self.GROUP_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {GROUP_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.GROUP_BRONZE_TABLE}")
             
             # Schema definition matching cs_groups_v1 DDL
             schema = Schema(
@@ -102,11 +102,11 @@ class GroupIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=GROUP_BRONZE_TABLE,
+                identifier=self.GROUP_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {GROUP_BRONZE_TABLE}")
+            logger.success(f"Created table {self.GROUP_BRONZE_TABLE}")
 
     def fetch_groups(self, brand: dict, days_ago: int = 3) -> list:
         """
@@ -198,7 +198,7 @@ class GroupIngestion:
             records.append(record)
             
         # Write to Iceberg
-        table = self.bronze_catalog.load_table(GROUP_BRONZE_TABLE)
+        table = self.bronze_catalog.load_table(self.GROUP_BRONZE_TABLE)
         
         # Overwrite partition logic
         try:
