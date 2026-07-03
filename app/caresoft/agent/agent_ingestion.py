@@ -44,11 +44,11 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
-AGENT_BRONZE_TABLE = 'caresoft.cs_agents_api'
 
 
 class AgentIngestion:
     """Pull Agent data from CareSoft API and store in Bronze Iceberg table"""
+    AGENT_BRONZE_TABLE = 'caresoft.cs_agents_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -73,10 +73,10 @@ class AgentIngestion:
     def ensure_table_exists(self):
         """Create agent bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(AGENT_BRONZE_TABLE)
-            logger.info(f"Table {AGENT_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.AGENT_BRONZE_TABLE)
+            logger.info(f"Table {self.AGENT_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {AGENT_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.AGENT_BRONZE_TABLE}")
             
             # Schema definition matching cs_agents_api_v1 DDL + API response
             schema = Schema(
@@ -113,11 +113,11 @@ class AgentIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=AGENT_BRONZE_TABLE,
+                identifier=self.AGENT_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {AGENT_BRONZE_TABLE}")
+            logger.success(f"Created table {self.AGENT_BRONZE_TABLE}")
 
     def fetch_agents(self, brand: dict, days_ago: int = 3) -> list:
         """
@@ -220,7 +220,7 @@ class AgentIngestion:
             records.append(record)
             
         # Write to Iceberg
-        table = self.bronze_catalog.load_table(AGENT_BRONZE_TABLE)
+        table = self.bronze_catalog.load_table(self.AGENT_BRONZE_TABLE)
         
         # Overwrite partition logic
         try:

@@ -99,3 +99,42 @@ def get_active_brands():
     
     logger.info(f"Loaded {len(brands)} active brands from {BRAND_TABLE}")
     return brands
+
+
+def get_brand_by_erp_id(erp_id: int):
+    """
+    Load brand by erp_id from Gold layer core_brand table, regardless of is_active status
+    
+    Args:
+        erp_id: The ERP ID of the brand to retrieve
+        
+    Returns:
+        Brand dict with keys: id, name, erp_id, is_active, caresoft_domain, caresoft_key, custom_field_mappings
+        Or None if not found
+    """
+    # Ensure table exists
+    brand_table = ensure_brand_table_exists()
+    
+    # Scan for the brand by erp_id
+    scan = brand_table.scan(
+        row_filter=EqualTo("erp_id", int(erp_id)),
+        selected_fields=("id", "name", "erp_id", "is_active", "caresoft_domain", "caresoft_key", "custom_field_mappings")
+    )
+    
+    for batch in scan.to_arrow_batch_reader():
+        for i in range(len(batch)):
+            brand = {
+                "id": batch["id"][i].as_py() if batch["id"][i] is not None else None,
+                "name": batch["name"][i].as_py() if batch["name"][i] is not None else None,
+                "erp_id": batch["erp_id"][i].as_py() if batch["erp_id"][i] is not None else None,
+                "is_active": batch["is_active"][i].as_py() if batch["is_active"][i] is not None else None,
+                "caresoft_domain": batch["caresoft_domain"][i].as_py() if batch["caresoft_domain"][i] is not None else None,
+                "caresoft_key": batch["caresoft_key"][i].as_py() if batch["caresoft_key"][i] is not None else None,
+                "custom_field_mappings": batch["custom_field_mappings"][i].as_py() if "custom_field_mappings" in batch.schema.names and batch["custom_field_mappings"][i] is not None else None
+            }
+            logger.info(f"Loaded brand {brand['name']} (erp_id={erp_id}) from {BRAND_TABLE}")
+            return brand
+            
+    logger.warning(f"Brand with erp_id={erp_id} not found in {BRAND_TABLE}")
+    return None
+
