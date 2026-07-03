@@ -40,12 +40,12 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-SERVICE_BRONZE_TABLE = 'caresoft.cs_services_api'
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
 
 
 class ServiceIngestion:
     """Pull Service data from CareSoft API and store in Bronze Iceberg table"""
+    SERVICE_BRONZE_TABLE = 'caresoft.cs_services_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -71,19 +71,19 @@ class ServiceIngestion:
     def ensure_table_exists(self):
         """Create service bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(SERVICE_BRONZE_TABLE)
-            logger.info(f"Table {SERVICE_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.SERVICE_BRONZE_TABLE)
+            logger.info(f"Table {self.SERVICE_BRONZE_TABLE} already exists")
             
             # Evolution: Add fb_page_id if missing
             if "fb_page_id" not in table.schema().column_names:
-                logger.info(f"Adding column fb_page_id to {SERVICE_BRONZE_TABLE}")
+                logger.info(f"Adding column fb_page_id to {self.SERVICE_BRONZE_TABLE}")
                 with table.update_schema() as update:
                     update.add_column("fb_page_id", StringType())
-                table = self.bronze_catalog.load_table(SERVICE_BRONZE_TABLE) # Reload after schema change
+                table = self.bronze_catalog.load_table(self.SERVICE_BRONZE_TABLE) # Reload after schema change
                 
             return table
         except Exception:
-            logger.info(f"Creating table {SERVICE_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.SERVICE_BRONZE_TABLE}")
             
             # Schema definition for services (aligned with DDL & Response)
             schema = Schema(
@@ -113,11 +113,11 @@ class ServiceIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=SERVICE_BRONZE_TABLE,
+                identifier=self.SERVICE_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {SERVICE_BRONZE_TABLE}")
+            logger.success(f"Created table {self.SERVICE_BRONZE_TABLE}")
             return table
 
     def fetch_services(self, brand: dict) -> list:

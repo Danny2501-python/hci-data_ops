@@ -30,12 +30,10 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Table names
-SOURCE_TABLE = 'caresoft.cs_services_api'
-TARGET_TABLE = 'cs_services_api'
-
 class ServiceServingLayer:
     """Refresh Service serving layer from Bronze"""
+    SOURCE_TABLE = 'caresoft.cs_services_api'
+    TARGET_TABLE = 'cs_services_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -69,7 +67,7 @@ class ServiceServingLayer:
             column_defs = [f'"{col}" TEXT' for col in columns]
             
             sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {self.TARGET_TABLE} (
                 {', '.join(column_defs)},
                 PRIMARY KEY ("service_id", "brand_id")
             )
@@ -79,7 +77,7 @@ class ServiceServingLayer:
             
             # Ensure PK if table existed without it
             try:
-                cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("service_id", "brand_id");')
+                cursor.execute(f'ALTER TABLE {self.TARGET_TABLE} ADD PRIMARY KEY ("service_id", "brand_id");')
                 self.pg_conn.commit()
             except Exception:
                 self.pg_conn.rollback()
@@ -87,7 +85,7 @@ class ServiceServingLayer:
             # Ensure all columns exist (Evolution)
             for col in columns:
                 try:
-                    cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD COLUMN IF NOT EXISTS "{col}" TEXT;')
+                    cursor.execute(f'ALTER TABLE {self.TARGET_TABLE} ADD COLUMN IF NOT EXISTS "{col}" TEXT;')
                     self.pg_conn.commit()
                 except Exception:
                     self.pg_conn.rollback()
@@ -101,7 +99,7 @@ class ServiceServingLayer:
     def get_services_for_date(self):
         """Read from Bronze Iceberg, dedup with DuckDB"""
         logger.info(f"Reading services for {self.snapshot_date}")
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
         
         # Temp dir
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
@@ -183,11 +181,11 @@ class ServiceServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            logger.info(f"Bulk Upserting {len(rows)} services into {TARGET_TABLE}...")
+            logger.info(f"Bulk Upserting {len(rows)} services into {self.TARGET_TABLE}...")
             
             bulk_load(
                 cursor=cursor,
-                target_table=TARGET_TABLE,
+                target_table=self.TARGET_TABLE,
                 records=rows,
                 columns=columns,
                 conflict_columns=['service_id', 'brand_id'],
