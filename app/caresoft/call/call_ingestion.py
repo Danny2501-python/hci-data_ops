@@ -34,10 +34,11 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
-CALL_BRONZE_TABLE = 'caresoft.cs_call_api'
+
 
 class CallIngestion:
     """Pull Call data from CareSoft API and store in Bronze Iceberg table"""
+    CALL_BRONZE_TABLE = 'caresoft.cs_call_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -62,10 +63,10 @@ class CallIngestion:
     def ensure_table_exists(self):
         """Create call bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(CALL_BRONZE_TABLE)
-            logger.info(f"Table {CALL_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.CALL_BRONZE_TABLE)
+            logger.info(f"Table {self.CALL_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {CALL_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.CALL_BRONZE_TABLE}")
             
             # Schema definition matching cs_call_api DDL
             schema = Schema(
@@ -114,11 +115,11 @@ class CallIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=CALL_BRONZE_TABLE,
+                identifier=self.CALL_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {CALL_BRONZE_TABLE}")
+            logger.success(f"Created table {self.CALL_BRONZE_TABLE}")
 
     def fetch_calls(self, brand: dict, days_ago: int = 3) -> list:
         """
@@ -249,7 +250,7 @@ class CallIngestion:
             records.append(record)
             
         # Write to Iceberg
-        table = self.bronze_catalog.load_table(CALL_BRONZE_TABLE)
+        table = self.bronze_catalog.load_table(self.CALL_BRONZE_TABLE)
         
         # Overwrite partition logic
         try:
