@@ -26,13 +26,6 @@ AWS_REGION = os.getenv('AWS_REGION')
 # PostgreSQL configuration
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Table names
-SOURCE_TABLE = 'caresoft.cs_custom_fields'
-
-# PostgreSQL tables (different for ticket vs contact)
-# - Ticket: cs_custom_fields (has parent_value_id)
-# - Contact: cs_custom_fields_kh (no parent_value_id)
-
 class CustomFieldServingLayer:
     """Refresh Custom Field serving layer from Bronze (Metadata Flow)
     
@@ -40,6 +33,9 @@ class CustomFieldServingLayer:
     - 'ticket': Ticket custom fields → cs_custom_fields
     - 'contact': Contact custom fields → cs_custom_fields_kh
     """
+    SOURCE_TABLE = 'caresoft.cs_custom_fields'
+    TARGET_TABLE_TICKET = 'cs_custom_fields'
+    TARGET_TABLE_CONTACT = 'cs_custom_fields_kh'
     
     def __init__(self, snapshot_date: date = None, field_type: str = 'ticket'):
         self.snapshot_date = snapshot_date or date.today()
@@ -47,9 +43,9 @@ class CustomFieldServingLayer:
         
         # Determine target table based on field_type
         if field_type == 'contact':
-            self.target_table = 'cs_custom_fields_kh'
+            self.target_table = self.TARGET_TABLE_CONTACT
         else:  # 'ticket'
-            self.target_table = 'cs_custom_fields'
+            self.target_table = self.TARGET_TABLE_TICKET
         
         self.bronze_catalog = None
         self.pg_conn = None
@@ -105,7 +101,7 @@ class CustomFieldServingLayer:
     def get_custom_fields_for_date(self):
         """Read Bronze custom field data for snapshot_date, dedup with DuckDB"""
         logger.info(f"Reading custom fields for {self.snapshot_date}")
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
         
         # Temp dir
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')

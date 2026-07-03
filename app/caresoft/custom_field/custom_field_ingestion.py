@@ -42,9 +42,6 @@ AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY_ID')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
-CUSTOM_FIELD_BRONZE_TABLE = 'caresoft.cs_custom_fields'
-
-
 class CustomFieldIngestion:
     """Pull Custom Field metadata from CareSoft API and store in Bronze Iceberg table
     
@@ -52,6 +49,7 @@ class CustomFieldIngestion:
     - 'ticket': Ticket custom fields (/tickets/custom_fields)
     - 'contact': Contact custom fields (/contacts/custom_fields)
     """
+    CUSTOM_FIELD_BRONZE_TABLE = 'caresoft.cs_custom_fields'
     
     def __init__(self, snapshot_date: date = None, field_type: str = 'ticket'):
         """
@@ -84,10 +82,10 @@ class CustomFieldIngestion:
     def ensure_table_exists(self):
         """Create custom field bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(CUSTOM_FIELD_BRONZE_TABLE)
-            logger.info(f"Table {CUSTOM_FIELD_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.CUSTOM_FIELD_BRONZE_TABLE)
+            logger.info(f"Table {self.CUSTOM_FIELD_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {CUSTOM_FIELD_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.CUSTOM_FIELD_BRONZE_TABLE}")
             
             # Schema definition for custom fields (flattened)
             schema = Schema(
@@ -117,11 +115,11 @@ class CustomFieldIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=CUSTOM_FIELD_BRONZE_TABLE,
+                identifier=self.CUSTOM_FIELD_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {CUSTOM_FIELD_BRONZE_TABLE}")
+            logger.success(f"Created table {self.CUSTOM_FIELD_BRONZE_TABLE}")
             return table
             
         return table
