@@ -36,14 +36,11 @@ AWS_REGION = os.getenv('AWS_REGION')
 # CareSoft API configuration
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE'))
 
-# Target table (Bronze) - matching old system naming
-CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
-
-
 class ContactIngestion:
     """Pull contacts from CareSoft API and store in Bronze Iceberg table
     Supports incremental updates based on updated_since/updated_to
     """
+    CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -69,10 +66,10 @@ class ContactIngestion:
     def ensure_contact_bronze_table_exists(self):
         """Create contact bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(CONTACT_BRONZE_TABLE)
-            logger.info(f"Table {CONTACT_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.CONTACT_BRONZE_TABLE)
+            logger.info(f"Table {self.CONTACT_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {CONTACT_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.CONTACT_BRONZE_TABLE}")
             
             # Schema matching old system cs_contacts_API_TTC
             schema = Schema(
@@ -101,12 +98,12 @@ class ContactIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=CONTACT_BRONZE_TABLE,
+                identifier=self.CONTACT_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
             
-            logger.success(f"Created table {CONTACT_BRONZE_TABLE}")
+            logger.success(f"Created table {self.CONTACT_BRONZE_TABLE}")
     
     # Note: get_api_url and get_api_headers are now imported from common.caresoft_api
     
@@ -254,7 +251,7 @@ class ContactIngestion:
             records.append(record)
         
         # Load table
-        table = self.bronze_catalog.load_table(CONTACT_BRONZE_TABLE)
+        table = self.bronze_catalog.load_table(self.CONTACT_BRONZE_TABLE)
         
         # DELETE old partition data (snapshot overwrite pattern)
         # This allows re-running the same snapshot_date without duplicates
@@ -271,7 +268,7 @@ class ContactIngestion:
             logger.warning(f"Could not delete old data (table might be empty): {e}")
         
         # Write to Iceberg Bronze table
-        logger.info(f"Writing {len(records)} contact records to {CONTACT_BRONZE_TABLE}")
+        logger.info(f"Writing {len(records)} contact records to {self.CONTACT_BRONZE_TABLE}")
         
         # Convert to PyArrow Table
         try:

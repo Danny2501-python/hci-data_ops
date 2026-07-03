@@ -43,16 +43,13 @@ AWS_REGION = os.getenv('AWS_REGION')
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 SOURCE_PG_URI = os.getenv('SOURCE_PG_URI')
 
-# Source and target tables
-CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
-CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
-TARGET_PG_TABLE = 'cs_contact_api'
-
-
 class ContactDetailEnrichment:
     """Pull full contact details from CareSoft API based on Bronze contact data
     Architecture: Bronze (Iceberg) → Serving (PostgreSQL) - BYPASSING ICEBERG SILVER
     """
+    CONTACT_BRONZE_TABLE = 'caresoft.cs_contacts_api_ttc'
+    CONTACT_DETAIL_ERROR_TABLE = 'caresoft.cs_contact_error'
+    TARGET_PG_TABLE = 'cs_contact_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -79,7 +76,7 @@ class ContactDetailEnrichment:
         )
         
         self.pg_uri = POSTGRES_URI
-        self.target_pg_table = TARGET_PG_TABLE
+        self.target_pg_table = self.TARGET_PG_TABLE
         
         logger.info(f"Initialized ContactDetailEnrichment (Postgres-Direct) for snapshot_date={self.snapshot_date}")
     
@@ -101,7 +98,7 @@ class ContactDetailEnrichment:
     def get_contact_ids_to_enrich(self, brand_erp_id: int) -> list:
         """Scan Bronze Iceberg for contacts to enrich using DuckDB"""
         try:
-            bronze_table = self.bronze_catalog.load_table(CONTACT_BRONZE_TABLE)
+            bronze_table = self.bronze_catalog.load_table(self.CONTACT_BRONZE_TABLE)
         except Exception as e:
             logger.error(f"Error loading Bronze table: {e}")
             return []
