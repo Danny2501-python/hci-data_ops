@@ -259,15 +259,12 @@ class WebhookTransformation:
         logger.info(f"Scanning Bronze table {SOURCE_TABLE} for {self.snapshot_date}...")
         logger.info(f"Processing batch size: {BATCH_SIZE:,} records")
         
-        from pyiceberg.expressions import And, StartsWith, Or
+        from pyiceberg.expressions import And, StartsWith
         
         scan = bronze_table.scan(
             row_filter=And(
                 EqualTo("snapshot_date", self.snapshot_date),
-                Or(
-                    StartsWith("input", "{'deal'"),
-                    StartsWith("input", '{"deal"')
-                )
+                StartsWith("input", "{'deal'")
             ),
             selected_fields=("pk_id", "id", "input", "brand_etl")  # Include brand_etl from Bronze
         )
@@ -276,22 +273,10 @@ class WebhookTransformation:
             try:
                 if not s or not s.strip():
                     return None
-                
-                # Try standard JSON loads first
-                try:
-                    return json.loads(s)
-                except Exception:
-                    pass
-                
-                # Fallback to ast.literal_eval
-                try:
-                    data = ast.literal_eval(s)
-                    if isinstance(data, dict) and 'deal' in data:
-                        return data
-                except Exception:
-                    pass
-                
-                return None
+                data = ast.literal_eval(s)
+                if not isinstance(data, dict) or 'deal' not in data:
+                    return None
+                return data
             except:
                 return None
 
