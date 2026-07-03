@@ -153,7 +153,7 @@ class DirectPostgresToPostgres:
         pk_columns = [k.strip() for k in config.get('primary_keyword', '').split(',')] if config.get('primary_keyword') else []
         rename_map = json.loads(config.get('rename_column') or '{}')
         keyword, consider = config.get('keyword'), (config.get('consider') or '1=1')
-        cutoff_str = (self.snapshot_date - timedelta(days=15)).strftime('%Y-%m-%d')
+        cutoff_str = (self.snapshot_date - timedelta(days=10)).strftime('%Y-%m-%d')
         
         where = f"({keyword} + interval '7 hour')::date >= '{cutoff_str}' AND {consider}" if load_type == 'incremental' and keyword and keyword.lower() != 'none' else consider
         query = text(f"SELECT * FROM {source_table} WHERE {where}")
