@@ -33,10 +33,11 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE'))
-CHAT_BRONZE_TABLE = 'caresoft.cs_chat_api'
+
 
 class ChatAgentUpdate:
     """Scan and update missing agent emails in Chat data"""
+    CHAT_BRONZE_TABLE = 'caresoft.cs_chat_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -69,9 +70,9 @@ class ChatAgentUpdate:
         Uses Parquet spill for memory safety.
         """
         try:
-            table = self.bronze_catalog.load_table(CHAT_BRONZE_TABLE)
+            table = self.bronze_catalog.load_table(self.CHAT_BRONZE_TABLE)
         except Exception:
-            logger.warning(f"Table {CHAT_BRONZE_TABLE} not found")
+            logger.warning(f"Table {self.CHAT_BRONZE_TABLE} not found")
             return []
 
         # PyIceberg scan
@@ -301,7 +302,7 @@ class ChatAgentUpdate:
             
         # Append to Iceberg
         try:
-            table = self.bronze_catalog.load_table(CHAT_BRONZE_TABLE)
+            table = self.bronze_catalog.load_table(self.CHAT_BRONZE_TABLE)
             pa_schema = schema_to_pyarrow(table.schema())
             df = pa.Table.from_pylist(records, schema=pa_schema)
             table.append(df)

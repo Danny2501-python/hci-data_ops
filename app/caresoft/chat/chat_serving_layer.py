@@ -26,12 +26,10 @@ AWS_REGION = os.getenv('AWS_REGION')
 # PostgreSQL configuration
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Table names
-SOURCE_TABLE = 'caresoft.cs_chat_api'
-TARGET_TABLE = 'cs_chat_api'
-
 class ChatServingLayer:
     """Refresh Chat serving layer from Bronze (Simple API Flow)"""
+    SOURCE_TABLE = 'caresoft.cs_chat_api'
+    TARGET_TABLE = 'cs_chat_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -65,7 +63,7 @@ class ChatServingLayer:
             column_defs = [f'"{col}" TEXT' for col in columns]
             
             sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {self.TARGET_TABLE} (
                 {', '.join(column_defs)},
                 PRIMARY KEY ("conversation_id", "brand_id", "ticket_id")
             )
@@ -75,7 +73,7 @@ class ChatServingLayer:
             
             # Ensure PK if table existed without it (Note: This simple logic is brittle for changing PKs)
             try:
-                cursor.execute(f'ALTER TABLE {TARGET_TABLE} ADD PRIMARY KEY ("conversation_id", "brand_id", "ticket_id");')
+                cursor.execute(f'ALTER TABLE {self.TARGET_TABLE} ADD PRIMARY KEY ("conversation_id", "brand_id", "ticket_id");')
                 self.pg_conn.commit()
             except:
                 self.pg_conn.rollback()
@@ -89,7 +87,7 @@ class ChatServingLayer:
     def get_chats_for_date(self):
         """Read Bronze chat data for snapshot_date, dedup with DuckDB"""
         logger.info(f"Reading chats for {self.snapshot_date}")
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
         
         # Temp dir
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
@@ -189,11 +187,11 @@ class ChatServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            logger.info(f"Bulk Upserting {len(rows)} chats into {TARGET_TABLE}...")
+            logger.info(f"Bulk Upserting {len(rows)} chats into {self.TARGET_TABLE}...")
             
             bulk_load(
                 cursor=cursor,
-                target_table=TARGET_TABLE,
+                target_table=self.TARGET_TABLE,
                 records=rows,
                 columns=columns,
                 conflict_columns=['conversation_id', 'brand_id', 'ticket_id'],

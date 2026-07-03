@@ -34,10 +34,11 @@ AWS_SECRET_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = os.getenv('AWS_REGION')
 
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE', '500'))
-CHAT_BRONZE_TABLE = 'caresoft.cs_chat_api'
+
 
 class ChatIngestion:
     """Pull Chat data from CareSoft API and store in Bronze Iceberg table"""
+    CHAT_BRONZE_TABLE = 'caresoft.cs_chat_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -62,10 +63,10 @@ class ChatIngestion:
     def ensure_table_exists(self):
         """Create chat bronze table if not exists"""
         try:
-            table = self.bronze_catalog.load_table(CHAT_BRONZE_TABLE)
-            logger.info(f"Table {CHAT_BRONZE_TABLE} already exists")
+            table = self.bronze_catalog.load_table(self.CHAT_BRONZE_TABLE)
+            logger.info(f"Table {self.CHAT_BRONZE_TABLE} already exists")
         except Exception:
-            logger.info(f"Creating table {CHAT_BRONZE_TABLE}")
+            logger.info(f"Creating table {self.CHAT_BRONZE_TABLE}")
             
             # Schema definition
             # Based on cs_extract.py usually just extracting raw_data + metadata
@@ -112,11 +113,11 @@ class ChatIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=CHAT_BRONZE_TABLE,
+                identifier=self.CHAT_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"Created table {CHAT_BRONZE_TABLE}")
+            logger.success(f"Created table {self.CHAT_BRONZE_TABLE}")
 
     def fetch_chats(self, brand: dict, days_ago: int = 3) -> list:
         """
@@ -252,7 +253,7 @@ class ChatIngestion:
             records.append(record)
             
         # Write to Iceberg
-        table = self.bronze_catalog.load_table(CHAT_BRONZE_TABLE)
+        table = self.bronze_catalog.load_table(self.CHAT_BRONZE_TABLE)
         
         # Overwrite partition logic
         try:
