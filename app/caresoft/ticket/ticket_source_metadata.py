@@ -37,14 +37,12 @@ AWS_REGION = os.getenv('AWS_REGION')
 # CareSoft API configuration
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE'))
 
-# Target table (Bronze)
-TICKET_SOURCE_METADATA_TABLE = 'caresoft.cs_ticket_source_detail_api'
-
 # Stop fetching if data is older than this many days
 MAX_DAYS_BACK = 1200
 
 
 class TicketSourceMetadata:
+    TICKET_SOURCE_METADATA_TABLE = 'caresoft.cs_ticket_source_detail_api'
     """
     Pull ticket source metadata from CareSoft API
     This is a metadata table, not transactional data
@@ -72,9 +70,9 @@ class TicketSourceMetadata:
     def ensure_table_exists(self):
         """Create ticket source metadata table if not exists"""
         try:
-            return self.bronze_catalog.load_table(TICKET_SOURCE_METADATA_TABLE)
+            return self.bronze_catalog.load_table(self.TICKET_SOURCE_METADATA_TABLE)
         except:
-            logger.info(f"Creating table {TICKET_SOURCE_METADATA_TABLE}...")
+            logger.info(f"Creating table {self.TICKET_SOURCE_METADATA_TABLE}...")
             
             from pyiceberg.schema import Schema
             from pyiceberg.types import (
@@ -116,11 +114,11 @@ class TicketSourceMetadata:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=TICKET_SOURCE_METADATA_TABLE,
+                identifier=self.TICKET_SOURCE_METADATA_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"✅ Created table: {TICKET_SOURCE_METADATA_TABLE}")
+            logger.success(f"✅ Created table: {self.TICKET_SOURCE_METADATA_TABLE}")
             return table
     
     # Note: get_api_url and get_api_headers are now imported from common.caresoft_api
@@ -309,7 +307,7 @@ class TicketSourceMetadata:
             del batch
             gc.collect()
         
-        logger.success(f"✅ Wrote {total_records} ticket sources to {TICKET_SOURCE_METADATA_TABLE}")
+        logger.success(f"✅ Wrote {total_records} ticket sources to {self.TICKET_SOURCE_METADATA_TABLE}")
         gc.collect()
 
 

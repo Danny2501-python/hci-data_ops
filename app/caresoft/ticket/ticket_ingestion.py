@@ -44,15 +44,12 @@ AWS_REGION = os.getenv('AWS_REGION')
 # CareSoft API configuration
 CARESOFT_PAGE_SIZE = int(os.getenv('CARESOFT_PAGE_SIZE'))
 
-# Target table (Bronze) - matching old system naming
-TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
-
-
 class TicketIngestion:
     """
     Pull tickets from CareSoft API and store in Bronze Iceberg table
     Supports incremental updates based on updated_since/created_since
     """
+    TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -76,9 +73,9 @@ class TicketIngestion:
     def ensure_ticket_bronze_table_exists(self):
         """Create ticket bronze table if not exists"""
         try:
-            return self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
+            return self.bronze_catalog.load_table(self.TICKET_BRONZE_TABLE)
         except:
-            logger.info(f"Creating table {TICKET_BRONZE_TABLE}...")
+            logger.info(f"Creating table {self.TICKET_BRONZE_TABLE}...")
             
             from pyiceberg.schema import Schema
             from pyiceberg.types import (
@@ -131,11 +128,11 @@ class TicketIngestion:
             )
             
             table = self.bronze_catalog.create_table(
-                identifier=TICKET_BRONZE_TABLE,
+                identifier=self.TICKET_BRONZE_TABLE,
                 schema=schema,
                 partition_spec=partition_spec
             )
-            logger.success(f"✅ Created table: {TICKET_BRONZE_TABLE}")
+            logger.success(f"✅ Created table: {self.TICKET_BRONZE_TABLE}")
             return table
     
     # Note: get_api_url and get_api_headers are now imported from common.caresoft_api
@@ -417,7 +414,7 @@ class TicketIngestion:
         del transformed_records
         gc.collect()
 
-        logger.success(f"✅ [{fetch_type}] Wrote {total_records} records to {TICKET_BRONZE_TABLE}")
+        logger.success(f"✅ [{fetch_type}] Wrote {total_records} records to {self.TICKET_BRONZE_TABLE}")
 
     def run(self, brand: dict, days_ago: int = 1):
         """

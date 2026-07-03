@@ -39,15 +39,12 @@ AWS_REGION = os.getenv('AWS_REGION')
 # PostgreSQL configuration
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Source and target
-SOURCE_TABLE = 'caresoft.cs_ticket_source_detail_api'
-TARGET_TABLE = 'cs_ticket_source_detail_api'
-
-
 class TicketSourceMetadataServingLayer:
     """
     Refresh PostgreSQL serving layer with latest ticket source metadata
     """
+    SOURCE_TABLE = 'caresoft.cs_ticket_source_detail_api'
+    TARGET_TABLE = 'cs_ticket_source_detail_api'
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -88,7 +85,7 @@ class TicketSourceMetadataServingLayer:
         """Create serving table if not exists with proper schema and PK"""
         cursor = self.pg_conn.cursor()
         try:
-            logger.info(f"Ensuring table {TARGET_TABLE} exists...")
+            logger.info(f"Ensuring table {self.TARGET_TABLE} exists...")
             
             column_defs = []
             for col in columns:
@@ -96,7 +93,7 @@ class TicketSourceMetadataServingLayer:
             
             # Create Table with PK ("id", "brand_id")
             create_sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {self.TARGET_TABLE} (
                 {', '.join(column_defs)},
                 PRIMARY KEY ("id", "brand_id")
             )
@@ -106,11 +103,11 @@ class TicketSourceMetadataServingLayer:
             # Attempt to add PK if missing (for pre-existing tables)
             try:
                 alter_sql = f"""
-                ALTER TABLE {TARGET_TABLE} 
+                ALTER TABLE {self.TARGET_TABLE} 
                 ADD PRIMARY KEY ("id", "brand_id");
                 """
                 cursor.execute(alter_sql)
-                logger.info(f"Added PRIMARY KEY to {TARGET_TABLE}")
+                logger.info(f"Added PRIMARY KEY to {self.TARGET_TABLE}")
             except psycopg2.errors.InvalidTableDefinition:
                 self.pg_conn.rollback()
             except psycopg2.errors.MultiplePrimaryKeys:
@@ -148,9 +145,9 @@ class TicketSourceMetadataServingLayer:
         import os
         
         snapshot_date_str = snapshot_date.strftime('%Y-%m-%d')
-        logger.info(f"Reading ticket sources for snapshot_date={snapshot_date_str} from {SOURCE_TABLE}")
+        logger.info(f"Reading ticket sources for snapshot_date={snapshot_date_str} from {self.SOURCE_TABLE}")
         
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
         
         # Get temp directory from environment or use default
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
@@ -232,22 +229,22 @@ class TicketSourceMetadataServingLayer:
             logger.warning("No data to upsert")
             return
             
-        logger.info(f"Bulk Upserting {len(rows)} records to {TARGET_TABLE}...")
+        logger.info(f"Bulk Upserting {len(rows)} records to {self.TARGET_TABLE}...")
         
         cursor = self.pg_conn.cursor()
         try:
             bulk_load(
                 cursor=cursor,
-                target_table=TARGET_TABLE,
+                target_table=self.TARGET_TABLE,
                 records=rows,
                 columns=columns,
                 conflict_columns=['id', 'brand_id'],
                 method='upsert',
-                update_condition=f'{TARGET_TABLE}.updated_at < EXCLUDED.updated_at OR {TARGET_TABLE}.updated_at IS NULL'
+                update_condition=f'{self.TARGET_TABLE}.updated_at < EXCLUDED.updated_at OR {self.TARGET_TABLE}.updated_at IS NULL'
             )
             
             self.pg_conn.commit()
-            logger.success(f"✅ Bulk Upserted to {TARGET_TABLE}")
+            logger.success(f"✅ Bulk Upserted to {self.TARGET_TABLE}")
             
         except Exception as e:
             self.pg_conn.rollback()

@@ -30,11 +30,9 @@ from common.brand_config import get_active_brands
 from common.utils import get_current_timestamp_naive, bulk_load
 from common.caresoft_api import call_caresoft_api
 
-# Table names
-TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
-TARGET_PG_TABLE = 'cs_ticket_source_api'
-
 class TicketDetailEnrichment:
+    TICKET_BRONZE_TABLE = 'caresoft.cs_ticket_api'
+    TARGET_PG_TABLE = 'cs_ticket_source_api'
     def __init__(self, snapshot_date=None):
         if isinstance(snapshot_date, str):
             self.snapshot_date = snapshot_date
@@ -64,14 +62,14 @@ class TicketDetailEnrichment:
         )
         
         self.pg_uri = os.getenv('POSTGRES_URI')
-        self.target_pg_table = TARGET_PG_TABLE
+        self.target_pg_table = self.TARGET_PG_TABLE
         logger.info(f"Initialized TicketDetailEnrichment (Final Polish) for {self.snapshot_date}")
 
 
     def get_ticket_ids_to_enrich(self, brand_erp_id):
         """Scan Bronze Iceberg for tickets with streaming Parquet writing"""
         try:
-            table = self.bronze_catalog.load_table(TICKET_BRONZE_TABLE)
+            table = self.bronze_catalog.load_table(self.TICKET_BRONZE_TABLE)
         except Exception as e:
             logger.error(f"❌ Error loading Bronze table: {e}"); return []
         

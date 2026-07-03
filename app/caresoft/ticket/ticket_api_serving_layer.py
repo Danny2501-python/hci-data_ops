@@ -43,13 +43,10 @@ AWS_REGION = os.getenv('AWS_REGION')
 # PostgreSQL configuration (from Airflow connection)
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
-# Table names
-SOURCE_TABLE = 'caresoft.cs_ticket_api'  # Bronze Iceberg
-TARGET_TABLE = 'cs_ticket_api'        # PostgreSQL serving
-
-
 class TicketApiServingLayer:
     """Incremental refresh serving layer with daily upsert"""
+    SOURCE_TABLE = 'caresoft.cs_ticket_api'  # Bronze Iceberg
+    TARGET_TABLE = 'cs_ticket_api'        # PostgreSQL serving
     
     def __init__(self, snapshot_date: date = None):
         self.snapshot_date = snapshot_date or date.today()
@@ -91,8 +88,8 @@ class TicketApiServingLayer:
             (columns, temp_parquet_path) — caller must delete temp file after use
             Returns ([], None) if no data found.
         """
-        logger.info(f"Reading from Iceberg table: {SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
-        table = self.bronze_catalog.load_table(SOURCE_TABLE)
+        logger.info(f"Reading from Iceberg table: {self.SOURCE_TABLE}, snapshot_date={self.snapshot_date}")
+        table = self.bronze_catalog.load_table(self.SOURCE_TABLE)
 
         # Temp file for Parquet
         temp_dir = os.environ.get('DUCKDB_TEMP_DIR', '/tmp/duckdb')
@@ -175,7 +172,7 @@ class TicketApiServingLayer:
         cursor = self.pg_conn.cursor()
         
         try:
-            logger.info(f"Ensuring table {TARGET_TABLE} exists...")
+            logger.info(f"Ensuring table {self.TARGET_TABLE} exists...")
             
             # Build CREATE TABLE statement
             column_defs = []
@@ -184,7 +181,7 @@ class TicketApiServingLayer:
             
             # Add PRIMARY KEY constraint on ticket_id and brand_id
             create_sql = f"""
-            CREATE TABLE IF NOT EXISTS {TARGET_TABLE} (
+            CREATE TABLE IF NOT EXISTS {self.TARGET_TABLE} (
                 {', '.join(column_defs)},
                 PRIMARY KEY ("ticket_id", "brand_id")
             )
@@ -194,11 +191,11 @@ class TicketApiServingLayer:
             # Ensure Constraint Exists (for existing tables created without PK)
             try:
                 alter_sql = f"""
-                ALTER TABLE {TARGET_TABLE} 
+                ALTER TABLE {self.TARGET_TABLE} 
                 ADD PRIMARY KEY ("ticket_id", "brand_id");
                 """
                 cursor.execute(alter_sql)
-                logger.info(f"Added PRIMARY KEY to {TARGET_TABLE}")
+                logger.info(f"Added PRIMARY KEY to {self.TARGET_TABLE}")
             except psycopg2.errors.InvalidTableDefinition:
                 # Constraint likely already exists or conflicts
                 self.pg_conn.rollback()
@@ -213,7 +210,7 @@ class TicketApiServingLayer:
                 logger.warning(f"Could not add PK (checking duplicates...): {e}")
 
             self.pg_conn.commit()
-            logger.success(f"✅ Table {TARGET_TABLE} ready")
+            logger.success(f"✅ Table {self.TARGET_TABLE} ready")
             
         except Exception as e:
             self.pg_conn.rollback()
@@ -261,12 +258,12 @@ class TicketApiServingLayer:
 
                 bulk_load(
                     cursor=cursor,
-                    target_table=TARGET_TABLE,
+                    target_table=self.TARGET_TABLE,
                     records=chunk_records,
                     columns=columns,
                     conflict_columns=['ticket_id', 'brand_id'],
                     method='upsert',
-                    update_condition=f'{TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {TARGET_TABLE}."updated_at" IS NULL'
+                    update_condition=f'{self.TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {self.TARGET_TABLE}."updated_at" IS NULL'
                 )
                 self.pg_conn.commit()
 
@@ -278,7 +275,7 @@ class TicketApiServingLayer:
                 logger.info(f"Upserted {total_upserted}/{total_rows} rows...")
 
             con.close()
-            logger.success(f"✅ Bulk Upserted {total_upserted} rows into {TARGET_TABLE}")
+            logger.success(f"✅ Bulk Upserted {total_upserted} rows into {self.TARGET_TABLE}")
 
         except Exception as e:
             self.pg_conn.rollback()
