@@ -300,6 +300,9 @@ class DealCommentsTransformation:
         logger.info("="*80)
         
         try:
+            # Always ensure target table exists first
+            self.ensure_comments_table_exists()
+            
             # 1. Get deals with comments (same snapshot_date)
             deals_df = self.get_deals_with_comments()
             
