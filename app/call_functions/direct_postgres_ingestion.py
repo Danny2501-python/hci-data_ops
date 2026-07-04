@@ -339,7 +339,9 @@ class DirectPostgresToPostgres:
         
         for name, info in ERP_SOURCES.items():
             uri = os.getenv(info['env'])
-            if not uri: continue
+            if not uri:
+                logger.warning(f"Connection URI for {name.upper()} ({info['env']}) is empty, skipping.")
+                continue
             if uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
             engine = create_engine(uri)
             try:
