@@ -81,7 +81,7 @@ dag = DAG(
     'caresoft_ticket_thv_etl',
     default_args=default_args,
     description='CareSoft Ticket THV Pipeline (erp_id=8): Bronze → Silver → Serving',
-    schedule_interval=None,
+    schedule_interval='15 2 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
