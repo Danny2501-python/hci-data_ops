@@ -274,6 +274,8 @@ class DirectPostgresToPostgres:
 
                     if row_count < BATCH_SIZE:
                         break
+            if total_rows == 0:
+                logger.info(f"No records found/ingested into {target_table} from {source_name or config.get('server')}.")
             return total_rows
         finally:
             try:
@@ -343,6 +345,7 @@ class DirectPostgresToPostgres:
                 logger.warning(f"Connection URI for {name.upper()} ({info['env']}) is empty, skipping.")
                 continue
             if uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
+            logger.info(f"Processing ERP source: {name.upper()}")
             engine = create_engine(uri)
             try:
                 # Check if table exists in this source before trying to define schema or stream data
