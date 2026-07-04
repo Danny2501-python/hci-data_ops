@@ -243,7 +243,7 @@ class TicketApiServingLayer:
                 'threads': '1'
             })
             total_rows = con.execute(f"SELECT COUNT(*) FROM read_parquet('{parquet_path}')").fetchone()[0]
-            logger.info(f"Upserting {total_rows} rows into {TARGET_TABLE} in chunks of {UPSERT_CHUNK_SIZE}...")
+            logger.info(f"Upserting {total_rows} rows into {self.TARGET_TABLE} in chunks of {UPSERT_CHUNK_SIZE}...")
 
             offset = 0
             total_upserted = 0
