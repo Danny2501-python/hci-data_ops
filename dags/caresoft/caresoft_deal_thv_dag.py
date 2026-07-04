@@ -52,7 +52,7 @@ dag = DAG(
     'caresoft_deal_thv_etl',
     default_args=default_args,
     description='CareSoft ETL THV: ERP → Bronze → Silver → Gold → Serving',
-    schedule_interval=None,
+    schedule_interval='30 1 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     tags=['caresoft', 'deal', 'thv', 'etl', 'iceberg'],

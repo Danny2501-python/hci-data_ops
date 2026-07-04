@@ -70,7 +70,7 @@ dag = DAG(
     'caresoft_chat_agent_update_thv_etl',
     default_args=default_args,
     description='CareSoft Flow 10: Hourly Agent Update for Chat THV (erp_id=8)',
-    schedule_interval=None,
+    schedule_interval='45 5 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

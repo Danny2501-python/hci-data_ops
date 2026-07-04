@@ -81,7 +81,7 @@ dag = DAG(
     'caresoft_contact_thv_etl',
     default_args=default_args,
     description='CareSoft Contact THV Pipeline (erp_id=8): Bronze → Serving (PostgreSQL Bypass Silver)',
-    schedule_interval=None,
+    schedule_interval='0 1 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

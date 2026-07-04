@@ -70,7 +70,7 @@ dag = DAG(
     'caresoft_call_thv_etl',
     default_args=default_args,
     description='CareSoft Call THV Pipeline (erp_id=8): Bronze → Serving',
-    schedule_interval=None,
+    schedule_interval='5 0 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
