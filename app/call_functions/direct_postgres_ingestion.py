@@ -50,9 +50,10 @@ ERP_SOURCES = {
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 class DirectPostgresToPostgres:
-    def __init__(self, snapshot_date: date = None):
+    def __init__(self, snapshot_date: date = None, truncate_erp: bool = True):
         self.snapshot_date = snapshot_date or (date.today() - timedelta(days=1))
         self.target_conn = None
+        self.truncate_erp = truncate_erp
 
     def connect_target(self):
         if not POSTGRES_URI:
@@ -423,7 +424,7 @@ class DirectPostgresToPostgres:
                     self.prepare_target(engine, config, drop_table=False)
 
                 # ERP: xóa dữ liệu của từng brand trước khi stream (tránh ảnh hưởng brand khác)
-                if config.get('truncate'):
+                if config.get('truncate') and self.truncate_erp:
                     with self.target_conn.cursor() as cur:
                         logger.info(f"ERP mode: Deleting rows in {target_table} where brand_etl = {info['brand_etl']} (brand: {name}).")
                         cur.execute(f"DELETE FROM {target_table} WHERE brand_etl = %s", (info['brand_etl'],))
