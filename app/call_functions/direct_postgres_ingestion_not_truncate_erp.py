@@ -90,7 +90,7 @@ class DirectPostgresToPostgres:
             return False
 
     def ensure_target_table_exists_from_source(self, source_engine, source_table: str, target_table: str, rename_map: Dict[str, str] = {}):
-        """Fetch schema from source and create exactly the same table in target if not exists"""
+        """Fetch schema from source and create exactly the same table in target if not exists / alter if missing columns"""
         logger.info(f"Ensuring target table {target_table} exists based on source {source_table}")
         
         # 1. Get Column Definitions from Source
@@ -145,6 +145,66 @@ class DirectPostgresToPostgres:
         with self.target_conn.cursor() as cur:
             cur.execute(create_sql)
             self.target_conn.commit()
+
+        # 3. Dynamic Schema Sync: Check for missing columns and ALTER TABLE if target already exists
+        target_schema = target_table.split('.')[0] if '.' in target_table else 'public'
+        target_table_name = target_table.split('.')[-1]
+        
+        with self.target_conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{target_table_name}' 
+                AND table_schema = '{target_schema}'
+            """)
+            existing_target_cols = {row[0].lower() for row in cur.fetchall()}
+            
+        # Compare columns and identify missing ones
+        missing_cols = []
+        for col in columns:
+            name, dtype, char_len, num_prec, num_scale, is_null = col
+            target_name = rename_map.get(name, name)
+            
+            if target_name.lower() not in existing_target_cols:
+                sql_type = dtype.upper()
+                if dtype == 'character varying' and char_len: 
+                    sql_type = f"VARCHAR({char_len})"
+                elif dtype == 'numeric' and num_prec: 
+                    sql_type = f"NUMERIC({num_prec}, {num_scale or 0})"
+                
+                missing_cols.append((target_name, sql_type))
+                
+        # Check standard metadata columns as well
+        metadata_candidates = [
+            ('snapshot_date', 'DATE'),
+            ('ingestion_timestamp', 'TIMESTAMP'),
+            ('source_server', 'VARCHAR(255)'),
+            ('brand_etl_new' if has_brand_etl_in_source else 'brand_etl', 'INTEGER')
+        ]
+        for meta_name, meta_type in metadata_candidates:
+            if meta_name.lower() not in existing_target_cols:
+                missing_cols.append((meta_name, meta_type))
+                
+        # Execute ALTER TABLE statements if there are missing columns
+        if missing_cols:
+            logger.info(f"Target table {target_table} is missing {len(missing_cols)} column(s). Altering table...")
+            try:
+                with self.target_conn.cursor() as cur:
+                    for target_name, sql_type in missing_cols:
+                        alter_query = f'ALTER TABLE {target_table} ADD COLUMN "{target_name}" {sql_type}'
+                        logger.info(f"Executing: {alter_query}")
+                        cur.execute(alter_query)
+                    self.target_conn.commit()
+                logger.success(f"Successfully added missing column(s) to {target_table}: {', '.join([c[0] for c in missing_cols])}")
+            except Exception as e:
+                logger.error(f"Failed to alter table {target_table} to add missing columns: {e}. Rolling back alter transaction.")
+                try:
+                    self.target_conn.rollback()
+                except Exception:
+                    pass
+        else:
+            logger.info(f"Target table {target_table} schema is up-to-date.")
+            
         logger.success(f"Target table {target_table} is ready.")
 
     def stream_and_upsert(self, source_engine, config: Dict, target_table: str, brand_etl: int = None, source_name: str = None, load_type: str = 'incremental'):
