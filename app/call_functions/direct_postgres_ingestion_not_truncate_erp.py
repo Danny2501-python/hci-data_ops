@@ -418,6 +418,9 @@ class DirectPostgresToPostgres:
                     # prepare_target KHÔNG xóa dữ liệu ERP (đã bỏ truncate khỏi đây)
                     self.prepare_target(engine, config, drop_table=drop_table)
                     initialized = True
+                else:
+                    # Đảm bảo đồng bộ schema cho các brand tiếp theo (không drop bảng)
+                    self.prepare_target(engine, config, drop_table=False)
 
                 # ERP: xóa dữ liệu của từng brand trước khi stream (tránh ảnh hưởng brand khác)
                 # if config.get('truncate'):
