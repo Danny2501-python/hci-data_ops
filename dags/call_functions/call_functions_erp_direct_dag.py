@@ -115,8 +115,7 @@ except Exception as e:
     logger.warning(f"Could not load dwh_product_new connection: {e}")
 
 erp_configs = {}
-# erp_conn_mapping = {'ERP_SCI_URI': 'sci_erp_sci', 'ERP_KN_URI': 'sci_erp_kn', 'ERP_PR_URI': 'sci_erp_pr', 'ERP_HH_URI': 'sci_erp_hh', 'ERP_VDE_URI': 'sci_erp_vde'}
-erp_conn_mapping = {'ERP_VDE_URI': 'sci_erp_vde'}
+erp_conn_mapping = {'ERP_SCI_URI': 'sci_erp_sci', 'ERP_KN_URI': 'sci_erp_kn', 'ERP_PR_URI': 'sci_erp_pr', 'ERP_HH_URI': 'sci_erp_hh', 'ERP_VDE_URI': 'sci_erp_vde'}
 for env_var_name, conn_id in erp_conn_mapping.items():
     try:
         hook = PostgresHook(postgres_conn_id=conn_id)
