@@ -44,6 +44,7 @@ ERP_SOURCES = {
     'kn':  {'env': 'ERP_KN_URI',  'brand_etl': 1},
     'pr':  {'env': 'ERP_PR_URI',  'brand_etl': 3},
     'hh':  {'env': 'ERP_HH_URI',  'brand_etl': 4},
+    'vde': {'env': 'ERP_VDE_URI', 'brand_etl': 8},
 }
 
 # Target Postgres URI
