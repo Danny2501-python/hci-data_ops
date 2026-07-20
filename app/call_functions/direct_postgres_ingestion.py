@@ -36,6 +36,7 @@ SOURCE_DB_CONNECTIONS = {
     '10.10.10.226': os.getenv('DU_PHONG_CONFIG'),
     '10.10.10.230': os.getenv('PORTAL_GUIDE_CONFIG'),
     '10.10.10.214.old': os.getenv('CUSTOM_DB_DEV_CONFIG'),
+    '10.10.10.215': os.getenv('EHC_THV_CONFIG'),
 }
 
 # ERP Sources mapping

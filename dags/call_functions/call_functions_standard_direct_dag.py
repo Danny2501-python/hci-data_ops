@@ -102,6 +102,7 @@ common_env_vars = {
     'SEEDING_CONFIG': json.dumps({'user': 'reader', 'password': 'seeding@123', 'host': '10.10.10.234', 'port': 54300, 'dbname': 'sale'}),
     'HONGHA_CONFIG': json.dumps({'user': 'reporter', 'password': 'hovxmsgewkru', 'host': 'db.benhvienhongha.com.vn', 'port': 55000, 'dbname': 'bvhongha'}),
     'PORTAL_GUIDE_CONFIG': json.dumps({'user': 'admin', 'password': 'QtdlxxrisA@!sfsgo#2024', 'host': '10.10.10.230', 'port': 5432, 'dbname': 'portal_guide'}),
+    'EHC_THV_CONFIG': json.dumps({'user': 'reader', 'password': 'Scigroup@2026', 'host': '10.10.10.215', 'port': 13022, 'dbname': 'pk_drgiang'}),
 }
 
 dwh_product_new_uri = ''
