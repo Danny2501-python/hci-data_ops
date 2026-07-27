@@ -7,8 +7,8 @@ import pendulum
 # ============================================================================
 # BACKFILL CONFIGURATION (Edit dates to change the date range)
 # ============================================================================
-START_DATE_STR = "2026-05-01"            # Start date (YYYY-MM-DD)
-END_DATE_STR = "2026-07-04"              # End date (YYYY-MM-DD)
+START_DATE_STR = "2026-01-01"            # Start date (YYYY-MM-DD)
+END_DATE_STR = "2026-05-01"              # End date (YYYY-MM-DD)
 # ============================================================================
 
 # Timezone for Vietnam
