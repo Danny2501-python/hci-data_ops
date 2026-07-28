@@ -51,7 +51,7 @@ def get_yesterday_tz():
 dag = DAG(
     'caresoft_deal_thv_etl',
     default_args=default_args,
-    description='CareSoft ETL THV: ERP → Bronze → Silver → Gold → Serving',
+    description='CareSoft ETL THV: /deals list API → Gold (enrichment) → Serving',
     schedule_interval='30 1 * * *',
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
@@ -130,29 +130,11 @@ duckdb_temp_volume_mount = k8s.V1VolumeMount(
 # ============================================================================
 # LOAD DATABASE CONNECTIONS (at DAG parse time)
 # ============================================================================
-
-# ERP Connections
-erp_connection_env_vars = {}
-erp_connections_config = {
-    'THV': 'sci_erp_vde'
-}
-
-for erp_name, conn_id in erp_connections_config.items():
-    try:
-        hook = PostgresHook(postgres_conn_id=conn_id)
-        conn = hook.get_connection(conn_id)
-        uri = conn.get_uri()
-        
-        # Clean URI: Remove __extra__ parameter
-        if '?__extra__=' in uri:
-            uri = uri.split('?__extra__=')[0]
-        
-        erp_connection_env_vars[f'ERP_{erp_name}_URI'] = uri
-        logger.info(f"✅ Loaded connection URI for ERP {erp_name}")
-        
-    except Exception as e:
-        logger.warning(f"⚠️  Could not load {erp_name} connection: {e}")
-        erp_connection_env_vars[f'ERP_{erp_name}_URI'] = ''
+# NOTE: no ERP connection is loaded here anymore. CareSoft is not configured
+# to send 'deal' webhooks to THV's ERP, so the old erp_direct_ingestion_thv /
+# webhook_transformation_silver_thv tasks never produced any usable data.
+# Deal discovery for THV now goes directly through CareSoft's /deals list API
+# (see deal_detail_enrichment_thv.py), so this DAG starts at enrichment.
 
 # DWH Product Connections (for serving layer)
 dwh_product_new_uri = ''
@@ -181,66 +163,13 @@ except Exception as e:
 
 
 # ============================================================================
-# TASK 1: ERP → BRONZE (Webhook Ingestion) THV
+# TASK 1: CareSoft /deals list API → GOLD (Deal Detail Enrichment) THV
 # ============================================================================
-
-task_erp_webhook_ingestion = KubernetesPodOperator(
-    task_id='erp_direct_ingestion_thv',
-    name='caresoft-erp-direct-ingestion-thv',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/deal/erp_webhook_ingestion_thv.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
-    ],
-    volumes=[nfs_volume],
-    volume_mounts=[nfs_volume_mount],
-    env_vars={
-        **common_env_vars,
-        **erp_connection_env_vars,
-        'BRONZE_TABLE': 'caresoft.wehook_api_caresoft_thv',
-    },
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# ============================================================================
-# TASK 2: BRONZE → SILVER (Webhook Transformation) THV
-# ============================================================================
-
-task_webhook_transformation_silver = KubernetesPodOperator(
-    task_id='webhook_transformation_silver_thv',
-    name='caresoft-webhook-transformation-silver-thv',
-    namespace=NAMESPACE,
-    image=PYTHON_ETL_IMAGE,
-    image_pull_policy='IfNotPresent',
-    cmds=['python'],
-    arguments=[
-        '/app/caresoft/deal/webhook_transformation_silver_thv.py',
-        '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
-    ],
-    volumes=[nfs_volume, duckdb_temp_volume],
-    volume_mounts=[nfs_volume_mount, duckdb_temp_volume_mount],
-    env_vars={
-        **common_env_vars,
-        'BRONZE_TABLE': 'caresoft.wehook_api_caresoft_thv',
-        'SILVER_TABLE_DEAL': 'caresoft.cs_deal_wehook_thv',
-        'SILVER_TABLE_DEAL_ERROR': 'caresoft.cs_deal_wehook_error_thv',
-        'DUCKDB_TEMP_DIR': '/tmp/duckdb',
-    },
-    container_resources=resource_requirements,
-    is_delete_operator_pod=True,
-    get_logs=True,
-    dag=dag,
-)
-
-# ============================================================================
-# TASK 3: SILVER → GOLD (Deal Detail Enrichment via API) THV
-# ============================================================================
+# Deal discovery (which deal_ids changed) is done inside this task by calling
+# CareSoft's GET /deals list endpoint directly (updated_since/updated_to +
+# created_since/created_to windows), since webhook-based discovery via
+# Bronze/Silver never receives 'deal' events for THV. See
+# app/caresoft/deal/deal_detail_enrichment_thv.py for details.
 
 task_deal_detail_enrichment = KubernetesPodOperator(
     task_id='deal_detail_enrichment_thv',
@@ -262,6 +191,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
         'DEAL_DETAIL_ERROR_TABLE': 'caresoft.cs_deal_detail_error_api_thv',
         'BRAND_TABLE': 'caresoft.core_brand',
         'DUCKDB_TEMP_DIR': '/tmp/duckdb',
+        'CARESOFT_PAGE_SIZE': '500',
     },
     container_resources=resource_requirements,
     is_delete_operator_pod=True,
@@ -270,7 +200,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
 )
 
 # ============================================================================
-# TASK 4: GOLD → SERVING (Refresh PostgreSQL Serving Layer) THV
+# TASK 2: GOLD → SERVING (Refresh PostgreSQL Serving Layer) THV
 # ============================================================================
 
 task_refresh_serving_layer_v2 = KubernetesPodOperator(
@@ -326,7 +256,7 @@ task_refresh_serving_layer_v2_sandbox = KubernetesPodOperator(
 
 
 # ============================================================================
-# TASK 5: Transform Deal Comments (JSON → Flat Table) THV
+# TASK 3: Transform Deal Comments (JSON → Flat Table) THV
 # ============================================================================
 
 task_deal_comments_transformation = KubernetesPodOperator(
@@ -356,7 +286,7 @@ task_deal_comments_transformation = KubernetesPodOperator(
 
 
 # ============================================================================
-# TASK 6: Deal Comments Serving Layer (Iceberg → PostgreSQL) THV
+# TASK 4: Deal Comments Serving Layer (Iceberg → PostgreSQL) THV
 # ============================================================================
 
 task_deal_comments_serving_layer = KubernetesPodOperator(
@@ -411,4 +341,4 @@ task_deal_comments_serving_layer_sandbox = KubernetesPodOperator(
 )
 
 # Dependencies
-task_erp_webhook_ingestion >> task_webhook_transformation_silver >> task_deal_detail_enrichment >> [task_refresh_serving_layer_v2, task_refresh_serving_layer_v2_sandbox] >> task_deal_comments_transformation >> [task_deal_comments_serving_layer, task_deal_comments_serving_layer_sandbox]
+task_deal_detail_enrichment >> [task_refresh_serving_layer_v2, task_refresh_serving_layer_v2_sandbox] >> task_deal_comments_transformation >> [task_deal_comments_serving_layer, task_deal_comments_serving_layer_sandbox]
