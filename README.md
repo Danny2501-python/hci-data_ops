@@ -52,8 +52,3 @@ Không có build/test step. Push vào `main` sẽ trigger Gitea Actions rsync `d
 - Chưa có test tự động; một số script CareSoft có bản trùng lặp theo brand (hậu tố `_thv`) thay vì tham số hoá.
 
 ---
-
-## Các thư mục khác trong workspace
-
-- `data_serving/` — dbt project phục vụ báo cáo, được `data_ops/dags/dbt/*` gọi tới.
-- `dwh_chat_app/`, `quentk_code/`, `Adhoc_python_code/` — các dự án khác trong cùng workspace (xem README riêng nếu có).
