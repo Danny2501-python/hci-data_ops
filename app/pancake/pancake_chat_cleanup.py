@@ -12,7 +12,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common.database import PostgreSQLHelper
 
-POSTGRES_URI = os.getenv("POSTGRES_URI", "postgresql://admin:QtdlxxrisA%40%21sfsgo%232024@10.10.10.224:5432/dev_staging_sci")
 RETENTION_DAYS = int(os.getenv("PANCAKE_CHAT_RETENTION_DAYS", "30"))
 
 
@@ -24,6 +23,8 @@ class PancakeChatCleanup:
     TABLE_NAME = "dwh_pancake_chat_logs"
 
     def __init__(self, db: PostgreSQLHelper, retention_days: int = RETENTION_DAYS):
+        if retention_days <= 0:
+            raise ValueError("retention_days must be greater than zero")
         self.db = db
         self.retention_days = retention_days
 
@@ -37,11 +38,14 @@ class PancakeChatCleanup:
             customer_id VARCHAR(100),
             customer_name VARCHAR(255),
             sender_type VARCHAR(50),
+            event_type VARCHAR(50),
             message_text TEXT,
             payload_json JSONB,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+        ALTER TABLE {self.TABLE_NAME}
+            ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);
         """
         self.db.execute(sql)
 
@@ -62,7 +66,8 @@ class PancakeChatCleanup:
 
 
 if __name__ == "__main__":
-    db_helper = PostgreSQLHelper(POSTGRES_URI)
-    cleanup = PancakeChatCleanup(db_helper)
-    cleanup.run()
-    db_helper.close()
+    postgres_uri = os.getenv("POSTGRES_URI")
+    if not postgres_uri:
+        raise RuntimeError("POSTGRES_URI is required")
+    with PostgreSQLHelper(postgres_uri) as db_helper:
+        PancakeChatCleanup(db_helper).run()

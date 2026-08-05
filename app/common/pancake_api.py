@@ -1,202 +1,287 @@
-"""
-Pancake API Utilities
-Shared helper class for interacting with Pancake POS API and Pancake Social/Pages API.
-"""
+"""Shared clients for Pancake POS and Pancake Pages APIs."""
 
 import os
-import sys
 import time
+from typing import Any, Dict, List, Optional
+
 import requests
-from typing import Dict, List, Optional, Any
 from loguru import logger
 
 
+class PancakeAPIError(RuntimeError):
+    """Raised when Pancake returns an HTTP error or an unexpected payload."""
+
+
 class PancakeAPIClient:
-    """
-    Pancake API Client supporting both Pancake POS API and Pancake Pages/Social API.
-    
-    Handles:
-    - User Access Token authentication
-    - Dynamic Page Access Token generation & caching
-    - Rate limit handling (5 req/sec default limit) with exponential backoff on HTTP 429
-    - Pagination for Shops, Orders, Customers, Products, and Conversations
-    """
-    
+    """Client for Pancake POS and Pancake Pages APIs."""
+
     POS_BASE_URL = "https://pos.pancake.vn/api/v1"
     PAGES_BASE_URL = "https://pages.fm/api/v1"
     PUBLIC_PAGES_BASE_URL = "https://pages.fm/api/public_api/v1"
     PUBLIC_PAGES_V2_BASE_URL = "https://pages.fm/api/public_api/v2"
 
     def __init__(self, user_access_token: Optional[str] = None):
-        """
-        Initialize Pancake API Client.
-        If user_access_token is not provided, load from environment variable PANCAKE_USER_ACCESS_TOKEN
-        or fallback to reading from local credentials file.
-        """
-        self.user_access_token = user_access_token or os.getenv("PANCAKE_USER_ACCESS_TOKEN")
-        
+        self.user_access_token = user_access_token or os.getenv(
+            "PANCAKE_USER_ACCESS_TOKEN"
+        )
         if not self.user_access_token:
-            # Fallback for local testing if file exists
-            cre_file = r"D:\Dự án\Pancake\Cre.txt"
-            if os.path.exists(cre_file):
-                try:
-                    with open(cre_file, "r", encoding="utf-8") as f:
-                        for line in f:
-                            if "User access token" in line:
-                                self.user_access_token = line.split(":", 1)[1].strip()
-                                logger.info("Loaded Pancake User Access Token from Cre.txt fallback")
-                                break
-                except Exception as e:
-                    logger.warning(f"Could not read Cre.txt fallback: {e}")
-                    
-        if not self.user_access_token:
-            logger.error("Pancake User Access Token is missing! Please set PANCAKE_USER_ACCESS_TOKEN environment variable.")
-            
+            raise ValueError(
+                "PANCAKE_USER_ACCESS_TOKEN is required; configure it as an Airflow "
+                "Variable or environment secret"
+            )
+
         self.page_tokens_cache: Dict[str, str] = {}
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "DataEngine/1.0 (Pancake Integration)",
-            "Accept": "application/json"
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "DataEngine/1.0 (Pancake Integration)",
+                "Accept": "application/json",
+            }
+        )
 
-    def _request(self, method: str, url: str, params: Optional[Dict] = None, json_data: Optional[Dict] = None, max_retries: int = 5) -> Optional[Dict[str, Any]]:
-        """
-        Internal HTTP request runner with rate-limiting backoff.
-        """
-        params = params or {}
+    def _request(
+        self,
+        method: str,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None,
+        max_retries: int = 5,
+    ) -> Dict[str, Any]:
+        """Run an HTTP request and fail the task when Pancake cannot be read."""
         retry_delay = 2.0
+        last_error: Optional[Exception] = None
 
         for attempt in range(1, max_retries + 1):
             try:
                 response = self.session.request(
                     method=method,
                     url=url,
-                    params=params,
+                    params=params or {},
                     json=json_data,
-                    timeout=30
+                    timeout=30,
                 )
-
-                if response.status_code == 200:
-                    return response.json()
-                elif response.status_code == 429:
-                    logger.warning(f"Rate limited (429) on {url}. Retrying in {retry_delay}s (Attempt {attempt}/{max_retries})")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2.0
-                elif response.status_code in (500, 502, 503, 504):
-                    logger.warning(f"Server error ({response.status_code}) on {url}. Retrying in {retry_delay}s")
+            except requests.RequestException as exc:
+                last_error = exc
+                logger.warning(
+                    f"Pancake request error on {url}; retrying in {retry_delay}s "
+                    f"(attempt {attempt}/{max_retries}): {exc}"
+                )
+                if attempt < max_retries:
                     time.sleep(retry_delay)
                     retry_delay *= 1.5
-                else:
-                    logger.error(f"API Request failed [{response.status_code}] {url}: {response.text[:200]}")
-                    return None
-            except Exception as e:
-                logger.error(f"Request exception on {url}: {e}")
-                time.sleep(retry_delay)
-                retry_delay *= 1.5
+                continue
 
-        logger.error(f"Exceeded max retries for {url}")
-        return None
+            if 200 <= response.status_code < 300:
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise PancakeAPIError(
+                        f"Pancake returned non-JSON content for {url}"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise PancakeAPIError(
+                        f"Pancake returned an unexpected payload type for {url}"
+                    )
+                return payload
 
-    # =========================================================================
-    # POS API ENDPOINTS
-    # =========================================================================
+            if response.status_code == 429 or response.status_code in {
+                500,
+                502,
+                503,
+                504,
+            }:
+                last_error = PancakeAPIError(
+                    f"Pancake HTTP {response.status_code} for {url}"
+                )
+                logger.warning(
+                    f"{last_error}; retrying in {retry_delay}s "
+                    f"(attempt {attempt}/{max_retries})"
+                )
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2.0 if response.status_code == 429 else 1.5
+                continue
+
+            raise PancakeAPIError(
+                f"Pancake request failed with HTTP {response.status_code} for {url}: "
+                f"{response.text[:200]}"
+            )
+
+        raise PancakeAPIError(
+            f"Pancake request failed after {max_retries} attempts for {url}: "
+            f"{last_error}"
+        )
+
+    @staticmethod
+    def _collection(
+        payload: Dict[str, Any], endpoint: str, *candidate_keys: str
+    ) -> List[Dict[str, Any]]:
+        """Extract a list while validating Pancake's success/response contract."""
+        if payload.get("success") is False:
+            raise PancakeAPIError(
+                f"Pancake {endpoint} returned success=false: "
+                f"{payload.get('message') or payload.get('error') or 'unknown error'}"
+            )
+
+        for key in candidate_keys:
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+        raise PancakeAPIError(
+            f"Pancake {endpoint} response does not contain any expected list key: "
+            f"{', '.join(candidate_keys)}"
+        )
+
+    # POS API endpoints
 
     def get_shops(self) -> List[Dict[str, Any]]:
-        """Fetch all POS Shops accessible by the user."""
-        url = f"{self.POS_BASE_URL}/shops"
-        params = {"access_token": self.user_access_token}
-        data = self._request("GET", url, params=params)
-        if data and data.get("success"):
-            return data.get("shops", [])
-        return []
+        payload = self._request(
+            "GET",
+            f"{self.POS_BASE_URL}/shops",
+            params={"access_token": self.user_access_token},
+        )
+        return self._collection(payload, "shops", "shops", "data")
 
-    def get_orders(self, shop_id: str, page: int = 1, page_size: int = 100, since: Optional[str] = None, until: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Fetch Orders from a specific POS Shop."""
-        url = f"{self.POS_BASE_URL}/shops/{shop_id}/orders"
-        params = {
+    def get_orders(
+        self,
+        shop_id: str,
+        page: int = 1,
+        page_size: int = 100,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {
             "access_token": self.user_access_token,
             "page_number": page,
-            "page_size": page_size
+            "page_size": page_size,
         }
         if since:
             params["since_date"] = since
         if until:
             params["until_date"] = until
 
-        data = self._request("GET", url, params=params)
-        if data and data.get("success"):
-            return data.get("orders", [])
-        elif data and isinstance(data.get("data"), list):
-            return data.get("data")
-        return []
+        payload = self._request(
+            "GET",
+            f"{self.POS_BASE_URL}/shops/{shop_id}/orders",
+            params=params,
+        )
+        return self._collection(payload, "orders", "orders", "data")
 
-    def get_customers(self, shop_id: str, page: int = 1, page_size: int = 100) -> List[Dict[str, Any]]:
-        """Fetch Customers from a specific POS Shop."""
-        url = f"{self.POS_BASE_URL}/shops/{shop_id}/customers"
-        params = {
-            "access_token": self.user_access_token,
-            "page_number": page,
-            "page_size": page_size
-        }
-        data = self._request("GET", url, params=params)
-        if data and data.get("success"):
-            return data.get("customers", [])
-        return []
+    def get_customers(
+        self, shop_id: str, page: int = 1, page_size: int = 100
+    ) -> List[Dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            f"{self.POS_BASE_URL}/shops/{shop_id}/customers",
+            params={
+                "access_token": self.user_access_token,
+                "page_number": page,
+                "page_size": page_size,
+            },
+        )
+        return self._collection(payload, "customers", "customers", "data")
 
-    def get_products(self, shop_id: str, page: int = 1, page_size: int = 100) -> List[Dict[str, Any]]:
-        """Fetch Products from a specific POS Shop."""
-        url = f"{self.POS_BASE_URL}/shops/{shop_id}/products"
-        params = {
-            "access_token": self.user_access_token,
-            "page_number": page,
-            "page_size": page_size
-        }
-        data = self._request("GET", url, params=params)
-        if data and data.get("success"):
-            return data.get("products", [])
-        return []
+    def get_products(
+        self, shop_id: str, page: int = 1, page_size: int = 100
+    ) -> List[Dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            f"{self.POS_BASE_URL}/shops/{shop_id}/products",
+            params={
+                "access_token": self.user_access_token,
+                "page_number": page,
+                "page_size": page_size,
+            },
+        )
+        return self._collection(payload, "products", "products", "data")
 
-    # =========================================================================
-    # PAGES / SOCIAL API ENDPOINTS
-    # =========================================================================
+    # Pages / Social API endpoints
 
     def get_pages(self) -> List[Dict[str, Any]]:
-        """Fetch list of managed Facebook Pages / Zalo OAs from Pancake Social."""
-        url = f"{self.PAGES_BASE_URL}/pages"
-        params = {"access_token": self.user_access_token}
-        data = self._request("GET", url, params=params)
-        if data and isinstance(data.get("pages"), list):
-            return data.get("pages")
-        return []
+        """Return managed pages from both documented and current response shapes."""
+        payload = self._request(
+            "GET",
+            f"{self.PAGES_BASE_URL}/pages",
+            params={"access_token": self.user_access_token},
+        )
+        if isinstance(payload.get("pages"), list):
+            return self._collection(payload, "pages", "pages")
 
-    def generate_page_access_token(self, page_id: str) -> Optional[str]:
-        """Dynamically generate or refresh a page_access_token for a given page_id."""
+        categorized = payload.get("categorized")
+        if not isinstance(categorized, dict):
+            raise PancakeAPIError(
+                "Pancake pages response contains neither pages nor categorized"
+            )
+
+        pages: List[Dict[str, Any]] = []
+        seen_page_ids = set()
+        for category in ("activated", "inactivated", "hidden", "nopermission"):
+            for page in categorized.get(category) or []:
+                if not isinstance(page, dict):
+                    continue
+                page_id = str(page.get("id") or "")
+                if page_id and page_id not in seen_page_ids:
+                    page["pancake_category"] = category
+                    pages.append(page)
+                    seen_page_ids.add(page_id)
+        return pages
+
+    def generate_page_access_token(self, page_id: str) -> str:
+        """Generate a page token explicitly; regeneration invalidates the old token."""
         if page_id in self.page_tokens_cache:
             return self.page_tokens_cache[page_id]
 
-        url = f"{self.PAGES_BASE_URL}/pages/{page_id}/generate_page_access_token"
-        params = {"access_token": self.user_access_token}
-        data = self._request("POST", url, params=params)
-
-        if data and data.get("page_access_token"):
-            token = data.get("page_access_token")
-            self.page_tokens_cache[page_id] = token
-            return token
-        return None
-
-    def get_conversations(self, page_id: str, page_access_token: Optional[str] = None, fields: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Fetch Conversations for a specific Page."""
-        token = page_access_token or self.generate_page_access_token(page_id)
+        payload = self._request(
+            "POST",
+            f"{self.PAGES_BASE_URL}/pages/{page_id}/generate_page_access_token",
+            params={"access_token": self.user_access_token},
+        )
+        token = payload.get("page_access_token")
         if not token:
-            logger.error(f"Cannot get page_access_token for page {page_id}")
-            return []
+            raise PancakeAPIError(
+                f"Pancake did not return page_access_token for page {page_id}"
+            )
+        self.page_tokens_cache[page_id] = str(token)
+        return str(token)
 
-        url = f"{self.PUBLIC_PAGES_V2_BASE_URL}/pages/{page_id}/conversations"
-        params = {"page_access_token": token}
+    def get_page_customers(
+        self,
+        page_id: str,
+        page_access_token: str,
+        since: int,
+        until: int,
+        page: int = 1,
+        page_size: int = 100,
+        order_by: str = "inserted_at",
+    ) -> List[Dict[str, Any]]:
+        """Read Pancake page customers, including phone_numbers and emails."""
+        payload = self._request(
+            "GET",
+            f"{self.PUBLIC_PAGES_BASE_URL}/pages/{page_id}/page_customers",
+            params={
+                "page_access_token": page_access_token,
+                "since": since,
+                "until": until,
+                "page_number": page,
+                "page_size": min(page_size, 100),
+                "order_by": order_by,
+            },
+        )
+        return self._collection(payload, "page_customers", "customers", "data")
+
+    def get_conversations(
+        self,
+        page_id: str,
+        page_access_token: str,
+        fields: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"page_access_token": page_access_token}
         if fields:
             params["fields"] = fields
-
-        data = self._request("GET", url, params=params)
-        if data and isinstance(data.get("conversations"), list):
-            return data.get("conversations")
-        return []
+        payload = self._request(
+            "GET",
+            f"{self.PUBLIC_PAGES_V2_BASE_URL}/pages/{page_id}/conversations",
+            params=params,
+        )
+        return self._collection(payload, "conversations", "conversations", "data")

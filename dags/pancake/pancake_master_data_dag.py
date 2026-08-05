@@ -1,68 +1,114 @@
-"""
-Airflow DAG for Pancake Master Data Ingestion (Shops & Master Entities)
-Daily sync of Shops metadata from Pancake POS API.
-"""
+"""Daily Pancake shop master-data ingestion."""
 
-from airflow import DAG
-from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
-from kubernetes.client import models as k8s
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime, timedelta
+
 import pendulum
+from airflow import DAG
+from airflow.models import Variable
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from kubernetes.client import models as k8s
+
 
 logger = logging.getLogger(__name__)
+PYTHON_ETL_IMAGE = "111050/python-etl-base:1.0.0"
+NAMESPACE = "default"
+NFS_SERVER = "10.10.10.245"
+NFS_PATH = "/srv/nfs_share/app"
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
-PYTHON_ETL_IMAGE = '111050/python-etl-base:1.0.0'
-NAMESPACE = 'default'
-NFS_SERVER = '10.10.10.245'
-NFS_PATH = '/srv/nfs_share/app'
+def _postgres_uri() -> str:
+    try:
+        connection = PostgresHook(postgres_conn_id="dwh_product_new").get_connection(
+            "dwh_product_new"
+        )
+        uri = connection.get_uri().split("?__extra__=", 1)[0]
+        logger.info("Loaded dwh_product_new Airflow connection")
+        return uri
+    except Exception as exc:
+        logger.warning(f"Could not load dwh_product_new connection: {exc}")
+        return ""
 
-PANCAKE_USER_ACCESS_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiTXJzIFnhur9uIFFUVkhIVCIsImV4cCI6MTc5MzY2ODEyMSwiYXBwbGljYXRpb24iOjEsInVpZCI6IjhhNWVhMjUwLTEwMDQtNDY5MS04ZTcxLWViYTFiNTdhNzc1ZCIsInNlc3Npb25faWQiOiJkNzAwODUwNy1iZDBmLTQ5YjItYTkxYi00ZTcwNzdkNGU3NmUiLCJpYXQiOjE3ODU4OTIxMjEsInBhbmNha2VfaWQiOiJkMmFkNDIwNi1jYTQ0LTRhMjEtOTY0NS0zZTBhOWVkNGFlMWUiLCJmYl9pZCI6bnVsbCwibG9naW5fc2Vzc2lvbiI6bnVsbCwiZmJfbmFtZSI6Ik1ycyBZ4bq_biBRVFZISFQifQ.6LcsQkwctRXQhyVjTNEd5ftgpNtvXGrYIYcJ9eMMQdk'
 
-# Volume mounting
-nfs_volume = k8s.V1Volume(
-    name='nfs-app',
-    nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH)
+dwh_product_new_uri = _postgres_uri()
+pancake_user_access_token = Variable.get(
+    "pancake_user_access_token", default_var=""
 )
-nfs_mount = k8s.V1VolumeMount(name='nfs-app', mount_path='/app')
+pancake_page_access_tokens = Variable.get(
+    "pancake_page_access_tokens", default_var="{}"
+)
+
+resource_requirements = k8s.V1ResourceRequirements(
+    requests={"cpu": "500m", "memory": "512Mi"},
+    limits={"cpu": "1000m", "memory": "1Gi"},
+)
+nfs_volume = k8s.V1Volume(
+    name="nfs-app", nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH)
+)
+nfs_mount = k8s.V1VolumeMount(name="nfs-app", mount_path="/app", read_only=True)
 
 default_args = {
-    'owner': 'data-engineering',
-    'depends_on_past': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "data-engineering",
+    "depends_on_past": False,
+    "email": ["data-eng@example.com"],
+    "email_on_failure": True,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
 }
 
-local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
-
+local_tz = pendulum.timezone("Asia/Ho_Chi_Minh")
 dag = DAG(
-    'pancake_master_data_etl',
+    "pancake_master_data_etl",
     default_args=default_args,
-    description='Pancake Master Data Ingestion: Daily Sync of Shops and Entities',
-    schedule_interval='30 2 * * *',  # Daily at 02:30 AM
+    description="Pancake master data: daily shop sync",
+    schedule_interval="30 2 * * *",
     start_date=datetime(2026, 8, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
-    tags=['etl', 'pancake', 'pos', 'shops', 'master_data'],
+    tags=["etl", "pancake", "pos", "shops", "master_data"],
 )
 
 ingest_shops_task = KubernetesPodOperator(
-    task_id='ingest_pancake_shops',
-    name='pancake-shops-ingestion-pod',
+    task_id="ingest_pancake_shops",
+    name="pancake-shops-ingestion-pod",
     namespace=NAMESPACE,
     image=PYTHON_ETL_IMAGE,
-    cmds=['python', '/app/pancake/pancake_shops_ingestion.py'],
+    image_pull_policy="IfNotPresent",
+    cmds=["python"],
+    arguments=["/app/pancake/pancake_shops_ingestion.py"],
     volumes=[nfs_volume],
     volume_mounts=[nfs_mount],
-    env_vars=[
-        k8s.V1EnvVar(name='POSTGRES_URI', value='postgresql://admin:QtdlxxrisA%40%21sfsgo%232024@10.10.10.214:5432/new_product'),
-        k8s.V1EnvVar(name='PANCAKE_USER_ACCESS_TOKEN', value=PANCAKE_USER_ACCESS_TOKEN),
-    ],
+    env_vars={
+        "POSTGRES_URI": dwh_product_new_uri,
+        "PANCAKE_USER_ACCESS_TOKEN": pancake_user_access_token,
+    },
+    container_resources=resource_requirements,
     get_logs=True,
     is_delete_operator_pod=True,
     dag=dag,
 )
+
+ingest_customers_task = KubernetesPodOperator(
+    task_id="ingest_pancake_customers",
+    name="pancake-customers-ingestion-pod",
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy="IfNotPresent",
+    cmds=["python"],
+    arguments=["/app/pancake/pancake_customers_ingestion.py"],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    env_vars={
+        "POSTGRES_URI": dwh_product_new_uri,
+        "PANCAKE_USER_ACCESS_TOKEN": pancake_user_access_token,
+        "PANCAKE_PAGE_ACCESS_TOKENS": pancake_page_access_tokens,
+    },
+    container_resources=resource_requirements,
+    get_logs=True,
+    is_delete_operator_pod=True,
+    dag=dag,
+)
+
+ingest_shops_task >> ingest_customers_task
