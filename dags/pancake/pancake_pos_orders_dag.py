@@ -21,6 +21,8 @@ NAMESPACE = 'default'
 NFS_SERVER = '10.10.10.245'
 NFS_PATH = '/srv/nfs_share/app'
 
+PANCAKE_USER_ACCESS_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJuYW1lIjoiTXJzIFnhur9uIFFUVkhIVCIsImV4cCI6MTc5MzY2ODEyMSwiYXBwbGljYXRpb24iOjEsInVpZCI6IjhhNWVhMjUwLTEwMDQtNDY5MS04ZTcxLWViYTFiNTdhNzc1ZCIsInNlc3Npb25faWQiOiJkNzAwODUwNy1iZDBmLTQ5YjItYTkxYi00ZTcwNzdkNGU3NmUiLCJpYXQiOjE3ODU4OTIxMjEsInBhbmNha2VfaWQiOiJkMmFkNDIwNi1jYTQ0LTRhMjEtOTY0NS0zZTBhOWVkNGFlMWUiLCJmYl9pZCI6bnVsbCwibG9naW5fc2Vzc2lvbiI6bnVsbCwiZmJfbmFtZSI6Ik1ycyBZ4bq_biBRVFZISFQifQ.6LcsQkwctRXQhyVjTNEd5ftgpNtvXGrYIYcJ9eMMQdk'
+
 # Volume mounting
 nfs_volume = k8s.V1Volume(
     name='nfs-app',
@@ -58,6 +60,7 @@ ingest_orders_task = KubernetesPodOperator(
     volume_mounts=[nfs_mount],
     env_vars=[
         k8s.V1EnvVar(name='POSTGRES_URI', value='postgresql://admin:QtdlxxrisA%40%21sfsgo%232024@10.10.10.214:5432/new_product'),
+        k8s.V1EnvVar(name='PANCAKE_USER_ACCESS_TOKEN', value=PANCAKE_USER_ACCESS_TOKEN),
     ],
     get_logs=True,
     is_delete_operator_pod=True,
@@ -74,6 +77,7 @@ ingest_customers_task = KubernetesPodOperator(
     volume_mounts=[nfs_mount],
     env_vars=[
         k8s.V1EnvVar(name='POSTGRES_URI', value='postgresql://admin:QtdlxxrisA%40%21sfsgo%232024@10.10.10.214:5432/new_product'),
+        k8s.V1EnvVar(name='PANCAKE_USER_ACCESS_TOKEN', value=PANCAKE_USER_ACCESS_TOKEN),
     ],
     get_logs=True,
     is_delete_operator_pod=True,
