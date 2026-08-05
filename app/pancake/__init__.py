@@ -1,3 +1,0 @@
-"""
-Pancake Ingestion Package
-"""
