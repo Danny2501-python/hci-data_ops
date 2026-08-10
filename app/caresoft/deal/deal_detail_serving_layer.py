@@ -30,6 +30,10 @@ POSTGRES_URI = os.getenv('POSTGRES_URI')
 SOURCE_TABLE = 'caresoft.cs_deal_detail_api'  # Read directly from incremental table
 TARGET_TABLE = os.getenv('SERVING_TABLE_NAME')
 
+# Upsert batch size (avoid materializing the whole CSV staging buffer in bulk_load()
+# for all rows at once -- was the cause of OOMKilled on large snapshots, see README.md)
+UPSERT_BATCH_SIZE = int(os.getenv('UPSERT_BATCH_SIZE', '4000'))
+
 
 class ServingLayerRefresh:
     """Refresh serving layer table with latest deal details"""
@@ -186,27 +190,38 @@ class ServingLayerRefresh:
             return
             
         cursor = self.pg_conn.cursor()
-        
+
         try:
-            # Step 1: Ensure table exists with PK
+            # Step 1: Ensure table exists with PK (commits internally)
             self.ensure_serving_table_exists(columns)
-            
-            logger.info(f"Bulk Upserting {len(rows)} deals into {TARGET_TABLE}...")
-            
-            bulk_load(
-                cursor=cursor,
-                target_table=TARGET_TABLE,
-                records=rows,
-                columns=columns,
-                conflict_columns=['id', 'brand_id'],
-                method='upsert',
-                update_condition=f'{TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {TARGET_TABLE}."updated_at" IS NULL'
-            )
-            
-            # Commit transaction
-            self.pg_conn.commit()
-            logger.success(f"✅ Bulk Upserted {len(rows)} deals into {TARGET_TABLE}")
-            
+
+            total = len(rows)
+            logger.info(f"Bulk Upserting {total} deals into {TARGET_TABLE} "
+                        f"in batches of {UPSERT_BATCH_SIZE}...")
+
+            # Chunk the upsert: bulk_load() builds a full in-memory CSV staging
+            # buffer per call, which doubled peak RAM on top of `rows` already
+            # held in memory (each deal record carries large JSON text: comments,
+            # tags, custom_fields...). Loading 24k+ rows in a single call OOMKilled
+            # the pod. Committing per-chunk also makes retries idempotent/cheaper:
+            # the upsert's update_condition (updated_at comparison) makes re-running
+            # an already-committed chunk a safe no-op.
+            for start in range(0, total, UPSERT_BATCH_SIZE):
+                chunk = rows[start:start + UPSERT_BATCH_SIZE]
+                bulk_load(
+                    cursor=cursor,
+                    target_table=TARGET_TABLE,
+                    records=chunk,
+                    columns=columns,
+                    conflict_columns=['id', 'brand_id'],
+                    method='upsert',
+                    update_condition=f'{TARGET_TABLE}."updated_at" < EXCLUDED."updated_at" OR {TARGET_TABLE}."updated_at" IS NULL'
+                )
+                self.pg_conn.commit()
+                logger.info(f"  ...upserted {min(start + UPSERT_BATCH_SIZE, total)}/{total}")
+
+            logger.success(f"✅ Bulk Upserted {total} deals into {TARGET_TABLE}")
+
         except Exception as e:
             self.pg_conn.rollback()
             logger.error(f"❌ Error upserting data: {e}")
