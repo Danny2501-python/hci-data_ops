@@ -148,6 +148,33 @@ Task graph mới của DAG THV: xem mục "Sơ đồ luồng" phía trên (đã 
 
 ---
 
+## ✅ Sự cố đã xử lý: `refresh_serving_layer_v2` bị OOMKilled trên snapshot lớn (2026-08-10)
+
+### Root cause
+
+Pod của task `refresh_serving_layer_v2` (chạy `deal_detail_serving_layer.py`) bị Kubernetes kill (`exit_code 137`, `reason: OOMKilled`) khi upsert snapshot ~24.5k deal. Log dừng ngay sau dòng `Bulk Upserting N deals into cs_deal_detail_api_v2...` — tức là chết trong lúc `bulk_load()` (`app/common/utils.py`) build buffer để `COPY`.
+
+Nguyên nhân: cùng một lúc dữ liệu bị giữ trong RAM **3 bản**:
+1. `get_deals_for_date()` — Arrow table fetch từ DuckDB, convert từng cell sang Python object (`rows`).
+2. `bulk_load()` — ghi lại **toàn bộ** `rows` ra một `io.StringIO()` CSV buffer trước khi `COPY` (bản sao thứ 2, dạng text).
+3. Arrow table + `rows` (bản 1) chưa được giải phóng trong lúc (2) đang chạy.
+
+Mỗi deal detail record mang nhiều trường JSON lớn (`comments`, `tags`, `custom_fields`, `assignee`, `requester`...) nên 3 bản copy cùng lúc của ~24k rows dễ vượt `limits.memory: 6Gi` (pod resource trong `caresoft_deal_dag.py`).
+
+### Fix đã triển khai
+
+`deal_detail_serving_layer.py :: upsert_serving_table()` — chunk upsert theo batch (`UPSERT_BATCH_SIZE`, mặc định `4000`, override qua env) thay vì gọi `bulk_load()` 1 lần cho toàn bộ `rows`. Mỗi batch commit riêng ngay sau khi upsert xong (thay vì 1 transaction duy nhất cho cả snapshot):
+- Giảm peak RAM của bước (2) ở trên từ "toàn bộ snapshot" xuống còn kích thước 1 batch.
+- Idempotent & an toàn khi retry: điều kiện `update_condition` (so sánh `updated_at`) khiến batch đã commit rồi chạy lại là no-op, nên nếu 1 batch giữa chừng fail, chỉ cần retry lại task — không double-write, không mất dữ liệu batch trước.
+- Không đổi `bulk_load()` dùng chung ở `common/utils.py` (15 script khác đang gọi hàm này) — batching chỉ nằm ở phía caller trong `deal_detail_serving_layer.py`, giảm rủi ro side-effect.
+
+### Việc cân nhắc thêm (chưa làm)
+
+- `rows` (bản copy 1, list of Python tuples từ toàn bộ snapshot) vẫn được giữ nguyên trong RAM suốt quá trình — batching chỉ loại bỏ bản sao trùng lặp (2), không giảm chi phí cố định của (1). Nếu snapshot tiếp tục tăng (backfill nhiều ngày, brand mới...), có thể cần đọc/upsert theo batch ngay từ bước Iceberg scan (stream Arrow record batches thẳng vào `COPY`) thay vì vật chất hoá toàn bộ trước.
+- Áp dụng batching tương tự cho các serving layer khác dùng `bulk_load()` với volume lớn nếu gặp OOM tương tự (hiện chỉ fix cho deal, không đổi các script còn lại).
+
+---
+
 ## Các helper dùng chung (`app/common/`)
 
 - `brand_config.py`: `get_active_brands()` (brand thường), `get_brand_by_erp_id(erp_id)` (THV, bỏ qua `is_active`) — đọc từ `caresoft.core_brand` (Gold).
