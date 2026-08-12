@@ -36,7 +36,7 @@ dag = DAG(
     'data_serving_erp_staging_etl',
     default_args=default_args,
     description='Run Data Serving ETL Pipeline - ERP Staging (Products, Employees, Payment Transfer)',
-    schedule_interval="0 8 * * *",
+    schedule_interval="0 4 * * *",  # 04:00 VN — sau call_functions_erp_direct_dag (03:30), sớm hơn mọi DBT DAG khác
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
