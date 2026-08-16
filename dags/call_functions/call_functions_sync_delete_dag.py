@@ -37,7 +37,7 @@ local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 dag = DAG(
     'call_functions_sync_delete_dag',
     default_args=default_args,
-    description='Sync Delete from DWH auditlog_log to DWH tables (Hard Delete)',
+    description='Sync Delete from DWH auditlog_log to DWH tables (backup + soft-delete flag is_delete cho bảng đã migrate cột, còn lại chỉ backup)',
     schedule_interval='45 3 * * *', #Daily at 3:45 AM
     start_date=datetime(2026, 4, 1, tzinfo=local_tz),
     catchup=False,
