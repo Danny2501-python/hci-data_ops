@@ -110,6 +110,8 @@ class PostgreSQLHelper:
             cursor.execute(query, params)
             return cursor.fetchone()
         except Exception as e:
+            if not self.conn.autocommit:
+                self.conn.rollback()
             logger.error(f"Fetchone failed: {e}")
             logger.debug(f"Query: {query}, Params: {params}")
             raise e
@@ -137,6 +139,8 @@ class PostgreSQLHelper:
             cursor.execute(query, params)
             return cursor.fetchall()
         except Exception as e:
+            if not self.conn.autocommit:
+                self.conn.rollback()
             logger.error(f"Fetchall failed: {e}")
             logger.debug(f"Query: {query}, Params: {params}")
             raise e

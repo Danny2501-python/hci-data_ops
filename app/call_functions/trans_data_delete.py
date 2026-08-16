@@ -23,9 +23,12 @@ class TransDataDelete:
         self.brand_name = brand_name
         self.brand_etl = brand_etl
         self.source_log = f'Etl data delete - {brand_name}'
-        
+
         # All operations happen on the Target DWH
         self.target_db = PostgreSQLHelper(target_uri)
+
+        # Cache: table_name -> bool, tránh query information_schema lặp lại cho mỗi res_id
+        self._is_delete_col_cache = {}
 
     def check_data_delete(self, query='', date=1):
         """
@@ -71,22 +74,49 @@ class TransDataDelete:
             data_delete = pd.DataFrame(cursor.fetchall(), columns=columns)
             cursor.close()
             return data_delete
-            
+
         except Exception as e:
+            # Rollback bắt buộc: nếu không, transaction ở trạng thái "aborted" sẽ làm mọi
+            # query sau đó trên cùng connection (kể cả các bảng không liên quan) fail dây chuyền.
+            if not self.target_db.conn.autocommit:
+                self.target_db.conn.rollback()
             logger.error(f"[{self.source_log}] Error in check_data_delete: {e}")
             raise e
 
-    # def delete_data_in_target(self, table, res_id, brand_etl):
-    #     """
-    #     Perform the actual delete in the Target DWH.
-    #     """
-    #     try:
-    #         query = f"DELETE FROM {table} WHERE id = %s AND brand_etl = %s"
-    #         self.target_db.execute(query, (res_id, brand_etl))
-    #         return True
-    #     except Exception as e:
-    #         logger.error(f"[{self.source_log}] Error deleting from {table} (ID: {res_id}): {e}")
-    #         return False
+    def _table_has_is_delete_column(self, table):
+        """
+        Kiểm tra bảng đích đã có cột is_delete chưa (cache lại theo tên bảng để tránh query
+        information_schema lặp lại cho từng res_id). Đa số bảng trong logging_delete (vd
+        sh_medical_surgery_supply, account_move_line...) chưa migrate cột này — sẽ tự động bị
+        bỏ qua ở bước flag bên dưới, giữ nguyên hành vi backup-only như trước (không lỗi).
+        """
+        if table not in self._is_delete_col_cache:
+            try:
+                row = self.target_db.fetchone(
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = 'is_delete'",
+                    (table,)
+                )
+                self._is_delete_col_cache[table] = row is not None
+            except Exception as e:
+                logger.warning(f"[{self.source_log}] Could not check is_delete column on {table}: {e}")
+                self._is_delete_col_cache[table] = False
+        return self._is_delete_col_cache[table]
+
+    def flag_data_deleted_in_target(self, table, res_id, brand_etl):
+        """
+        Soft-delete: đánh dấu is_delete = true trên bảng đích thay vì xóa cứng — an toàn hơn
+        DELETE (có thể rollback/đối chiếu lại, không mất dữ liệu vật lý). Chỉ áp dụng cho các
+        bảng đã có cột is_delete; bảng chưa migrate cột này sẽ bị bỏ qua (trả về None).
+        """
+        if not self._table_has_is_delete_column(table):
+            return None
+        try:
+            query = f"UPDATE {table} SET is_delete = true WHERE id = %s AND brand_etl = %s"
+            self.target_db.execute(query, (res_id, brand_etl))
+            return True
+        except Exception as e:
+            logger.error(f"[{self.source_log}] Error flagging is_delete on {table} (ID: {res_id}): {e}")
+            return False
 
     def insert_data_delete(self, data_delete, table_logging='logging_delete'):
         """
@@ -149,9 +179,12 @@ class TransDataDelete:
                     df_log['id'] = row['id']
                     df_log['brand_etl'] = row['brand_etl']
                     
-                    # 2. Execute Delete in Target (DISABLED for safety)
-                    # df_log['has_retry_delete'] = self.delete_data_in_target(row['model'], row['res_id'], row['brand_etl'])
-                    df_log['has_retry_delete'] = True
+                    # 2. Flag is_delete = true in Target (soft-delete, chỉ áp dụng nếu bảng đã
+                    # có cột is_delete — xem _table_has_is_delete_column). Bảng chưa migrate cột
+                    # này trả về None -> coi như "đã xử lý xong" (chỉ backup, không flag), giữ
+                    # đúng hành vi cũ để không phá các model khác ngoài crm_transfer_payment(_line).
+                    flag_result = self.flag_data_deleted_in_target(row['model'], row['res_id'], row['brand_etl'])
+                    df_log['has_retry_delete'] = True if flag_result is None else flag_result
 
                 # 3. Save Log to Target logging_delete
                 # First remove old log if exists to avoid PK conflict (id is from auditlog_log)
@@ -164,6 +197,11 @@ class TransDataDelete:
                 self._copy_to_logging(df_log, table_logging)
 
             except Exception as e:
+                # Rollback bắt buộc: 1 dòng lỗi (vd bảng có schema lạ, cột lệch...) sẽ để
+                # transaction ở trạng thái "aborted" nếu không rollback — mọi dòng/bảng tiếp
+                # theo trên cùng connection sẽ fail dây chuyền dù không liên quan gì tới lỗi gốc.
+                if not self.target_db.conn.autocommit:
+                    self.target_db.conn.rollback()
                 logger.error(f"[{self.source_log}] Failed to process row {row['id']} for table {row['model']}: {e}")
 
         end_time = perf_counter()
@@ -194,8 +232,12 @@ class TransDataDelete:
         
         cols = ['id', 'table_name', 'create_date', 'write_date', 'res_id', 'raw_data', 'brand_etl', 'has_retry_delete', 'ingestion_timestamp']
         df_to_save = df[cols]
-        
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8') as f:
+
+        # newline='' bắt buộc khi ghi CSV qua file handle (khuyến cáo của chính module csv) — thiếu
+        # nó thì trên Windows lớp I/O sẽ tự đổi \n -> \r\n, cộng với \r\n mà csv writer đã ghi, sinh
+        # dòng trống thừa ngay sau header khiến COPY sau đó báo "missing data for column". Trên Linux
+        # (nơi script chạy production trong K8s pod) không gặp vì không có kiểu auto-translate này.
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8', newline='') as f:
             df_to_save.to_csv(f, index=False, header=True)
             temp_path = f.name
 
