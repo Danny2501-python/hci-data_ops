@@ -104,10 +104,61 @@ class SCDProcessor:
             output.seek(0)
             cols_str = ', '.join([f'"{c}"' for c in col_list])
             cursor.copy_expert(f"COPY {temp_table} ({cols_str}) FROM STDIN WITH (FORMAT CSV, DELIMITER '\t', NULL '{NULL_MARKER}')", output)
-            
-            # 3. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
+
             key_join = " AND ".join([f"w.\"{k}\" = t.\"{k}\"" for k in key_list])
-            
+
+            # change_by (NEW): best-effort "who" for each logged change, populated only when
+            # the table's config actually pulls write_uid into Column_save. Two variants:
+            #   - from the NEW row (t) for normal field-level edits — the writer of the value
+            #     that just landed.
+            #   - from the OLD warehouse row (w) for deletions — since the record is gone from
+            #     source, this is only the *last known* editor before it disappeared, not
+            #     necessarily whoever performed the delete. Worth keeping in mind when reading it.
+            # Falls back to NULL for any table whose Column_save doesn't include write_uid.
+            has_write_uid = 'write_uid' in col_list
+            change_by_from_new = 'CAST(t."write_uid" AS TEXT)' if has_write_uid else 'NULL'
+            change_by_from_old = 'CAST(w."write_uid" AS TEXT)' if has_write_uid else 'NULL'
+
+            # 3. DETECT DELETIONS (NEW): rows that are 'Y' (current) in the warehouse but
+            #    whose key no longer appears at all in the freshly-pulled source data, i.e.
+            #    the record was deleted/unlinked in the ERP. The original logic only ever
+            #    compared *values* for keys still present in source and never checked for
+            #    keys that disappeared entirely, so deletes were previously invisible.
+            #
+            #    Convention introduced here (please review, not yet confirmed with the team):
+            #      - warehouse row is closed with status='D' (new value, kept distinct from
+            #        the existing 'Y'/'N') and expiration_date = job run time (self.now),
+            #        since a deleted source row has no write_date left to inherit.
+            #      - one row is written to table_change_slowly per deleted key, using a
+            #        sentinel column_name='__DELETED__' (old_value='EXISTS', new_value=NULL)
+            #        so deletions are distinguishable from ordinary field-level changes
+            #        without needing an ALTER TABLE on table_change_slowly.
+            logger.info("Detecting deleted records (present in warehouse but missing from source)...")
+            key_value_sql = " || ',' || ".join([f"'{k}=' || CAST(w.\"{k}\" AS TEXT)" for k in key_list])
+
+            delete_log_sql = f"""
+                INSERT INTO table_change_slowly (table_name, table_warehouse, column_name, old_value, new_value, change_date, key_value, change_by)
+                SELECT
+                    '{src}', '{wh}', '__DELETED__',
+                    'EXISTS', NULL,
+                    %s,
+                    {key_value_sql},
+                    {change_by_from_old}
+                FROM {wh} w
+                WHERE w.status = 'Y'
+                  AND NOT EXISTS (SELECT 1 FROM {temp_table} t WHERE {key_join})
+            """
+            cursor.execute(delete_log_sql, (self.now,))
+
+            delete_close_sql = f"""
+                UPDATE {wh} w
+                SET status = 'D', expiration_date = %s
+                WHERE w.status = 'Y'
+                  AND NOT EXISTS (SELECT 1 FROM {temp_table} t WHERE {key_join})
+            """
+            cursor.execute(delete_close_sql, (self.now,))
+
+            # 4. IDENTIFY CHANGES & INSERT LOGS (table_change_slowly)
             logger.info("Logging changes into table_change_slowly...")
             for col in diff_list:
                 if col in col_list:
@@ -118,19 +169,20 @@ class SCDProcessor:
                     log_date_sql = 'COALESCE(t."write_date", %s)' if 'write_date' in col_list else '%s'
 
                     log_sql = f"""
-                        INSERT INTO table_change_slowly (table_name, table_warehouse, column_name, old_value, new_value, change_date, key_value)
-                        SELECT 
-                            '{src}', '{wh}', '{col}', 
-                            CAST(w."{col}" AS TEXT), CAST(t."{col}" AS TEXT), 
-                            {log_date_sql}, 
-                            {name_key_sql}
+                        INSERT INTO table_change_slowly (table_name, table_warehouse, column_name, old_value, new_value, change_date, key_value, change_by)
+                        SELECT
+                            '{src}', '{wh}', '{col}',
+                            CAST(w."{col}" AS TEXT), CAST(t."{col}" AS TEXT),
+                            {log_date_sql},
+                            {name_key_sql},
+                            {change_by_from_new}
                         FROM {wh} w
                         JOIN {temp_table} t ON {key_join}
                         WHERE w.status = 'Y' AND CAST(w."{col}" AS TEXT) IS DISTINCT FROM CAST(t."{col}" AS TEXT)
                     """
                     cursor.execute(log_sql, (self.now,))
 
-            # 4. CLOSE OLD RECORDS (status='Y' -> 'N')
+            # 5. CLOSE OLD RECORDS (status='Y' -> 'N')
             diff_cond = " OR ".join([f"w.\"{d}\" IS DISTINCT FROM t.\"{d}\"" for d in diff_list]) if diff_list else "1=0"
             
             # 100% Old Logic: Use write_date as expiration_date if exists (matching old logic)
@@ -144,7 +196,7 @@ class SCDProcessor:
             """
             cursor.execute(close_sql, (self.now,))
             
-            # 5. INSERT NEW RECORDS ('Y' version for changed data + brand new records)
+            # 6. INSERT NEW RECORDS ('Y' version for changed data + brand new records)
             # Find columns that exist in both temp and warehouse
             cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{wh.split('.')[-1]}' AND table_schema = '{wh.split('.')[0] if '.' in wh else 'public'}'")
             wh_all_cols = [r[0] for r in cursor.fetchall()]
