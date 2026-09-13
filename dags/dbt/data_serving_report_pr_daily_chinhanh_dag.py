@@ -1,0 +1,98 @@
+
+from airflow import DAG
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+from kubernetes.client import models as k8s
+from datetime import datetime, timedelta
+import logging
+import pendulum
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+PYTHON_ETL_IMAGE = '111050/python-etl-base:latest'
+NAMESPACE = 'default'
+NFS_SERVER = '10.10.10.245'
+NFS_PATH_DBT = '/srv/nfs_share/dbt/data_serving' # Path on NFS Server
+
+# ============================================================================
+# DAG DEFINITION
+# ============================================================================
+
+default_args = {
+    'owner': 'data-engineering',
+    'depends_on_past': False,
+    'email': ['data-eng@example.com'],
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
+
+dag = DAG(
+    'data_serving_report_pr_daily_chinhanh_etl',
+    default_args=default_args,
+    description='Run Data Serving ETL Pipeline - Paris Daily Chi Nhanh (report_pr_daily_chinhanh)',
+    # 08:35 VN — sau data_serving_erp_staging_etl (04:00, build stag_payment_transfer/
+    # view_stag_products/view_stag_employees_user) và sau data_serving_pr_etl (08:30, model
+    # func_report_marketing_ad_cost_pr dùng chung rpdc.google_ad_paris/tiktok_raw_ad/
+    # cs_facebook_insight — mốc 08:30 đã kiểm chứng là đủ dữ liệu cho 2 bảng ads này nên
+    # report_pr_daily_chinhanh canh sau đó 5 phút, không giẫm pod với các DAG chạy 08:30).
+    schedule_interval="35 8 * * *",
+    start_date=datetime(2026, 1, 1, tzinfo=local_tz),
+    catchup=False,
+    max_active_runs=1,
+    tags=['data-serving', 'report_pr_daily_chinhanh'],
+)
+
+# ============================================================================
+# RESOURCES & ENV
+# ============================================================================
+
+resource_requirements = k8s.V1ResourceRequirements(
+    requests={'cpu': '500m', 'memory': '512Mi'},
+    limits={'cpu': '2000m', 'memory': '2Gi'}
+)
+
+nfs_volume = k8s.V1Volume(
+    name='nfs-dbt-data-serving',
+    nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH_DBT)
+)
+nfs_mount = k8s.V1VolumeMount(
+    name='nfs-dbt-data-serving',
+    mount_path='/app/data_serving',
+    read_only=True   # source code only — target/logs ghi vào /tmp trong pod
+)
+
+# ============================================================================
+# TASKS
+# ============================================================================
+
+dbt_run_report_pr_daily_chinhanh = KubernetesPodOperator(
+    task_id='dbt_run_report_pr_daily_chinhanh',
+    name='dbt-report-pr-daily-chinhanh-run',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['dbt'],
+    arguments=[
+        'run',
+        '--select', 'tag:report_pr_daily_chinhanh',
+        '--project-dir', '/app/data_serving',
+        '--profiles-dir', '/app/data_serving',
+        '--target-path', '/tmp/dbt_target',  # ghi vào pod local, không ra NFS
+        '--log-path',    '/tmp/dbt_logs',    # ghi vào pod local, không ra NFS
+    ],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    container_resources=resource_requirements,
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
+dbt_run_report_pr_daily_chinhanh
