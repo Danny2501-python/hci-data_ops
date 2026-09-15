@@ -130,18 +130,23 @@ class DirectPostgresToPostgres:
             col_def = f'"{target_name}" {sql_type}'
             col_defs.append(col_def)
             
-        # Add metadata columns (consistent with our ETL standards)
-        metadata_cols = [
-            '"snapshot_date" DATE',
-            '"ingestion_timestamp" TIMESTAMP',
-            '"source_server" VARCHAR(255)'
-        ]
-        
+        # Add metadata columns (consistent with our ETL standards), skipping any that
+        # already exist in the source schema to avoid duplicate column definitions
+        metadata_cols = []
+        for meta_name, meta_type in [
+            ('snapshot_date', 'DATE'),
+            ('ingestion_timestamp', 'TIMESTAMP'),
+            ('source_server', 'VARCHAR(255)'),
+        ]:
+            if meta_name not in source_col_names:
+                metadata_cols.append(f'"{meta_name}" {meta_type}')
+
         # Requirement: brand_etl if not in source, brand_etl_new if in source
         if has_brand_etl_in_source:
             metadata_cols.append('"brand_etl_new" INTEGER')
         else:
-            metadata_cols.append('"brand_etl" INTEGER')
+            if 'brand_etl' not in source_col_names:
+                metadata_cols.append('"brand_etl" INTEGER')
         
         create_sql = f"CREATE TABLE IF NOT EXISTS {target_table} ({', '.join(col_defs + metadata_cols)})"
         
@@ -185,6 +190,8 @@ class DirectPostgresToPostgres:
             ('brand_etl_new' if has_brand_etl_in_source else 'brand_etl', 'INTEGER')
         ]
         for meta_name, meta_type in metadata_candidates:
+            if meta_name in source_col_names:
+                continue
             if meta_name.lower() not in existing_target_cols:
                 missing_cols.append((meta_name, meta_type))
                 
