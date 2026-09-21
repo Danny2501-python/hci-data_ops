@@ -12,7 +12,7 @@ import os
 import sys
 import json
 import gc
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from loguru import logger
 import pyarrow as pa
 from pyiceberg.catalog import load_catalog
@@ -43,6 +43,11 @@ AWS_REGION = os.getenv('AWS_REGION')
 
 # Postgres — holds core_pancake_page (page_id -> page_access_token)
 POSTGRES_URI = os.getenv('POSTGRES_URI')
+
+# snapshot_date is a Vietnam business day (UTC+7, no DST). Pancake since/until are unix
+# seconds and updated_at in responses is UTC, so the day boundary must be built with an
+# explicit tz — a naive .timestamp() would depend on the host timezone (pod=UTC, laptop=VN).
+VN_TZ = timezone(timedelta(hours=7))
 
 
 class ConversationIngestion:
@@ -129,7 +134,8 @@ class ConversationIngestion:
 
         # Date window: [snapshot_date - days_ago, snapshot_date + 1) — same anchor
         # convention as chat_ingestion.py, expressed as unix seconds for Pancake.
-        anchor_date = datetime.combine(self.snapshot_date, datetime.min.time())
+        # Day boundaries are 00:00 Vietnam time (UTC+7).
+        anchor_date = datetime.combine(self.snapshot_date, datetime.min.time(), tzinfo=VN_TZ)
         until_dt = anchor_date + timedelta(days=1)
         since_dt = until_dt - timedelta(days=days_ago)
         since_ts = int(since_dt.timestamp())

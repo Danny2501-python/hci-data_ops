@@ -66,7 +66,7 @@ def get_yesterday_tz():
 dag = DAG(
     'pancake_inbox_etl',
     default_args=default_args,
-    description='Pancake Inbox Pipeline: Bronze (conversations) -> Serving (conversations + conversation<->ad bridge)',
+    description='Pancake Inbox Pipeline: Page sync -> Bronze (conversations) -> Serving (conversations + conversation<->ad bridge)',
     schedule_interval='30 2 * * *',  # after caresoft_chat_etl (02:00) to avoid NFS/pod contention
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
@@ -128,6 +128,31 @@ duckdb_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
+# Keeps core_pancake_page in step with the account: new pages get a page_access_token generated
+# and are inserted with is_active = TRUE and the brand of their account. Accounts (+ their
+# account-level "API Access Token", ~90 days) live in table core_pancake_account.
+task_page_sync = KubernetesPodOperator(
+    task_id='page_sync',
+    name='pancake-page-sync',
+    namespace=NAMESPACE,
+    image=PYTHON_ETL_IMAGE,
+    image_pull_policy='IfNotPresent',
+    cmds=['python'],
+    arguments=['/app/pancake/page_sync.py'],
+    volumes=[nfs_volume],
+    volume_mounts=[nfs_mount],
+    env_vars={
+        'POSTGRES_URI': dwh_product_new_uri,
+    },
+    container_resources=k8s.V1ResourceRequirements(
+        requests={'cpu': '250m', 'memory': '256Mi'},
+        limits={'cpu': '500m', 'memory': '512Mi'}
+    ),
+    is_delete_operator_pod=True,
+    get_logs=True,
+    dag=dag,
+)
+
 task_conversation_ingestion = KubernetesPodOperator(
     task_id='conversation_ingestion_bronze',
     name='pancake-conversation-ingestion-bronze',
@@ -147,6 +172,9 @@ task_conversation_ingestion = KubernetesPodOperator(
     container_resources=resource_requirements_ingestion,
     is_delete_operator_pod=True,
     get_logs=True,
+    # Still ingest the pages we already have if page_sync fails (e.g. expired account token);
+    # the failure of page_sync itself is reported by its own email_on_failure.
+    trigger_rule='all_done',
     dag=dag,
 )
 
@@ -193,4 +221,4 @@ task_conversation_serving_sandbox = KubernetesPodOperator(
 )
 
 # DEPS
-task_conversation_ingestion >> [task_conversation_serving, task_conversation_serving_sandbox]
+task_page_sync >> task_conversation_ingestion >> [task_conversation_serving, task_conversation_serving_sandbox]
