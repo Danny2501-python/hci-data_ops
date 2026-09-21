@@ -67,6 +67,9 @@ nfs_mount = k8s.V1VolumeMount(
 # TASKS
 # ============================================================================
 
+# `dbt build` tự load seed gắn tag report_kn (campaign_name_split, ucbt_camp_actor,
+# ucbt_country_continent, ucbt_page_config) TRƯỚC các model dùng ref() tới chúng.
+
 dbt_run_kn = KubernetesPodOperator(
     task_id='dbt_run_kn',
     name='dbt-kn-run',
@@ -75,12 +78,13 @@ dbt_run_kn = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['dbt'],
     arguments=[
-        'run',
+        'build',
         '--select', 'tag:report_kn',
         '--project-dir', '/app/data_serving',
         '--profiles-dir', '/app/data_serving',
         '--target-path', '/tmp/dbt_target',  # ghi vào pod local, không ra NFS
         '--log-path',    '/tmp/dbt_logs',    # ghi vào pod local, không ra NFS
+        '--exclude', 'resource_type:test'
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_mount],
