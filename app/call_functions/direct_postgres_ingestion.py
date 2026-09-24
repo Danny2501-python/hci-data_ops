@@ -43,6 +43,7 @@ SOURCE_DB_CONNECTIONS = {
 ERP_SOURCES = {
     'sci': {'env': 'ERP_SCI_URI', 'brand_etl': 7},
     'kn':  {'env': 'ERP_KN_URI',  'brand_etl': 1},
+    'da': {'env': 'ERP_DA_URI', 'brand_etl': 2},
     'pr':  {'env': 'ERP_PR_URI',  'brand_etl': 3},
     'hh':  {'env': 'ERP_HH_URI',  'brand_etl': 4},
     'vde': {'env': 'ERP_VDE_URI', 'brand_etl': 8},
