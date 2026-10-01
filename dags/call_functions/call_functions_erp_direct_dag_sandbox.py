@@ -121,7 +121,8 @@ erp_conn_mapping = {
     'ERP_DA_URI': 'sci_erp_da', 
     'ERP_PR_URI': 'sci_erp_pr', 
     'ERP_HH_URI': 'sci_erp_hh', 
-    'ERP_VDE_URI': 'sci_erp_vde'
+    'ERP_VDE_URI': 'sci_erp_vde', 
+    'ERP_SUN_URI': 'sci_erp_sun'
     }
 for env_var_name, conn_id in erp_conn_mapping.items():
     try:
@@ -130,6 +131,22 @@ for env_var_name, conn_id in erp_conn_mapping.items():
         uri = conn.get_uri()
         if '?__extra__=' in uri: uri = uri.split('?__extra__=')[0]
         erp_configs[env_var_name] = uri
+    except Exception as e:
+        logger.warning(f"Could not load {conn_id}: {e}")
+
+# Source DB configs lay tu Airflow Connection (khong hardcode credential trong repo)
+source_db_configs = {}
+source_conn_mapping = {'ERP_SUN_CONFIG': 'sci_erp_sun'}
+for env_var_name, conn_id in source_conn_mapping.items():
+    try:
+        conn = PostgresHook(postgres_conn_id=conn_id).get_connection(conn_id)
+        source_db_configs[env_var_name] = json.dumps({
+            'user': conn.login,
+            'password': conn.password,
+            'host': conn.host,
+            'port': conn.port or 5432,
+            'dbname': conn.schema,
+        })
     except Exception as e:
         logger.warning(f"Could not load {conn_id}: {e}")
 
@@ -162,6 +179,7 @@ direct_ingestion = KubernetesPodOperator(
     volume_mounts=[nfs_mount, temp_disk_mount],
     env_vars={
         **common_env_vars,
+        **source_db_configs,
         **erp_configs,
         'POSTGRES_URI': dwh_sandbox_uri,
         'TEMP_DIR': '/tmp',

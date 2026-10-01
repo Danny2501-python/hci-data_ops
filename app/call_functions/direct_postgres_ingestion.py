@@ -37,6 +37,7 @@ SOURCE_DB_CONNECTIONS = {
     '10.10.10.230': os.getenv('PORTAL_GUIDE_CONFIG'),
     '10.10.10.214.old': os.getenv('CUSTOM_DB_DEV_CONFIG'),
     '10.10.10.215': os.getenv('EHC_THV_CONFIG'),
+    '10.10.10.113': os.getenv('ERP_SUN_CONFIG'),
 }
 
 # ERP Sources mapping
@@ -47,6 +48,7 @@ ERP_SOURCES = {
     'pr':  {'env': 'ERP_PR_URI',  'brand_etl': 3},
     'hh':  {'env': 'ERP_HH_URI',  'brand_etl': 4},
     'vde': {'env': 'ERP_VDE_URI', 'brand_etl': 8},
+    'sun': {'env': 'ERP_SUN_URI', 'brand_etl': 9},
 }
 
 # Target Postgres URI
