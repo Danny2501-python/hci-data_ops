@@ -76,7 +76,12 @@ dag = DAG(
             default='erp',
             type='string',
             description='Source type filter'
-        )
+        ),
+        'erp_only': Param(
+            default=None,
+            type=['null', 'string'],
+            description='Chỉ chạy một số ERP, cách nhau bằng dấu phẩy (vd: sun = Philippines). Bỏ trống = chạy tất cả ERP.',
+        ),
     },
     user_defined_macros={'yesterday_tz': get_yesterday_tz},
 )
@@ -173,7 +178,8 @@ direct_ingestion = KubernetesPodOperator(
         '{{ dag_run.conf.get("table_id") | default("", true) }}',
         '{{ params.source }}',
         '{{ dag_run.conf.get("load_type") or "incremental" }}',
-        '{{ params.drop_table }}'
+        '{{ params.drop_table }}',
+        '{{ params.erp_only or "" }}',
     ],
     volumes=[nfs_volume, temp_disk_volume],
     volume_mounts=[nfs_mount, temp_disk_mount],
