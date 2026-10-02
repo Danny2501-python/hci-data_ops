@@ -42,7 +42,9 @@ def run(entity: str, snapshot_date):
     bronze = read_partition(bronze_tbl, snapshot_date)
     logger.info(f"Bronze {entity} {snapshot_date}: {len(bronze)} bản ghi")
     if not bronze:
-        raise RuntimeError(f"Không có dữ liệu bronze {entity} cho {snapshot_date} – kiểm tra bước bronze")
+        # Bước bronze đã chạy thành công (trigger rule all_success) -> 0 bản ghi là dữ liệu thật,
+        # vd page không có khách mới trong ngày. Ghi partition rỗng và kết thúc bình thường.
+        logger.warning(f"Bronze {entity} {snapshot_date} không có bản ghi – silver ghi partition rỗng")
     for table, fn in PLAN[entity]:
         rows = fn(bronze)
         tbl = ensure_table("silver", table, SILVER_TABLES[table])

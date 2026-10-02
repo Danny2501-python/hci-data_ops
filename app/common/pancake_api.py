@@ -32,7 +32,11 @@ REQUEST_TIMEOUT = 60
 
 
 class PancakeAPIError(Exception):
-    """Lỗi gọi Pancake API sau khi đã retry hết."""
+    """Lỗi gọi Pancake API sau khi đã retry hết. status_code = mã HTTP (nếu có)."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def day_window_utc7(day: date):
@@ -118,7 +122,7 @@ def _request(method: str, url: str, params: Dict, limiter: Optional[_RateLimiter
 
         if resp.status_code >= 400:
             # 401/403/404...: token sai/hết hạn, page không tồn tại -> không retry
-            raise PancakeAPIError(f"HTTP {resp.status_code} {url}: {resp.text[:300]}")
+            raise PancakeAPIError(f"HTTP {resp.status_code} {url}: {resp.text[:300]}", resp.status_code)
 
         try:
             data = resp.json()
@@ -127,7 +131,7 @@ def _request(method: str, url: str, params: Dict, limiter: Optional[_RateLimiter
 
         # Một số endpoint trả {success: false, message: ...} với HTTP 200
         if isinstance(data, dict) and data.get("success") is False:
-            raise PancakeAPIError(f"API báo lỗi {url}: {str(data)[:300]}")
+            raise PancakeAPIError(f"API báo lỗi {url}: {str(data)[:300]}", resp.status_code)
         return data
 
     raise PancakeAPIError(f"Hết {MAX_RETRIES} lần retry {url}: {last_err}")

@@ -40,6 +40,12 @@ CLEANUP_ZONES = [
     },
 ]
 
+# Namespace pancake (pipeline Pancake API) – cùng 3 zone, cùng chính sách retention
+CLEANUP_ZONES += [
+    {**z, 'id': f"{z['id']}_pancake", 'ns': 'pancake'}
+    for z in CLEANUP_ZONES if z['ns'] == 'caresoft'
+]
+
 # ============================================================================
 # DAG DEFINITION
 # ============================================================================
