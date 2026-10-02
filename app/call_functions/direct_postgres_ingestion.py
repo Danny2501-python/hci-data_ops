@@ -41,6 +41,10 @@ SOURCE_DB_CONNECTIONS = {
 }
 
 # ERP Sources mapping
+# - brand_etl     : mã brand gắn vào mọi dòng dữ liệu của ERP đó
+# - target_schema : (tuỳ chọn) ghi dữ liệu ERP này vào schema riêng thay vì bảng chung trong public.
+#                   Vd 'sun' (Philippines) -> ph.crm_lead, ph.account_payment... để không lẫn với dữ liệu Việt Nam.
+#                   Bỏ trống = ghi vào bảng đích như cấu hình (public).
 ERP_SOURCES = {
     'sci': {'env': 'ERP_SCI_URI', 'brand_etl': 7},
     'kn':  {'env': 'ERP_KN_URI',  'brand_etl': 1},
@@ -48,17 +52,24 @@ ERP_SOURCES = {
     'pr':  {'env': 'ERP_PR_URI',  'brand_etl': 3},
     'hh':  {'env': 'ERP_HH_URI',  'brand_etl': 4},
     'vde': {'env': 'ERP_VDE_URI', 'brand_etl': 8},
-    'sun': {'env': 'ERP_SUN_URI', 'brand_etl': 9},
+    'sun': {'env': 'ERP_SUN_URI', 'brand_etl': 9, 'target_schema': 'ph'},  # Philippines
 }
 
 # Target Postgres URI
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 
 class DirectPostgresToPostgres:
-    def __init__(self, snapshot_date: date = None, truncate_erp: bool = True):
+    def __init__(self, snapshot_date: date = None, truncate_erp: bool = True, erp_only: Optional[str] = None):
         self.snapshot_date = snapshot_date or (date.today() - timedelta(days=1))
         self.target_conn = None
         self.truncate_erp = truncate_erp
+        # Chỉ chạy một số ERP (vd 'sun' để nạp riêng Philippines). Lấy từ tham số hoặc env ERP_ONLY.
+        # Bỏ trống = chạy tất cả ERP như bình thường.
+        raw = erp_only if erp_only is not None else os.getenv('ERP_ONLY', '')
+        self.erp_only = {x.strip().lower() for x in str(raw).split(',')
+                         if x.strip() and x.strip().lower() != 'none'}
+        if self.erp_only:
+            logger.info(f"ERP_ONLY: chỉ xử lý ERP {sorted(self.erp_only)}")
 
     def connect_target(self):
         if not POSTGRES_URI:
@@ -405,20 +416,45 @@ class DirectPostgresToPostgres:
                     cur.execute(f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON {target_table} ({pk_cols_str})')
                     self.target_conn.commit()
 
+    @staticmethod
+    def resolve_brand_target(target_table: str, info: Dict) -> str:
+        """
+        Bảng đích cho 1 ERP: nếu ERP có target_schema thì đổi schema của bảng đích sang schema đó.
+        Vd target_table='crm_lead' hoặc 'public.crm_lead', target_schema='ph' -> 'ph.crm_lead'.
+        """
+        schema = info.get('target_schema')
+        if not schema:
+            return target_table
+        return f"{schema}.{target_table.split('.')[-1]}"
+
+    def ensure_schema(self, schema: str):
+        """Tạo schema đích nếu chưa có (vd 'ph')."""
+        with self.target_conn.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            self.target_conn.commit()
+
     def process_erp(self, config: Dict, drop_table: bool, load_type: str):
         target_table = config['table_name']
         source_table = config['table_name_source']
         
         total = 0
-        initialized = False
+        # Các bảng đích đã được chuẩn bị schema/index (vd {'crm_lead', 'ph.crm_lead'})
+        initialized_targets = set()
         
         for name, info in ERP_SOURCES.items():
+            if self.erp_only and name not in self.erp_only:
+                continue
             uri = os.getenv(info['env'])
             if not uri:
                 logger.warning(f"Connection URI for {name.upper()} ({info['env']}) is empty, skipping.")
                 continue
             if uri.startswith("postgres://"): uri = uri.replace("postgres://", "postgresql://", 1)
-            logger.info(f"Processing ERP source: {name.upper()}")
+
+            # Bảng đích của ERP này: public (mặc định) hoặc schema riêng (vd Philippines -> ph.*)
+            brand_target = self.resolve_brand_target(target_table, info)
+            brand_config = {**config, 'table_name': brand_target}
+
+            logger.info(f"Processing ERP source: {name.upper()} -> {brand_target}")
             engine = create_engine(uri)
             try:
                 # Check if table exists in this source before trying to define schema or stream data
@@ -426,28 +462,31 @@ class DirectPostgresToPostgres:
                     logger.warning(f"Source table {source_table} not found in {name}. Skipping.")
                     continue
 
-                if not initialized:
-                    # Setup schema/index chỉ 1 lần dựa trên brand đầu tiên tìm thấy
+                if info.get('target_schema'):
+                    self.ensure_schema(info['target_schema'])
+
+                if brand_target not in initialized_targets:
+                    # Setup schema/index 1 lần cho mỗi bảng đích (public và schema riêng tính riêng)
                     # prepare_target KHÔNG xóa dữ liệu ERP (đã bỏ truncate khỏi đây)
-                    self.prepare_target(engine, config, drop_table=drop_table)
-                    initialized = True
+                    self.prepare_target(engine, brand_config, drop_table=drop_table)
+                    initialized_targets.add(brand_target)
                 else:
                     # Đảm bảo đồng bộ schema cho các brand tiếp theo (không drop bảng)
-                    self.prepare_target(engine, config, drop_table=False)
+                    self.prepare_target(engine, brand_config, drop_table=False)
 
                 # ERP: xóa dữ liệu của từng brand trước khi stream (tránh ảnh hưởng brand khác)
                 if config.get('truncate') and self.truncate_erp:
                     with self.target_conn.cursor() as cur:
-                        logger.info(f"ERP mode: Deleting rows in {target_table} where brand_etl = {info['brand_etl']} (brand: {name}).")
-                        cur.execute(f"DELETE FROM {target_table} WHERE brand_etl = %s", (info['brand_etl'],))
+                        logger.info(f"ERP mode: Deleting rows in {brand_target} where brand_etl = {info['brand_etl']} (brand: {name}).")
+                        cur.execute(f"DELETE FROM {brand_target} WHERE brand_etl = %s", (info['brand_etl'],))
                         self.target_conn.commit()
                 
                 try:
-                    total += self.stream_and_upsert(engine, config, target_table, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
+                    total += self.stream_and_upsert(engine, brand_config, brand_target, brand_etl=info['brand_etl'], source_name=name, load_type=load_type)
                 except Exception as e:
                     err_msg = str(e)
                     db_side = "Source" if "SOURCE_" in err_msg else ("Target" if "TARGET_" in err_msg else "Logic/Unknown")
-                    logger.error(f"Failed to ingest {target_table} from {name} ({db_side} side): {e}")
+                    logger.error(f"Failed to ingest {brand_target} from {name} ({db_side} side): {e}")
                     # Reset connection để brand tiếp theo không bị ảnh hưởng bởi aborted transaction
                     try:
                         self.target_conn.rollback()
@@ -457,7 +496,7 @@ class DirectPostgresToPostgres:
             finally:
                 engine.dispose()
         
-        if not initialized:
+        if not initialized_targets:
             logger.error(f"Table {source_table} was not found in ANY ERP source database.")
             
         return total
@@ -535,4 +574,7 @@ if __name__ == "__main__":
     drop_table_arg = sys.argv[5] if len(sys.argv) > 5 else 'false'
     drop_table = drop_table_arg.lower() in ('true', '1', 'yes')
     
-    DirectPostgresToPostgres(s_date).run(table_id=t_id, source_type=s_type, drop_table=drop_table, load_type=l_type)
+    # Arg 6 (tuỳ chọn): chỉ chạy một số ERP, vd 'sun' hoặc 'kn,pr'. Bỏ trống = tất cả.
+    erp_only_arg = sys.argv[6] if len(sys.argv) > 6 else None
+
+    DirectPostgresToPostgres(s_date, erp_only=erp_only_arg).run(table_id=t_id, source_type=s_type, drop_table=drop_table, load_type=l_type)
