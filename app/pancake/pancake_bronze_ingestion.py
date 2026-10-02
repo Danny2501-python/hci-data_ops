@@ -41,8 +41,9 @@ from pancake.pancake_transforms import to_json  # noqa: E402
 POSTGRES_URI = os.getenv("POSTGRES_URI")
 MAX_PAGE_WORKERS = int(os.getenv("PANCAKE_MAX_PAGE_WORKERS", "4"))
 
+# Không lấy statistics/page_customers: trả HTML với page Zalo, và đã có bảng pancake_page_customer
 STAT_TYPES = ["pages", "users", "tags", "pages_campaigns", "ads_by_time",
-              "customer_engagements", "customer_feedbacks", "page_customers"]
+              "customer_engagements", "customer_feedbacks"]
 
 CONFIG_DDL = """
 CREATE TABLE IF NOT EXISTS public.core_pancake_page (
