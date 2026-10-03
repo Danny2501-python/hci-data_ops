@@ -115,7 +115,8 @@ def fetch_messages(client: PancakePageClient, page: Dict, days: List[date], snap
     conv_tbl = ensure_table("bronze", BRONZE_TABLES["conversations"], BRONZE_COLUMNS)
     convs = read_partition(conv_tbl, snapshot_date, page["page_id"])
     if not convs:
-        raise RuntimeError("Chưa có bronze conversations cho snapshot này – chạy entity conversations trước")
+        logger.warning(f"[{page['page_id']}] không có hội thoại trong cửa sổ → 0 tin nhắn")
+        return []
     since, _ = day_window_utc7(days[0])
     _, until = day_window_utc7(days[-1])
     out = []
