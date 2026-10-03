@@ -127,7 +127,7 @@ def _request(method: str, url: str, params: Dict, limiter: Optional[_RateLimiter
         try:
             data = resp.json()
         except ValueError:
-            raise PancakeAPIError(f"Response không phải JSON {url}: {resp.text[:300]}")
+            raise PancakeAPIError(f"Response không phải JSON (endpoint không hỗ trợ?) {url}: {resp.text[:200]}", resp.status_code)
 
         # Một số endpoint trả {success: false, message: ...} với HTTP 200
         if isinstance(data, dict) and data.get("success") is False:
