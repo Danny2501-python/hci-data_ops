@@ -140,19 +140,32 @@ def fetch_customers(client: PancakePageClient, page: Dict, days: List[date], sna
 
 
 def fetch_statistics(client: PancakePageClient, page: Dict, days: List[date], snapshot_date, now):
-    out, errors = [], []
+    """
+    Gọi từng loại thống kê cho từng ngày.
+    - Loại thống kê page không hỗ trợ / không có quyền (HTTP 400, 403, 404 hoặc success=false):
+      chỉ cảnh báo, bỏ qua (vd page Zalo cá nhân không có thống kê quảng cáo).
+    - Lỗi thật (token sai 401, lỗi mạng, 5xx) hoặc mọi lời gọi đều lỗi: trả về errors -> task FAILED.
+    """
+    out, errors, unsupported = [], [], set()
     for d in days:
         since, until = day_window_utc7(d)
         for st in STAT_TYPES:
+            if st in unsupported:
+                continue
             try:
                 data = client.get_statistics(st, d)
             except PancakeAPIError as e:
-                errors.append(f"{st} {d}: {e}")
+                if e.status_code in (400, 403, 404, 200):
+                    unsupported.add(st)
+                    logger.warning(f"[{page['page_id']}] bỏ qua thống kê '{st}' (page không hỗ trợ/không có quyền): {str(e)[:200]}")
+                else:
+                    errors.append(f"{st} {d}: {e}")
                 continue
             out.append(bronze_record(page, f"{st}|{d.isoformat()}", data, st, since, until, snapshot_date, now))
+    if not out and not errors:
+        errors.append("không lấy được loại thống kê nào cho page này")
     if errors:
-        # Một số loại thống kê cần quyền xem báo cáo/quảng cáo: vẫn lưu phần lấy được, nhưng báo lỗi
-        logger.warning(f"[{page['page_id']}] {len(errors)} lời gọi thống kê lỗi: {' | '.join(errors[:5])}")
+        logger.error(f"[{page['page_id']}] {len(errors)} lời gọi thống kê lỗi: {' | '.join(errors[:5])}")
     return out, errors
 
 
