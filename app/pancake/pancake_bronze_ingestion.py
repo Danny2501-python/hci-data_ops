@@ -119,13 +119,24 @@ def fetch_messages(client: PancakePageClient, page: Dict, days: List[date], snap
         return []
     since, _ = day_window_utc7(days[0])
     _, until = day_window_utc7(days[-1])
-    out = []
+    out, skipped = [], []
     for idx, c in enumerate(convs, start=1):
         payload = json.loads(c["payload"]) if c.get("payload") else {}
-        for m in client.get_all_messages(c["record_id"], expected_count=payload.get("message_count")):
+        try:
+            msgs = client.get_all_messages(c["record_id"], expected_count=payload.get("message_count"))
+        except PancakeAPIError as e:
+            # vd hội thoại bị ẩn (message_code 286): bỏ qua hội thoại này, không làm hỏng cả page
+            skipped.append(c["record_id"])
+            logger.warning(f"[{page['page_id']}] bỏ qua hội thoại {c['record_id']}: {str(e)[:200]}")
+            continue
+        for m in msgs:
             out.append(bronze_record(page, m.get("id"), m, c["record_id"], since, until, snapshot_date, now))
         if idx % 200 == 0:
             logger.info(f"[{page['page_id']}] messages: {idx}/{len(convs)} hội thoại")
+    if skipped and len(skipped) == len(convs):
+        raise RuntimeError(f"không lấy được tin nhắn của hội thoại nào ({len(skipped)} hội thoại lỗi)")
+    if skipped:
+        logger.warning(f"[{page['page_id']}] đã bỏ qua {len(skipped)}/{len(convs)} hội thoại lỗi")
     return out
 
 
