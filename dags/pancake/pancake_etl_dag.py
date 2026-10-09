@@ -99,7 +99,8 @@ nfs_mount = k8s.V1VolumeMount(name='nfs-scripts', mount_path='/app', read_only=T
 SNAPSHOT = '{{ params.snapshot_date or ds }}'
 
 
-def pod(task_id: str, script: str, args: list, env: dict, resources, timeout_h: int = 2):
+def pod(task_id: str, script: str, args: list, env: dict, resources, timeout_h: int = 2,
+        trigger_rule: str = 'all_success'):
     return KubernetesPodOperator(
         task_id=task_id,
         name=f'pancake-{task_id.replace("_", "-")}',
@@ -115,6 +116,7 @@ def pod(task_id: str, script: str, args: list, env: dict, resources, timeout_h: 
         execution_timeout=timedelta(hours=timeout_h),
         on_finish_action='delete_pod',
         get_logs=True,
+        trigger_rule=trigger_rule,
     )
 
 
@@ -150,10 +152,14 @@ with DAG(
                  '--page-id', '{{ params.page_id or "None" }}'],
                 {**lakehouse_env, 'POSTGRES_URI': dwh_product_new_uri, 'PANCAKE_MAX_PAGE_WORKERS': '4'},
                 resources_heavy if heavy else resources_light, timeout_h=4 if heavy else 2,
+                # messages đọc bronze conversations: vẫn chạy dù conversations có page lỗi
+                trigger_rule='all_done' if entity == 'messages' else 'all_success',
             )
+            # all_done: 1 page lỗi ở bronze (vd token hết hạn) vẫn đỏ để cảnh báo,
+            # nhưng dữ liệu các page khác vẫn đi tiếp silver -> gold -> Postgres
             silver = pod('silver_transformation', 'pancake_silver_transformation.py',
                          ['--entity', entity, '--snapshot-date', SNAPSHOT], lakehouse_env,
-                         resources_heavy if heavy else resources_light)
+                         resources_heavy if heavy else resources_light, trigger_rule='all_done')
             gold = pod('gold_transformation', 'pancake_gold_transformation.py',
                        ['--entity', entity, '--snapshot-date', SNAPSHOT], lakehouse_env,
                        resources_heavy if heavy else resources_light)
