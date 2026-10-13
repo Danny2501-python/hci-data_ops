@@ -141,4 +141,4 @@ dbt_run_old_view_store = KubernetesPodOperator(
     dag=dag,
 )
 
-dbt_seed_stag_product_backfill_sandbox >> dbt_run_old_view_store
+dbt_seed_stag_product_backfill_sandbox >> dbt_run_erp_staging >> dbt_run_old_view_store
