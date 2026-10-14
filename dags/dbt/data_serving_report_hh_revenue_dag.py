@@ -36,7 +36,10 @@ dag = DAG(
     'data_serving_hh_revenue_etl',
     default_args=default_args,
     description='Run Data Serving ETL Pipeline - HH Revenue',
-    schedule_interval="30 7 * * *",
+    # 06:45 VN (2026-10-15, trước 07:30): dời sớm cho DAG data_serving_rtds_etl 07:15 (int_rtds_hongha dùng
+    # rhh_ehc_payment_service / rhh_doanh_so_nha_thuoc). Nguồn EHC nạp xong khoảng 03:50; tag này không phụ thuộc model
+    # của DAG khác. data_serving_rtds_etl có sensor chờ task dbt_run_hh_revenue (execution_delta 30 phút).
+    schedule_interval="45 6 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,

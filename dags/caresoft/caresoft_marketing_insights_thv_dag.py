@@ -4,7 +4,7 @@ API marketing/insights -> public.cs_facebook_insight (brand_etl = 8)
 
 Bản sao của caresoft_marketing_insights_dag.py, chỉ khác:
   - chạy script marketing_insights_ingestion_thv.py (lấy brand theo erp_id = 8)
-  - lịch 07:45 (sau job chung 07:30, trước mốc dbt 08:30 dùng cs_facebook_insight)
+  - lịch 07:45 (sau job chung — 06:30 từ 2026-10-15, trước là 07:30 —, trước mốc dbt 08:30 dùng cs_facebook_insight)
 Mặc định lấy T-3 đến T-1 theo giờ VN; có thể trigger tay với params since / until để chạy lại.
 """
 from airflow import DAG
