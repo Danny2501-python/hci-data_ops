@@ -18,19 +18,20 @@ NFS_SERVER = '10.10.10.245'
 NFS_PATH_DBT = '/srv/nfs_share/dbt/data_serving' # Path on NFS Server
 
 # ============================================================================
-# LỊCH CHẠY (2026-10-15, user chốt chạy 2 lần/ngày — trước đó 1 lần 08:45)
+# LỊCH CHẠY (2026-10-15, user chốt chạy 2 lần/ngày — trước đó 1 lần 08:45; lượt 1 đổi 07:15 → 07:00 cùng ngày vì
+# FB insight 06:30 xong ~06:45, HH/THV revenue xong ~06:46 / 06:51)
 # ============================================================================
-#  1. data_serving_rtds_etl      07:15 — build toàn bộ tag:rtds + chi phí ads Paris (mart_report_marketing_ad_cost_pr
+#  1. data_serving_rtds_etl      07:00 — build toàn bộ tag:rtds + chi phí ads Paris (mart_report_marketing_ad_cost_pr
 #                                         và 2 bảng FB của nó) để có doanh số / khách sớm.
 #     Nguồn: EHC HH/THV (~03:50), crm_lead / out_sold (~03:45), data_serving_erp_staging_etl 04:00 — xong trước theo lịch;
 #            3 sensor chờ: caresoft_marketing_insights_dag 06:30 (cs_facebook_insight), data_serving_hh_revenue_etl 06:45,
 #            data_serving_thv_revenue_etl 06:50.
 #     ⚠ Google Sheet ads (google_ad_paris, tiktok_raw_ad, cp_google_kangnam, ggs_target_ads_thv_hh…) chỉ đủ T-1 sau lượt
-#       call_functions_ggs 08:15 → lúc 07:15 chi phí Google/TikTok còn thiếu ngày hôm qua.
+#       call_functions_ggs 08:15 → lúc 07:00 chi phí Google/TikTok còn thiếu ngày hôm qua.
 #  2. data_serving_rtds_ads_etl  08:45 — build lại riêng chi phí ads: int_rtds_chi_phi_ads+ (→ report_rtds_doanh_so_target_
 #                                         thang_tableau). Chờ data_serving_pr_etl 08:30 (đã build mart_report_marketing_ad_cost_pr
 #                                         trên sheet 08:15 — KHÔNG build lại bảng Paris ở đây để khỏi giẫm DAG Paris) và chờ
-#                                         lượt 07:15 kết thúc (thành công hay lỗi) để 2 lượt không cùng ghi một bảng.
+#                                         lượt 07:00 kết thúc (thành công hay lỗi) để 2 lượt không cùng ghi một bảng.
 # execution_delta = lệch giờ lịch giữa DAG này và DAG nguồn (cùng là lịch ngày) để khớp logical date.
 
 # ============================================================================
@@ -52,8 +53,8 @@ local_tz = pendulum.timezone('Asia/Ho_Chi_Minh')
 dag = DAG(
     'data_serving_rtds_etl',
     default_args=default_args,
-    description='Run Data Serving ETL Pipeline - Báo cáo doanh số tập đoàn HCI (tag:rtds) - lượt 07:15',
-    schedule_interval="15 7 * * *",
+    description='Run Data Serving ETL Pipeline - Báo cáo doanh số tập đoàn HCI (tag:rtds) - lượt 07:00',
+    schedule_interval="0 7 * * *",
     start_date=datetime(2026, 1, 1, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
@@ -135,25 +136,25 @@ def dbt_build(task_id, name, select, target_dag, exclude=()):
     )
 
 # ============================================================================
-# TASKS — lượt 07:15
+# TASKS — lượt 07:00
 # ============================================================================
 
-# cs_facebook_insight (caresoft_marketing_insights_dag 06:30): 07:15 - 06:30
+# cs_facebook_insight (caresoft_marketing_insights_dag 06:30, xong ~06:45): 07:00 - 06:30
 wait_cs_facebook_insight = wait_for('wait_cs_facebook_insight', 'caresoft_marketing_insights_dag',
-                                    'marketing_insights_ingestion', timedelta(minutes=45), dag)
-# rhh_ehc_payment_service / rhh_doanh_so_nha_thuoc (int_rtds_hongha): 07:15 - 06:45
+                                    'marketing_insights_ingestion', timedelta(minutes=30), dag)
+# rhh_ehc_payment_service / rhh_doanh_so_nha_thuoc (int_rtds_hongha): 07:00 - 06:45
 wait_hh_revenue = wait_for('wait_hh_revenue', 'data_serving_hh_revenue_etl',
-                           'dbt_run_hh_revenue', timedelta(minutes=30), dag)
-# report_thv_revenue (int_rtds_thv): 07:15 - 06:50
+                           'dbt_run_hh_revenue', timedelta(minutes=15), dag)
+# report_thv_revenue (int_rtds_thv): 07:00 - 06:50
 wait_thv_revenue = wait_for('wait_thv_revenue', 'data_serving_thv_revenue_etl',
-                            'dbt_run_thv_revenue', timedelta(minutes=25), dag)
+                            'dbt_run_thv_revenue', timedelta(minutes=10), dag)
 
 # dbt build = run + test: test assert_rtds_out_sold_du_du_lieu_kangnam chặn build khi bảng
 # report_crm_lead_customer_out_sold bị hỏng (báo cáo giữ số lần build tốt gần nhất).
 # Kèm chi phí ads Paris (user chốt build ngay trong rtds, không chờ data_serving_pr_etl 08:30). Không build
 # lại dim_campaign / dim_camp_adset_ad / m_utm_source_old_new_map (của DAG master_data/kn) — dùng bản sẵn có.
 # --exclude tag:erp_staging: từ 2026-10-14 thư mục erp_staging cũng mang tag rtds (để build tay `-s tag:rtds` kéo theo
-# stag_payment_transfer) — DAG data_serving_erp_staging_etl 04:00 đã build, không build lại lúc 07:15 (nặng, và tạo lại
+# stag_payment_transfer) — DAG data_serving_erp_staging_etl 04:00 đã build, không build lại lúc 07:00 (nặng, và tạo lại
 # view_stag_products sẽ cascade-drop các view phụ thuộc giữa giờ các DAG khác đang đọc).
 dbt_build_rtds = dbt_build('dbt_build_rtds', 'dbt-rtds-build',
                            ['stg_frmacpr_fb_insight_v2', 'stg_frmacpr_fb_insight_v3',
@@ -169,12 +170,12 @@ dbt_build_rtds = dbt_build('dbt_build_rtds', 'dbt-rtds-build',
 # mart_report_marketing_ad_cost_pr build trên sheet lượt 08:15: 08:45 - 08:30
 wait_report_pr = wait_for('wait_data_serving_pr', 'data_serving_pr_etl',
                           'dbt_run_pr', timedelta(minutes=15), dag_ads)
-# Lượt 07:15 phải KẾT THÚC (thành công hay lỗi đều được) để 2 lượt không cùng ghi report_rtds_doanh_so_target_thang_tableau.
-wait_rtds_0715 = wait_for('wait_rtds_0715', 'data_serving_rtds_etl', 'dbt_build_rtds',
-                          timedelta(hours=1, minutes=30), dag_ads,
+# Lượt 07:00 phải KẾT THÚC (thành công hay lỗi đều được) để 2 lượt không cùng ghi report_rtds_doanh_so_target_thang_tableau.
+wait_rtds_0700 = wait_for('wait_rtds_0700', 'data_serving_rtds_etl', 'dbt_build_rtds',
+                          timedelta(hours=1, minutes=45), dag_ads,
                           allowed_states=('success', 'failed', 'upstream_failed', 'skipped'), failed_states=())
 
 dbt_build_rtds_ads = dbt_build('dbt_build_rtds_ads', 'dbt-rtds-ads-build',
                                ['int_rtds_chi_phi_ads+'], dag_ads)
 
-[wait_report_pr, wait_rtds_0715] >> dbt_build_rtds_ads
+[wait_report_pr, wait_rtds_0700] >> dbt_build_rtds_ads
