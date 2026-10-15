@@ -62,7 +62,7 @@ dag = DAG(
     'caresoft_marketing_insights_dag',
     default_args=default_args,
     description='CareSoft Marketing Insights Ingestion: API -> PostgreSQL',
-    # 06:30 VN (2026-10-15, trước 07:30): dời sớm để DAG data_serving_rtds_etl 07:15 có chi phí FB T-1 — xem data_serving_rtds_dag.py.
+    # 06:30 VN (2026-10-15, trước 07:30): dời sớm để DAG data_serving_rtds_etl 07:00 có chi phí FB T-1 — xem data_serving_rtds_dag.py.
     # Không DAG nào khác chờ DAG này; caresoft_marketing_insights_thv_dag (07:45) vẫn chạy sau; mọi DAG dbt đọc
     # cs_facebook_insight đều >= 08:30. Lấy T-3 → T-1 nên ngày nào API chưa chốt đủ T-1 lúc 06:30 thì hôm sau tự bù.
     schedule_interval='30 6 * * *',
