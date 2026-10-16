@@ -3,8 +3,24 @@ CareSoft API Utilities
 Common functions for interacting with CareSoft API across all modules
 """
 
+import time
+
 import requests
+from loguru import logger
 from typing import Tuple, Optional, Any
+
+# Thử lại khi CareSoft trả 429 (nginx rate limit) / 5xx / lỗi mạng: chờ tăng dần (giây).
+POST_RETRY_BACKOFF = (10, 30, 60, 120)
+POST_RETRY_STATUS = (429, 500, 502, 503, 504)
+MAX_RETRY_WAIT = 300
+
+
+def _parse_retry_after(value) -> Optional[int]:
+    """Header Retry-After dạng số giây; bỏ qua dạng HTTP-date vì CareSoft không dùng."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def get_api_url(brand: dict, path: str) -> str:
@@ -112,7 +128,11 @@ def call_caresoft_api_post(
 ) -> Tuple[Optional[Any], Optional[str]]:
     """
     Function to call CareSoft API using POST method with JSON data
-    
+
+    Tự thử lại tối đa 4 lần khi gặp 429 / 5xx / lỗi mạng, chờ tăng dần 10s → 30s → 60s → 120s;
+    nếu response có header Retry-After thì chờ theo nó (tối đa 300s). Các lỗi 4xx khác (401 sai
+    token, 404 sai endpoint…) trả về ngay vì thử lại cũng không đổi kết quả.
+
     Args:
         brand: Brand configuration dict
         endpoint: API endpoint (e.g., 'marketing/insights')
@@ -124,15 +144,37 @@ def call_caresoft_api_post(
     """
     url = get_api_url(brand, endpoint)
     headers = get_api_headers(brand)
-    
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=timeout)
-        
-        if response.status_code == 200:
-            return response.json(), None
-        else:
+    domain = brand.get("caresoft_domain")
+
+    error_msg = None
+    retry_after = None
+
+    for attempt in range(len(POST_RETRY_BACKOFF) + 1):
+        if attempt:
+            wait = POST_RETRY_BACKOFF[attempt - 1]
+            if retry_after:
+                wait = min(max(wait, retry_after), MAX_RETRY_WAIT)
+            logger.warning(
+                f"[{domain}/{endpoint}] {error_msg} — chờ {wait}s rồi thử lại "
+                f"(lần {attempt}/{len(POST_RETRY_BACKOFF)})"
+            )
+            time.sleep(wait)
+
+        retry_after = None
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=timeout)
+
+            if response.status_code == 200:
+                if attempt:
+                    logger.info(f"[{domain}/{endpoint}] thành công sau {attempt} lần thử lại")
+                return response.json(), None
+
             error_msg = f"HTTP {response.status_code}: {response.text[:500]}"
-            return None, error_msg
-            
-    except Exception as e:
-        return None, str(e)
+            if response.status_code not in POST_RETRY_STATUS:
+                return None, error_msg
+            retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+
+        except Exception as e:
+            error_msg = str(e)
+
+    return None, f"{error_msg} (đã thử lại {len(POST_RETRY_BACKOFF)} lần)"

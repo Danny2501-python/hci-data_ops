@@ -53,6 +53,8 @@ class MarketingInsightsIngestionTHV(MarketingInsightsIngestion):
             self.save_to_postgres(transformed, brand["erp_id"])  # lỗi ghi DB -> raise -> task đỏ
             total_records += len(transformed)
 
+        self.report_api_failures()
+
         if total_records == 0:
             logger.error(
                 f"Không lấy được dòng nào cho {brand['caresoft_domain']} từ {self.since_date} đến "

@@ -4,8 +4,10 @@ API marketing/insights -> public.cs_facebook_insight (brand_etl = 8)
 
 Bản sao của caresoft_marketing_insights_dag.py, chỉ khác:
   - chạy script marketing_insights_ingestion_thv.py (lấy brand theo erp_id = 8)
-  - lịch 07:45 (sau job chung — 06:30 từ 2026-10-15, trước là 07:30 —, trước mốc dbt 08:30 dùng cs_facebook_insight)
-Mặc định lấy T-3 đến T-1 theo giờ VN; có thể trigger tay với params since / until để chạy lại.
+  - lịch 4 tiếng/lần: 03:45, 07:45, 11:45, 15:45, 19:45, 23:45 (2026-10-16; trước đó 1 lần/ngày 07:45).
+    Lệch 1 giờ so với job chung (30 2,6,10,14,18,22) để không gọi API CareSoft cùng lúc; vẫn giữ mốc 07:45
+    nằm sau job chung 06:30 và trước mốc dbt 08:30 dùng cs_facebook_insight.
+Mặc định lấy T-3 đến T-0 (hôm nay) theo giờ VN; có thể trigger tay với params since / until để chạy lại.
 """
 from airflow import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
@@ -68,11 +70,17 @@ def get_t_3_tz():
     return (now - timedelta(days=3)).strftime('%Y-%m-%d')
 
 
+def get_t_0_tz():
+    now = datetime.now(local_tz)
+    return now.strftime('%Y-%m-%d')
+
+
 dag = DAG(
     'caresoft_marketing_insights_thv_dag',
     default_args=default_args,
     description='CareSoft Marketing Insights Ingestion THV (drgiang, erp_id 8): API -> PostgreSQL',
-    schedule_interval='45 7 * * *',
+    # 4 tiếng/lần, lệch 1 giờ sau job chung để không gọi API CareSoft cùng lúc — xem docstring đầu file.
+    schedule_interval='45 3,7,11,15,19,23 * * *',
     start_date=datetime(2026, 10, 9, tzinfo=local_tz),
     catchup=False,
     max_active_runs=1,
@@ -86,12 +94,13 @@ dag = DAG(
         'until': Param(
             default=None,
             type=['null', 'string'],
-            description='End date for backfill (YYYY-MM-DD). Default is T-1.',
+            description='End date for backfill (YYYY-MM-DD). Default is T-0 (hôm nay).',
         )
     },
     user_defined_macros={
         't_3_tz': get_t_3_tz,
-        't_1_tz': get_t_1_tz
+        't_1_tz': get_t_1_tz,
+        't_0_tz': get_t_0_tz
     },
 )
 
@@ -142,7 +151,7 @@ task_marketing_insights_thv = KubernetesPodOperator(
     arguments=[
         '/app/caresoft/marketing/marketing_insights_ingestion_thv.py',
         '{{ params.since or t_3_tz() }}',
-        '{{ params.until or t_1_tz() }}'
+        '{{ params.until or t_0_tz() }}'
     ],
     volumes=[nfs_volume],
     volume_mounts=[nfs_volume_mount],

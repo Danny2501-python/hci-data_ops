@@ -23,11 +23,30 @@ from common.utils import bulk_load
 POSTGRES_URI = os.getenv('POSTGRES_URI')
 TARGET_TABLE = 'public.cs_facebook_insight'
 
+# Chủ động đi chậm để không bị nginx của CareSoft trả 429 — xem log lỗi 2026-10-16 lượt 10:30, lúc đó
+# code nhảy sang brand kế tiếp chỉ sau 13 mili-giây. Phân trang trong cùng một brand giữ nhịp 1 giây
+# như cũ (cho nhanh); chỉ giãn 3 giây ở chỗ hay dính 429 là lúc đổi brand hoặc đổi ngày.
+# Backoff khi đã dính 429 nằm ở call_caresoft_api_post.
+PAGE_PACING_SECONDS = 1     # giữa 2 trang của cùng brand + ngày
+BRAND_PACING_SECONDS = 3    # trước request đầu tiên của mỗi brand / mỗi ngày
+_last_request_at = 0.0
+
+
+def pace_request(min_gap: float):
+    """Chờ cho đủ min_gap giây kể từ request trước đó (tính cả thời gian xử lý ở giữa)."""
+    global _last_request_at
+    wait = min_gap - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at = time.monotonic()
+
 class MarketingInsightsIngestion:
     def __init__(self, since_date: date = None, until_date: date = None):
         # Mặc định: until là T-1, since là T-3
         self.until_date = until_date or (date.today() - timedelta(days=1))
         self.since_date = since_date or (date.today() - timedelta(days=3))
+        # Các lượt gọi API hỏng hẳn sau khi đã thử lại — tổng kết cuối run(), KHÔNG làm task đỏ.
+        self.api_failures: List[str] = []
         
         logger.info(f"Initialized MarketingInsightsIngestion from {self.since_date} to {self.until_date}")
 
@@ -52,17 +71,20 @@ class MarketingInsightsIngestion:
             "limit": 200
         }
         
-        logger.info(f"Fetching insights for brand {brand['name']} ({brand['caresoft_domain']}) for date {date_str}")
+        brand_label = brand.get("name") or brand.get("caresoft_domain")
+        logger.info(f"Fetching insights for brand {brand_label} ({brand['caresoft_domain']}) for date {date_str}")
         
         all_data = []
         page = 1
         
         while True:
             payload["page"] = page
+            pace_request(BRAND_PACING_SECONDS if page == 1 else PAGE_PACING_SECONDS)
             response_data, error = call_caresoft_api_post(brand, endpoint, payload)
             
             if error:
-                logger.error(f"API Error for brand {brand['name']}: {error}")
+                logger.error(f"API Error for brand {brand_label}: {error}")
+                self.api_failures.append(f"{brand['caresoft_domain']} / {target_date} (trang {page}): {error}")
                 break
             
             if not response_data or response_data.get("code") != "ok":
@@ -81,7 +103,6 @@ class MarketingInsightsIngestion:
                 break
                 
             page += 1
-            time.sleep(1) # Simple rate limiting
             
         return all_data
 
@@ -201,10 +222,22 @@ class MarketingInsightsIngestion:
                     total_records += len(transformed_records)
                     
                 except Exception as e:
-                    logger.error(f"Error processing brand {brand['name']} on {target_date}: {e}")
+                    logger.error(f"Error processing brand {brand.get('name') or brand['caresoft_domain']} on {target_date}: {e}")
                     continue
                 
+        self.report_api_failures()
         logger.success(f"Ingestion completed. Total records saved: {total_records}")
+
+    def report_api_failures(self):
+        """Cảnh báo cuối log; cố tình KHÔNG exit(1) — lượt chạy 4 tiếng sau tự lấy bù (cửa sổ T-3 → T-0)."""
+        if not self.api_failures:
+            return
+        logger.warning(
+            f"⚠️  {len(self.api_failures)} lượt gọi API hỏng hẳn sau khi đã thử lại — brand/ngày dưới đây "
+            f"có thể thiếu dữ liệu, lượt chạy sau sẽ lấy bù:"
+        )
+        for item in self.api_failures:
+            logger.warning(f"   - {item}")
 
 if __name__ == "__main__":
     # Nhận tham số từ Airflow hoặc CLI
