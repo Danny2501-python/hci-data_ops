@@ -78,7 +78,7 @@ LIMIT_START_DATE_3M = DATETRUNC_STR_3M
 
 
 # Khởi tạo các brand dữ liệu xử lý
-DICT_BRAND_ETL = {1: 'kn', 3: 'pr', 4: 'hh', 8: 'thv', 7: 'sci', 9: 'sunwoo'}   # them brand: 9=sunwoo
+DICT_BRAND_ETL = {1: 'kn', 3: 'pr', 4: 'hh', 8: 'thv', 9: 'sunwoo', 7: 'sci'}   # them brand: 9=sunwoo
 DICT_BR_ETL = {v: k for k, v in DICT_BRAND_ETL.items() if v}
 LS_BRAND_ETL = list(DICT_BRAND_ETL.keys())
 LS_BR = list(v for k, v in DICT_BRAND_ETL.items() if k > 0)

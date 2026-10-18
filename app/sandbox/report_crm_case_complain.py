@@ -170,7 +170,7 @@ limit_start_date_3m = datetrunc_str_3m
 
 
 # Khởi tạo các brand dữ liệu xử lý
-dict_brand_etl = {0: '', 1: 'kn', 3: 'pr', 4: 'hh', 7: 'sci', 8: 'thv', 9: 'sunwoo'}   # them brand: 8=thv, 9=sunwoo
+dict_brand_etl = {0: '', 1: 'kn', 3: 'pr', 4: 'hh', 8: 'thv', 9: 'sunwoo', 7: 'sci'}   # them brand: 8=thv, 9=sunwoo
 ls_brand_etl = list(dict_brand_etl.keys())
 idb = -1 
 idb_kn = 1
