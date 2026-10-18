@@ -238,7 +238,7 @@ def get_data_after_service():
     df['surgery_room'] = sdatew.surgery_room.fillna(sdatep.surgery_room)
     df['surgery_room_type'] = np.select([df.surgery_room.str.contains('tiểu', case=False).astype(bool), df.surgery_room.str.contains('đại ph', case=False).astype(bool), 
                                          df.surgery_room.str.contains('tái kh', case=False).astype(bool), df.surgery_room.str.contains('mổ', case=False).astype(bool), df.surgery_room.notnull()], 
-                                        ['minor', 'major', 'evaluation', 'surgery', 'other'])
+                                        ['minor', 'major', 'evaluation', 'surgery', 'other'], '')   # numpy 2.x: default phai cung dtype voi choicelist - them default rong (numpy mac dinh la so 0)
     
     df['is_doctor_surgery_evaluation'] = df.doctor_surgery_id.eq(df.employee_id)
     df['is_vip'] = df['product_id'].map(stag_products[stag_products.product_id.fillna(0).ne(0)].set_index('product_id')['is_vip'])
@@ -275,7 +275,7 @@ def get_data_after_service():
     df['rn_form_team'] = df.groupby(['id', 'form_team_id']).cumcount()+1
     df['rn_form_service'] = df.groupby(['id', 'service']).cumcount()+1
     df['type_form'] = np.select([df['id'].str[:2].eq('tk'), df['id'].str[:2].eq('hp')], \
-                                ['evaluation', 'postoperative'], None)   # numpy 2.x: default phai cung dtype voi choicelist (None ~ np.nan)
+                                ['evaluation', 'postoperative'], None)   # numpy 2.x: default phai cung dtype voi choicelist - None thay np.nan
     
     df['service_agg'] = df.groupby("id")['service'].transform(lambda r: ", ".join(r.unique()))
     df['kpiuom'] = df.kpi_point*df.product_uom_qty

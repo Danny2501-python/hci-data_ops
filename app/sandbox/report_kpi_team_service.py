@@ -830,7 +830,7 @@ def data_team_service_revenue():
     dfd = dfd[~( (dfd.roleid.eq(46) & dfd.is_grt_derm) | (dfd.is_role_grt & dfd.rn_grt_team_init.gt(1)) )].copy()
     
     dfd['type_form'] = np.select([dfd['ck_pttt'].str.startswith('PTT'), dfd['ck_pttt'].str.contains('LASE|SPA|NHA|WELL',regex=True)], 
-                                ['surgery', 'specialty'], None)   # numpy 2.x: default phai cung dtype voi choicelist (None ~ np.nan)
+                                ['surgery', 'specialty'], None)   # numpy 2.x: default phai cung dtype voi choicelist - None thay np.nan
     # Xử lý Null lần liệu trình và Số lần tối đa thay đổi hệ số bảo hành
     dfd['drk_grt_times'] = dfd['drk_grt_times'].fillna(dfd.groupby(['brand_etl', 'crm_id', 'form_id', 'group_fix_product_id'])['drk_grt_times'].transform('max'))
     dfd['times'] = np.where(dfd.drk_grt_times.fillna(0).gt(6), 6, dfd.drk_grt_times)     
