@@ -64,7 +64,7 @@ dag = DAG(
     schedule='40 5 * * *',
     max_active_runs=1,
     catchup=False,
-    tags=['pretty_Cue'],
+    tags=['quentk'],
 )
 
 # ============================================================================
