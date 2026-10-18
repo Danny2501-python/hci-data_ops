@@ -68,7 +68,7 @@ LIMIT_START_DATE = DATETRUNC_STR
 
 
 # Khởi tạo các brand dữ liệu xử lý
-DICT_BRAND_ETL = {1: 'kn', 3: 'pr', 4: 'hh', 8: 'thv', 7: 'sci'}
+DICT_BRAND_ETL = {1: 'kn', 3: 'pr', 4: 'hh', 8: 'thv', 7: 'sci', 9: 'sunwoo'}   # them brand: 9=sunwoo
 DICT_BR_ETL = {v: k for k, v in DICT_BRAND_ETL.items() if v}
 LS_BRAND_ETL = list(DICT_BRAND_ETL.keys())
 LS_BR = list(v for k, v in DICT_BRAND_ETL.items() if k > 0)
@@ -275,7 +275,7 @@ def get_data_after_service():
     df['rn_form_team'] = df.groupby(['id', 'form_team_id']).cumcount()+1
     df['rn_form_service'] = df.groupby(['id', 'service']).cumcount()+1
     df['type_form'] = np.select([df['id'].str[:2].eq('tk'), df['id'].str[:2].eq('hp')], \
-                                ['evaluation', 'postoperative'], np.nan)
+                                ['evaluation', 'postoperative'], None)   # numpy 2.x: default phai cung dtype voi choicelist (None ~ np.nan)
     
     df['service_agg'] = df.groupby("id")['service'].transform(lambda r: ", ".join(r.unique()))
     df['kpiuom'] = df.kpi_point*df.product_uom_qty

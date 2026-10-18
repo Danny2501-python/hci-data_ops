@@ -59,7 +59,7 @@ conn = 'dev'   # Dev trên Jupyterlab -> kết nối với Sandbox, đồng bộ
 _CACHE = {}          # nhớ kết quả trong một tiến trình task, tránh truy vấn lặp
 
 # Khởi tạo các brand dữ liệu xử lý
-DICT_BRAND_ETL = {0: '', 1: 'kn', 3: 'pr', 4: 'hh', 7: 'sci'}
+DICT_BRAND_ETL = {0: '', 1: 'kn', 3: 'pr', 4: 'hh', 7: 'sci', 8: 'thv', 9: 'sunwoo'}   # them brand: 8=thv, 9=sunwoo
 LS_BRAND_ETL = list(DICT_BRAND_ETL.keys())
 IDB = -1 
 IDB_KN = 1
