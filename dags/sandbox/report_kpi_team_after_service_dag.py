@@ -151,4 +151,8 @@ t2 = create_task('start_task_2_report_kpi_team_after_service_end')
 # ============================================================================
 # PHU THUOC
 # ============================================================================
-[s1, s2] >> t1 >> t2
+# giu nguyen do thi phu thuoc cua ban goc
+t1 >> t2
+
+# sensor chan cac task goc cua DAG
+[s1, s2] >> t1
