@@ -160,7 +160,6 @@ SELECT
     ctsda.utm_content, 
     --cfac.fb_ad_campaign_id, 
     --cfac."name" AS fb_ad_campaign, 
-    chat.cca_agent_name, 
     caa.employee_code AS agent_employee_code,
     COALESCE(INITCAP(se.employee), chat.cca_agent_name) AS agent_name, 
     se.job AS agent_job, 
