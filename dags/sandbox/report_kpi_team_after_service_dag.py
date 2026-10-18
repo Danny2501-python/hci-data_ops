@@ -122,8 +122,12 @@ def wait_for(dag_id, delta_minutes):
         external_dag_id=f'sandbox_{dag_id}',
         external_task_id=None,                  # cho ca DAG chay xong
         execution_delta=timedelta(minutes=delta_minutes),
+        # external_task_id=None -> sensor cho trang thai DAG RUN, nen chi duoc
+        # dung gia tri cua DagRunState: queued / running / success / failed.
+        # Dua 'skipped' hay 'upstream_failed' (trang thai TASK) vao se loi
+        # ValueError ngay luc Airflow parse file.
         allowed_states=['success'],
-        failed_states=['failed', 'skipped', 'upstream_failed'],
+        failed_states=['failed'],
         check_existence=True,
         mode='reschedule',
         poke_interval=300,
