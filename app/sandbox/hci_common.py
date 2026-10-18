@@ -49,7 +49,8 @@ DEFAULT_URI_ENV = "POSTGRES_URI"
 
 # Các tên DB ngắn gọn của bản gốc đều trỏ về DB đích duy nhất của pod.
 # Giữ lại để code cũ gọi query_df('dev', ...) vẫn chạy.
-ALIAS_DEFAULT = {"dev", "product", "new_product", "dev_staging_sci", ""}
+ALIAS_DEFAULT = {"dev", "product", "new_product", "dev_staging_sci",
+                 "dev_staging_sci_test", "sanbox", "sandbox", ""}
 
 _CACHE = {}
 

@@ -14,8 +14,10 @@ Chay thu mot task:
 """
 
 import argparse
+import ast
 import datetime as dt
 import gc
+import io
 import json
 import os
 import re
@@ -24,13 +26,17 @@ import tempfile
 import time
 import unicodedata
 import warnings
+from contextlib import closing
 from datetime import datetime, timedelta
+from itertools import chain
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import psycopg2
 from dateutil.relativedelta import relativedelta
 from loguru import logger
+from psycopg2 import sql as pgsql
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hci_common import (                                        # noqa: E402
@@ -1281,14 +1287,6 @@ def clean_temp_table():
     print(f'''-------- ✷✷✷✷✷✷ -------- ĐÃ DỌN DẸP CÁC BẢNG TẠM -------- ✷✷✷✷✷✷ --------\n{qr_clean}''')
 
 #clean_temp_table()
-
-
-first_tasks = [call_stag_his_team_service, call_his_team_after_service, call_stag_sale_order_services]
-second_tasks = [call_stag_walkin_evaluation_treatment, call_stag_service_employee_guarantee, call_stag_crm_booking_walkin_loyalty]
-
-for task in first_tasks:
-    task >> second_tasks 
-second_tasks >> call_clean_temp_table
 
 
 # ===========================================================================

@@ -14,8 +14,10 @@ Chay thu mot task:
 """
 
 import argparse
+import ast
 import datetime as dt
 import gc
+import io
 import json
 import os
 import re
@@ -24,13 +26,17 @@ import tempfile
 import time
 import unicodedata
 import warnings
+from contextlib import closing
 from datetime import datetime, timedelta
+from itertools import chain
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import psycopg2
 from dateutil.relativedelta import relativedelta
 from loguru import logger
+from psycopg2 import sql as pgsql
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hci_common import (                                        # noqa: E402
@@ -76,22 +82,12 @@ date_sys_str = date_sys.strftime("%Y-%m-%d")
 
 # connect id = sci -> bản dev
 # connect id = sci_test -> bản test
-hook = PostgresHook(postgres_conn_id='sci')         # sci_dev_test
-hook_test = PostgresHook(postgres_conn_id='sci')
 
 # Sử dụng hook để lấy một kết nối đến cơ sở dữ liệu
 # conn = hook.get_conn()
 # # Tạo một con trỏ để thực thi các lệnh SQL
 # cur = conn.cursor()
 
-def connect_database(dbname):
-    if dbname == 'dev_staging_sci':
-        conn = hook.get_conn()
-    elif dbname == 'dev_staging_sci_test':
-        conn = hook_test.get_conn()
-    else:
-        return False
-    return conn
 
 #quentk 
 # Hàm lấy Dataframe hoặc list tên cột từ DB
@@ -540,8 +536,6 @@ def write_report_case_complain_guarantee():
 
 
 cur_dev.connection.commit()
-hook.get_conn().close()
-hook_test.get_conn().close()
 
 
 # ===========================================================================

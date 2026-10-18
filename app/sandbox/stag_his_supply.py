@@ -14,8 +14,10 @@ Chay thu mot task:
 """
 
 import argparse
+import ast
 import datetime as dt
 import gc
+import io
 import json
 import os
 import re
@@ -24,13 +26,17 @@ import tempfile
 import time
 import unicodedata
 import warnings
+from contextlib import closing
 from datetime import datetime, timedelta
+from itertools import chain
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import psycopg2
 from dateutil.relativedelta import relativedelta
 from loguru import logger
+from psycopg2 import sql as pgsql
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hci_common import (                                        # noqa: E402
