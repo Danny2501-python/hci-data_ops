@@ -587,7 +587,7 @@ def step3_transform_paris():
                                                 dfcpr.commission_department, 
                                                 dfcpr.payment, 
                                                 dfcpr.payment*dfcpr.rto]
-                                               , np.NaN)
+                                               , np.nan)
 	for c in ['commission_bonus_employee', 'commission_bonus_department']:
 		dfcpr[c] = dfcpr['commission_bonus']/dfcpr['count_consult_in_cline']
 	# list cột thông tin từ bảng nhân viên cần lấy
