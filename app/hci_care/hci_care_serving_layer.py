@@ -64,6 +64,7 @@ SKIP_COLUMNS = {"snapshot_date"}
 SKIP_EMPTY_TABLES = {
     "change_password_user",
     "change_password_wizard",
+    "res_users_identitycheck",
 }
 
 
