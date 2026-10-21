@@ -9,6 +9,9 @@ thêm các cột KHÔNG kéo riêng cho CMS rồi gọi main() của hci_care:
   211 MB nằm ở TOAST) -> làm pod OOMKilled (4 GB) ngày 21/10/2026. Dữ liệu ERP đã có
   trong kho qua ERP sync; nối bằng customer_id / lead_id / phone của partner_erp_data.
 - Cột giấy tờ tuỳ thân (hộ chiếu, CCCD, CMND...): báo cáo không cần, không đưa vào kho.
+- res_brand: pwd / login / user / host / port / dbname / database = thông tin đăng nhập
+  DB ERP từng thương hiệu (21/10/2026 lỡ vào kho ở lần chạy đầu, đã xoá). Cột tên pwd ở
+  bảng khác cũng bị loại.
 
 Nếu bảng Iceberg bronze/silver đã lỡ có cột nay bị loại -> xoá bảng Iceberg đó để
 tạo lại sạch (mỗi partition là bản chụp FULL nên không mất gì). Bảng Postgres đích
@@ -33,10 +36,12 @@ from hci_care import hci_care_bronze_ingestion as bronze  # noqa: E402
 # Cột không kéo theo bảng (CMS)
 CMS_EXCLUDED_COLUMNS = {
     "partner_erp_data": {"data_erp_kn"},
+    # res_brand lưu thông tin đăng nhập DB ERP của từng thương hiệu -> không đưa vào kho
+    "res_brand": {"pwd", "login", "user", "host", "port", "dbname", "database"},
 }
 
-# Cột giấy tờ tuỳ thân ở mọi bảng
-PII_PATTERN = r"(pass_?port|cccd|cmnd|identification|id_card|citizen_id)"
+# Cột giấy tờ tuỳ thân + mật khẩu viết tắt (pwd) ở mọi bảng
+PII_PATTERN = r"(pass_?port|cccd|cmnd|identification|id_card|citizen_id|(^|_)pwd($|_))"
 
 
 def apply_exclusions():
