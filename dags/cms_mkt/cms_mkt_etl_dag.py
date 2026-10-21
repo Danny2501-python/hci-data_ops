@@ -9,6 +9,9 @@ Airflow DAG: CMS (database mkt) ETL – dữ liệu Loyalty cho báo cáo Loyalt
 - DÙNG LẠI NGUYÊN code /app/hci_care/*.py (không sửa). Code đó lấy DB nguồn, namespace
   Iceberg, schema đích và danh sách bảng từ env / --tables, nên chỉ cần DAG này trỏ sang CMS.
   => Ai sửa code hci_care thì nhớ là DAG này cũng chạy code đó.
+- Riêng bronze chạy /app/cms_mkt/cms_mkt_bronze_ingestion.py: gọi lại bronze hci_care nhưng
+  bỏ thêm cột partner_erp_data.data_erp_kn (JSON ERP thô, làm OOM 21/10/2026) và các cột
+  giấy tờ tuỳ thân (hộ chiếu / CCCD / CMND).
 - Chỉ kéo các bảng trong DEFAULT_TABLES (không kéo cả DB: CMS có mail_message,
   caresoft_chat_message... rất lớn mà báo cáo không cần).
   QUAN TRỌNG: không truyền "None" cho --tables, vì "None" = kéo TẤT CẢ bảng.
@@ -42,7 +45,8 @@ PYTHON_ETL_IMAGE = '111050/python-etl-base:1.0.0'
 NAMESPACE = 'default'
 NFS_SERVER = '10.10.10.245'
 NFS_PATH = '/srv/nfs_share/app'
-APP_DIR = '/app/hci_care'          # dùng lại code hci_care
+APP_DIR = '/app/hci_care'          # dùng lại code hci_care (silver, serving)
+CMS_APP_DIR = '/app/cms_mkt'       # bronze: wrapper loại thêm cột cho CMS
 ICEBERG_NAMESPACE = 'cms_mkt'      # tách riêng khỏi namespace hci_care
 TARGET_SCHEMA = 'cms_mkt'          # new_product.cms_mkt.*
 SOURCE_CONN_ID = 'cms_mkt_reader'
@@ -123,8 +127,9 @@ lakehouse_env = {
     **_minio_env(),
 }
 
+# Giới hạn 6Gi (hci_care dùng 4Gi): res_partner CMS ~533 nghìn dòng / 282 MB, chừa dư.
 resources = k8s.V1ResourceRequirements(
-    requests={'cpu': '1000m', 'memory': '2Gi'}, limits={'cpu': '2000m', 'memory': '4Gi'})
+    requests={'cpu': '1000m', 'memory': '2Gi'}, limits={'cpu': '2000m', 'memory': '6Gi'})
 
 nfs_volume = k8s.V1Volume(name='nfs-scripts', nfs=k8s.V1NFSVolumeSource(server=NFS_SERVER, path=NFS_PATH))
 nfs_mount = k8s.V1VolumeMount(name='nfs-scripts', mount_path='/app', read_only=True)
@@ -135,7 +140,7 @@ TABLES = '{{ params.tables or "' + ','.join(DEFAULT_TABLES) + '" }}'
 COMMON_ARGS = ['--snapshot-date', SNAPSHOT, '--tables', TABLES]
 
 
-def pod(task_id: str, script: str, env: dict, timeout_h: int = 2):
+def pod(task_id: str, script_path: str, env: dict, timeout_h: int = 2):
     return KubernetesPodOperator(
         task_id=task_id,
         name=f'cms-mkt-{task_id.replace("_", "-")}',
@@ -143,7 +148,7 @@ def pod(task_id: str, script: str, env: dict, timeout_h: int = 2):
         image=PYTHON_ETL_IMAGE,
         image_pull_policy='IfNotPresent',
         cmds=['python'],
-        arguments=[f'{APP_DIR}/{script}'] + COMMON_ARGS,
+        arguments=[script_path] + COMMON_ARGS,
         volumes=[nfs_volume],
         volume_mounts=[nfs_mount],
         env_vars=env,
@@ -175,12 +180,12 @@ with DAG(
                                     'Bỏ trống = danh sách mặc định DEFAULT_TABLES (không phải cả DB)'),
     },
 ) as dag:
-    bronze = pod('bronze_ingestion', 'hci_care_bronze_ingestion.py',
+    bronze = pod('bronze_ingestion', f'{CMS_APP_DIR}/cms_mkt_bronze_ingestion.py',
                  {**lakehouse_env, 'SOURCE_URI': source_uri})
-    silver = pod('silver_transformation', 'hci_care_silver_transformation.py', lakehouse_env)
-    serving = pod('serving_layer', 'hci_care_serving_layer.py',
+    silver = pod('silver_transformation', f'{APP_DIR}/hci_care_silver_transformation.py', lakehouse_env)
+    serving = pod('serving_layer', f'{APP_DIR}/hci_care_serving_layer.py',
                   {**lakehouse_env, 'POSTGRES_URI': dwh_product_new_uri, 'TARGET_SCHEMA': TARGET_SCHEMA})
-    serving_sandbox = pod('serving_layer_sandbox', 'hci_care_serving_layer.py',
+    serving_sandbox = pod('serving_layer_sandbox', f'{APP_DIR}/hci_care_serving_layer.py',
                           {**lakehouse_env, 'POSTGRES_URI': dwh_sandbox_uri, 'TARGET_SCHEMA': TARGET_SCHEMA})
 
     bronze >> silver >> [serving, serving_sandbox]
