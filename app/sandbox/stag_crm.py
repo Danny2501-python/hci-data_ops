@@ -314,7 +314,7 @@ def get_data_employee():
     fix_type(df, ls_col_int, 'Int64', np.nan)
 
     # company_id=4 & department_id=2599: xử lý tạm phân quyền phòng ban BS Đoàn Hùng Thịnh (BV KNSG - Chuyên khoa PTTM)
-    df['phongbanphanquyen'] = np.where(df.department_id.fillna(0).isin([2635,2636]) | df.id.eq(3337) | (df.company_id.fillna(0).eq(4) & df.department_id.fillna(0).eq(2599))
+    df['phongbanphanquyen'] = np.where(df.department_id.fillna(0).isin([2635,2636]) | df.id.isin([2740,3337]) | (df.company_id.fillna(0).eq(4) & df.department_id.fillna(0).eq(2599))
                                        , 2602, df.department_id) 
     
     for b in list(DICT_BRAND_ETL.values())[1:-1]:
