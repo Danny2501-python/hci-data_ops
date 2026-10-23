@@ -261,7 +261,7 @@ task_deal_detail_enrichment = KubernetesPodOperator(
     image_pull_policy='IfNotPresent',
     cmds=['python'],
     arguments=[
-        '/app/caresoft/deal/deal_detail_enrichment.py',
+        '/app/caresoft/deal/deal_detail_enrichment_list_api.py',
         '{{ dag_run.conf.get("snapshot_date") or yesterday_tz() }}'
     ],
     
